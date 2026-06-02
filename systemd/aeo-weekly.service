@@ -1,0 +1,17 @@
+[Unit]
+Description=AEO Pipeline weekly run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aeo
+WorkingDirectory=/opt/aeo-pipeline
+ExecStart=/opt/aeo-pipeline/.venv/bin/aeo run --all
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aeo-pipeline
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=multi-user.target

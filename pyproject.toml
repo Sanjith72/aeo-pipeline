@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aeo-pipeline"
+version = "0.1.0"
+description = "Answer Engine Optimization pipeline — weekly crawl, coverage diff, and recommendation engine"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx[http2]>=0.27",
+    "asyncpg>=0.29",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "typer[all]>=0.12",
+    "google-generativeai>=0.7",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.2",
+    "xxhash>=3.4",
+    "rich>=13.7",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.25",
+    "structlog>=24.2",
+    "tenacity>=8.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-httpx>=0.30",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-beautifulsoup4>=4.12",
+]
+
+[project.scripts]
+aeo = "aeo.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aeo"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
