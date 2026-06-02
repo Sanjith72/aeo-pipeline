@@ -35,9 +35,21 @@ def run(
     regenerate: bool = typer.Option(
         False, "--regenerate-blueprint", help="Force-regenerate the reference blueprint"
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Run full pipeline in memory — no DB writes, capped at 10 pages"
+    ),
 ) -> None:
     """Run the full AEO pipeline: crawl → coverage diff → recommend → validate."""
-    _run(_pipeline(domain, all_domains, regenerate))
+    if dry_run:
+        if all_domains:
+            console.print("[red]--dry-run does not support --all[/red]")
+            raise typer.Exit(1)
+        if not domain:
+            console.print("[red]Provide a domain for --dry-run[/red]")
+            raise typer.Exit(1)
+        _run(_dry_run_pipeline(domain))
+    else:
+        _run(_pipeline(domain, all_domains, regenerate))
 
 
 # ── db-init ───────────────────────────────────────────────────────────────────
@@ -204,6 +216,112 @@ async def _show_report(domain: str, limit: int) -> None:
             "✓" if row["json_ld_ok"] else "✗",
         )
     console.print(tbl)
+
+
+async def _dry_run_pipeline(domain: str, max_pages: int = 10) -> None:
+    import asyncio as _asyncio
+
+    from aeo.agents.coverage_diff import compute_coverage_diff
+    from aeo.agents.crawler import crawl_site
+    from aeo.agents.recommender import generate_recommendations
+    from aeo.agents.reference_generator import generate_blueprint
+    from aeo.agents.validator import validate_recommendations
+
+    console.rule(f"[bold yellow]DRY RUN — {domain}[/bold yellow] (no DB writes, ≤{max_pages} pages)")
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
+
+        t = p.add_task("Generating reference blueprint via Gemini…", total=None)
+        blueprint = await generate_blueprint(domain)
+        p.update(t, description=f"Blueprint — {len(blueprint.target_queries)} queries, {len(blueprint.required_entities)} entities")
+
+        t = p.add_task(f"Crawling https://{domain} (cap: {max_pages} pages)…", total=None)
+        pages = await crawl_site(f"https://{domain}", max_pages=max_pages)
+        p.update(t, description=f"Crawled {len(pages)} page(s)")
+
+        t = p.add_task("Computing coverage diffs via Ollama…", total=None)
+        diff_results = await _asyncio.gather(
+            *[compute_coverage_diff(pg, blueprint) for pg in pages],
+            return_exceptions=True,
+        )
+        diffs = [d for d in diff_results if not isinstance(d, BaseException)]
+        p.update(t, description=f"Coverage diffs: {len(diffs)} computed")
+
+        t = p.add_task("Generating recommendations via Ollama…", total=None)
+        recs = await generate_recommendations(diffs, blueprint)
+        p.update(t, description=f"{len(recs)} recommendations")
+
+        t = p.add_task("Validating (deterministic)…", total=None)
+        pages_by_url = {pg.url: pg for pg in pages}
+        validated = await validate_recommendations(recs, pages_by_url)
+        valid = [(r, v) for r, v in validated if v.is_valid]
+        p.update(t, description=f"{len(valid)}/{len(validated)} passed")
+
+    # ── Blueprint summary ──────────────────────────────────────────────────────
+    console.print()
+    bp_tbl = Table(title=f"Reference Blueprint — {domain}", show_header=False, box=None)
+    bp_tbl.add_column("Key", style="bold cyan", width=20)
+    bp_tbl.add_column("Value")
+    bp_tbl.add_row("Target queries", str(len(blueprint.target_queries)))
+    bp_tbl.add_row("Required entities", ", ".join(blueprint.required_entities[:6]) + ("…" if len(blueprint.required_entities) > 6 else ""))
+    bp_tbl.add_row("Schema types", ", ".join(blueprint.schema_types))
+    bp_tbl.add_row("Freshness", f"every {blueprint.freshness_days} days")
+    console.print(bp_tbl)
+
+    # ── Per-page coverage table ────────────────────────────────────────────────
+    if diffs:
+        console.print()
+        cov_tbl = Table(title="Coverage by Page", show_header=True, header_style="bold")
+        cov_tbl.add_column("URL", no_wrap=False)
+        cov_tbl.add_column("Score", width=7, justify="right")
+        cov_tbl.add_column("Queries", width=8, justify="right")
+        cov_tbl.add_column("Entities", width=9, justify="right")
+        cov_tbl.add_column("Schema ✗", width=9)
+        for diff in sorted(diffs, key=lambda d: d.coverage_score):
+            q_cov = sum(1 for q in diff.query_coverage if q.covered)
+            e_cov = sum(1 for e in diff.entity_coverage if e.present)
+            score_colour = "green" if diff.coverage_score >= 0.7 else "yellow" if diff.coverage_score >= 0.4 else "red"
+            cov_tbl.add_row(
+                diff.url,
+                f"[{score_colour}]{diff.coverage_score:.0%}[/{score_colour}]",
+                f"{q_cov}/{len(diff.query_coverage)}",
+                f"{e_cov}/{len(diff.entity_coverage)}",
+                ", ".join(diff.schema_types_missing[:3]) or "—",
+            )
+        console.print(cov_tbl)
+
+    # ── Recommendations ────────────────────────────────────────────────────────
+    if validated:
+        console.print()
+        rec_tbl = Table(title="Recommendations (dry-run)", show_header=True, header_style="bold")
+        rec_tbl.add_column("✓", width=3)
+        rec_tbl.add_column("Pri", width=6)
+        rec_tbl.add_column("Type", width=10)
+        rec_tbl.add_column("Title")
+        rec_tbl.add_column("WC", width=3)
+        rec_tbl.add_column("H1?", width=4)
+        rec_tbl.add_column("JLD", width=4)
+        colour = {"high": "red", "medium": "yellow", "low": "green"}
+        for rec, val in validated:
+            c = colour[rec.priority]
+            rec_tbl.add_row(
+                "✓" if val.is_valid else "✗",
+                f"[{c}]{rec.priority}[/{c}]",
+                rec.type,
+                rec.title,
+                "✓" if val.word_count_ok else "✗",
+                "✓" if val.h1_question_ok else "✗",
+                "✓" if val.json_ld_ok else "✗",
+            )
+        console.print(rec_tbl)
+
+    # ── Summary line ───────────────────────────────────────────────────────────
+    console.print()
+    if diffs:
+        avg = sum(d.coverage_score for d in diffs) / len(diffs)
+        console.print(f"Avg coverage score: [bold]{avg:.1%}[/bold]  |  Valid recs: [bold]{len(valid)}[/bold]/{len(validated)}  |  [yellow]Nothing written to DB.[/yellow]")
+    else:
+        console.print("[yellow]No pages could be diffed. Nothing written to DB.[/yellow]")
 
 
 async def _show_blueprint(domain: str) -> None:

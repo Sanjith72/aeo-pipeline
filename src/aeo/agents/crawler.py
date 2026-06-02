@@ -82,9 +82,11 @@ async def _fetch(
 async def crawl_site(
     start_url: str,
     known_hashes: dict[str, str] | None = None,
+    max_pages: int | None = None,
 ) -> list[CrawledPage]:
     settings = get_settings()
     known_hashes = known_hashes or {}
+    page_cap = max_pages if max_pages is not None else settings.crawler_max_pages
     base_domain = urlparse(start_url).netloc.removeprefix("www.")
 
     visited: set[str] = set()
@@ -98,7 +100,7 @@ async def crawl_site(
             headers={"User-Agent": settings.crawler_user_agent},
             timeout=float(settings.crawler_timeout_seconds),
         ) as client:
-            while queue and len(visited) < settings.crawler_max_pages:
+            while queue and len(visited) < page_cap:
                 url = queue.popleft()
                 if url in visited:
                     continue
@@ -109,7 +111,7 @@ async def crawl_site(
                         page = await _fetch(client, url, known_hashes)
                         pages.append(page)
                         logger.debug("crawled", url=url, changed=page.changed)
-                        budget = settings.crawler_max_pages - len(visited) - len(queue)
+                        budget = page_cap - len(visited) - len(queue)
                         for link in page.links:
                             if link not in visited and _same_domain(link, base_domain) and budget > 0:
                                 queue.append(link)
