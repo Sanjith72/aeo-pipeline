@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import google.generativeai as genai
+from google import genai
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from aeo.config import get_settings
@@ -42,8 +42,7 @@ async def generate_blueprint(domain: str, seed_queries: list[str] | None = None)
     with tracer.start_as_current_span("reference_generator.generate") as span:
         span.set_attribute("domain", domain)
         settings = get_settings()
-        genai.configure(api_key=settings.gemini_api_key)
-        model = genai.GenerativeModel(settings.gemini_model)
+        client = genai.Client(api_key=settings.gemini_api_key)
 
         seed_block = ""
         if seed_queries:
@@ -52,7 +51,10 @@ async def generate_blueprint(domain: str, seed_queries: list[str] | None = None)
         prompt = _PROMPT_TEMPLATE.format(domain=domain, seed_block=seed_block)
         logger.info("generating_blueprint", domain=domain)
 
-        response = await model.generate_content_async(prompt)
+        response = await client.aio.models.generate_content(
+            model=f"models/{settings.gemini_model}",
+            contents=prompt,
+        )
         raw: str = response.text.strip()
 
         # Strip markdown code fences if the model wraps its output anyway

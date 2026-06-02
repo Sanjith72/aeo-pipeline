@@ -324,6 +324,10 @@ async def _dry_run_pipeline(domain: str, max_pages: int = 10) -> None:
         console.print("[yellow]No pages could be diffed. Nothing written to DB.[/yellow]")
 
 
+if __name__ == "__main__":
+    app()
+
+
 async def _show_blueprint(domain: str) -> None:
     from aeo.db import create_pool
     from aeo.db.queries import get_latest_blueprint

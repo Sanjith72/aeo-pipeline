@@ -1,7 +1,9 @@
 from __future__ import annotations
+import json
 from functools import lru_cache
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -16,7 +18,7 @@ class Settings(BaseSettings):
 
     # Google Gemini — reference blueprint generation only
     gemini_api_key: str = Field(..., description="Google Gemini API key (free tier)")
-    gemini_model: str = "gemini-1.5-flash"
+    gemini_model: str = "gemini-2.0-flash"
 
     # Ollama — all secondary reasoning (coverage diff, recommender, processor)
     ollama_base_url: str = "http://localhost:11434"
@@ -29,8 +31,26 @@ class Settings(BaseSettings):
     crawler_user_agent: str = "AEO-Pipeline/1.0"
 
     # Pipeline
-    pipeline_domains: list[str] = Field(default_factory=list)
+    # NoDecode disables pydantic-settings' source-level JSON decoding so an
+    # empty or non-JSON env value reaches the validator below instead of
+    # crashing during settings construction.
+    pipeline_domains: Annotated[list[str], NoDecode] = Field(default_factory=list)
     freshness_days: int = 7
+
+    @field_validator("pipeline_domains", mode="before")
+    @classmethod
+    def _parse_pipeline_domains(cls, value: object) -> object:
+        # Already a list (e.g. default_factory or programmatic init) — keep as-is.
+        if not isinstance(value, str):
+            return value
+        value = value.strip()
+        if not value:
+            return []
+        # Support JSON list form: PIPELINE_DOMAINS=["securin.io", "example.com"]
+        if value.startswith("["):
+            return json.loads(value)
+        # Fall back to comma-separated form: PIPELINE_DOMAINS=a.com,b.com
+        return [item.strip() for item in value.split(",") if item.strip()]
 
     # Observability
     otel_endpoint: str = ""
