@@ -95,7 +95,11 @@ async def generate_blueprint(
             target_queries=data.get("target_queries", []),
             required_entities=data.get("required_entities", []),
             schema_types=data.get("schema_types", []),
-            content_sections=[ContentSection(**s) for s in data.get("content_sections", [])],
+            content_sections=[
+                ContentSection(**{**s, "type": s.get("type", "narrative").lower()})
+                for s in data.get("content_sections", [])
+                if isinstance(s, dict)
+            ],
             citation_sources=data.get("citation_sources", []),
             competitor_intel=competitor_intel or [],
             freshness_days=int(data.get("freshness_days", 7)),
