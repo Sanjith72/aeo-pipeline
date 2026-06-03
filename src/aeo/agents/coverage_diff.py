@@ -59,7 +59,7 @@ async def _ollama_coverage(
         excerpt=body_text[:2000],
         queries=queries_block,
     )
-    async with async_client(timeout=60.0) as client:
+    async with async_client(timeout=settings.ollama_timeout) as client:
         resp = await client.post(
             f"{settings.ollama_base_url}/api/chat",
             json={
@@ -210,7 +210,7 @@ async def _content_gap_track(
     )
     covered: list[dict[str, Any]] = []
     try:
-        async with async_client(timeout=60.0) as client:
+        async with async_client(timeout=settings.ollama_timeout) as client:
             resp = await client.post(
                 f"{settings.ollama_base_url}/api/chat",
                 json={

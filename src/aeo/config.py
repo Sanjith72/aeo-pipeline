@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Ollama -- all LLM calls: blueprint generation, coverage diff, recommender, processor
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "phi3"
+    # Timeout for Ollama inference calls. phi3 on CPU can take 90-120s per request;
+    # set higher if you see ReadTimeout in coverage_diff or recommender logs.
+    ollama_timeout: float = 180.0
 
     # Crawler
     crawler_max_pages: int = 200

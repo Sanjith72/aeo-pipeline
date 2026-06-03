@@ -25,20 +25,29 @@ You are an Answer Engine Optimization (AEO) specialist.
 Produce a reference blueprint for what content on the domain "{domain}" must contain to be \
 cited by AI answer engines (Perplexity, ChatGPT, Gemini).{seed_block}
 
-Respond with ONLY valid JSON -- no markdown fences, no explanation -- matching this schema:
+RULES:
+- All values must be specific to the domain "{domain}" -- no generic placeholders.
+- "required_entities" must be real product names, company names, technologies, frameworks, \
+or standards relevant to "{domain}". Do NOT use example names like "John Doe" or "Jane Smith".
+- "target_queries" must be real questions a user would type into an AI search engine about \
+this domain's actual subject matter.
+- "citation_sources" must be real, well-known authoritative URLs (e.g. NIST, CISA, OWASP, \
+CVE, vendor docs) -- no made-up URLs.
+- Output ONLY the JSON object below. No explanation, no markdown fences, no preamble.
+
 {{
-  "target_queries": ["10-20 queries this domain's content should answer"],
-  "required_entities": ["people, products, companies, concepts that must be present"],
-  "schema_types": ["schema.org types, e.g. FAQPage, HowTo, Article, Product"],
+  "target_queries": ["10-15 specific queries this domain's content should answer"],
+  "required_entities": ["real product names, companies, standards, frameworks for {domain}"],
+  "schema_types": ["schema.org types e.g. FAQPage, HowTo, Article, Product"],
   "content_sections": [
     {{
-      "heading": "section heading",
+      "heading": "specific section heading relevant to {domain}",
       "type": "faq|howto|definition|comparison|listicle|narrative",
       "required_entities": ["entities for this section"],
-      "min_words": 150
+      "min_words": 200
     }}
   ],
-  "citation_sources": ["authoritative URLs to cite"],
+  "citation_sources": ["real authoritative URLs relevant to {domain}"],
   "freshness_days": 7
 }}
 """
@@ -66,7 +75,7 @@ async def generate_blueprint(
 
         # Ollama -- IPv4-bound, consistent with the rest of the pipeline (OCI ARM requirement)
         async with httpx.AsyncClient(
-            timeout=120.0,
+            timeout=settings.ollama_timeout,
             transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
         ) as client:
             resp = await client.post(

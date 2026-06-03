@@ -56,7 +56,10 @@ async def _ollama_recommend(diff: CoverageDiff, settings) -> list[dict[str, Any]
         missing_schema=", ".join(diff.schema_types_missing) or "none",
     )
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
+    async with httpx.AsyncClient(
+        timeout=settings.ollama_timeout,
+        transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+    ) as client:
         resp = await client.post(
             f"{settings.ollama_base_url}/api/chat",
             json={
@@ -70,9 +73,14 @@ async def _ollama_recommend(diff: CoverageDiff, settings) -> list[dict[str, Any]
         content: str = resp.json()["message"]["content"]
 
     match = re.search(r'\{.*\}', content, re.DOTALL)
-    if match:
+    if not match:
+        logger.warning("recommend_no_json", url=diff.url, raw=content[:200])
+        return []
+    try:
         return json.loads(match.group()).get("recommendations", [])
-    return []
+    except json.JSONDecodeError as exc:
+        logger.warning("recommend_json_decode_error", url=diff.url, error=str(exc), raw=content[:200])
+        return []
 
 
 def _coerce_recommendation(raw: dict, domain: str, url: str) -> Recommendation | None:
