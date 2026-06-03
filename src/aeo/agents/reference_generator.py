@@ -23,17 +23,13 @@ tracer = get_tracer(__name__)
 _PROMPT_TEMPLATE = """\
 You are an Answer Engine Optimization specialist. Produce a JSON blueprint for "{domain}".
 Use only real, specific names from "{domain}"s actual industry. No placeholder names.
-Output ONLY valid JSON, no markdown, no explanation:
-{{
-  "target_queries": ["5-10 real queries users ask about {domain}"],
-  "required_entities": ["real product/company/standard names relevant to {domain}"],
-  "schema_types": ["FAQPage", "HowTo", "Article"],
-  "content_sections": [
-    {{"heading": "heading", "type": "faq", "required_entities": [], "min_words": 150}}
-  ],
-  "citation_sources": ["https://example-real-authority.com"],
-  "freshness_days": 7
-}}{seed_block}"""
+Return a single JSON object with these exact keys:
+- target_queries: list of 5-10 real questions users ask about {domain}
+- required_entities: list of real product/company/standard names relevant to {domain}
+- schema_types: list of schema.org types (e.g. FAQPage, HowTo, Article)
+- content_sections: list of objects with keys heading, type, required_entities, min_words
+- citation_sources: list of real authoritative URLs relevant to {domain}
+- freshness_days: integer (7){seed_block}"""
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
@@ -57,6 +53,7 @@ async def generate_blueprint(
         logger.info("generating_blueprint", domain=domain)
 
         # Ollama -- IPv4-bound, consistent with the rest of the pipeline (OCI ARM requirement)
+        # format="json" forces the model to emit valid JSON regardless of model quirks
         async with httpx.AsyncClient(
             timeout=settings.ollama_timeout,
             transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
@@ -67,6 +64,7 @@ async def generate_blueprint(
                     "model": settings.ollama_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "format": "json",
                     "options": {"temperature": 0.0},
                 },
             )
@@ -82,7 +80,11 @@ async def generate_blueprint(
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if not match:
             raise ValueError(f"Ollama returned no JSON object for domain={domain!r}")
-        data: dict[str, Any] = json.loads(match.group())
+        try:
+            data: dict[str, Any] = json.loads(match.group())
+        except json.JSONDecodeError as exc:
+            logger.warning("blueprint_json_error", domain=domain, error=str(exc), raw=raw[:300])
+            raise ValueError(f"Ollama returned invalid JSON for domain={domain!r}: {exc}") from exc
 
         # engine_target, taxonomy_tags and competitor_intel are caller-supplied --
         # the model must never invent taxonomy categories.
