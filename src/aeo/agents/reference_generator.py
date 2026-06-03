@@ -1,9 +1,10 @@
-"""Reference Architecture Generator — uses Google Gemini (free tier) to produce a Blueprint."""
+"""Reference Architecture Generator -- uses local Ollama to produce a Blueprint."""
 from __future__ import annotations
 import json
+import re
 from typing import Any
 
-from google import genai
+import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from aeo.config import get_settings
@@ -24,7 +25,7 @@ You are an Answer Engine Optimization (AEO) specialist.
 Produce a reference blueprint for what content on the domain "{domain}" must contain to be \
 cited by AI answer engines (Perplexity, ChatGPT, Gemini).{seed_block}
 
-Respond with ONLY valid JSON — no markdown fences, no explanation — matching this schema exactly:
+Respond with ONLY valid JSON -- no markdown fences, no explanation -- matching this schema:
 {{
   "target_queries": ["10-20 queries this domain's content should answer"],
   "required_entities": ["people, products, companies, concepts that must be present"],
@@ -55,7 +56,6 @@ async def generate_blueprint(
         span.set_attribute("domain", domain)
         span.set_attribute("engine_target", str(engine_target))
         settings = get_settings()
-        client = genai.Client(api_key=settings.gemini_api_key)
 
         seed_block = ""
         if seed_queries:
@@ -64,22 +64,38 @@ async def generate_blueprint(
         prompt = _PROMPT_TEMPLATE.format(domain=domain, seed_block=seed_block)
         logger.info("generating_blueprint", domain=domain)
 
-        response = await client.aio.models.generate_content(
-            model=f"models/{settings.gemini_model}",
-            contents=prompt,
-        )
-        raw: str = response.text.strip()
+        # Ollama -- IPv4-bound, consistent with the rest of the pipeline (OCI ARM requirement)
+        async with httpx.AsyncClient(
+            timeout=120.0,
+            transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+        ) as client:
+            resp = await client.post(
+                f"{settings.ollama_base_url}/api/chat",
+                json={
+                    "model": settings.ollama_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": 0.0},
+                },
+            )
+            resp.raise_for_status()
+            raw: str = resp.json()["message"]["content"].strip()
 
-        # Strip markdown code fences if the model wraps its output anyway
+        # Strip markdown code fences if the model wraps its output
         if raw.startswith("```"):
             lines = raw.splitlines()
             raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
-        data: dict[str, Any] = json.loads(raw)
-        # engine_target, taxonomy_tags and competitor_intel are caller-supplied (Layer 2
-        # guardrail + Layer 1 empirical floor) — the generator never lets Gemini invent
-        # taxonomy categories. created_at + locked_until (+30d) + content_hash are derived
-        # on the model. Core structural fields are frozen once constructed.
+        # Extract first JSON object in case the model emits extra prose
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not match:
+            raise ValueError(f"Ollama returned no JSON object for domain={domain!r}")
+        data: dict[str, Any] = json.loads(match.group())
+
+        # engine_target, taxonomy_tags and competitor_intel are caller-supplied --
+        # the model must never invent taxonomy categories.
+        # created_at + locked_until (+30d) + content_hash are derived on the Pydantic model.
+        # Core structural fields are frozen once constructed.
         blueprint = Blueprint(
             domain=domain,
             engine_target=engine_target,

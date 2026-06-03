@@ -16,11 +16,7 @@ class Settings(BaseSettings):
     # Database
     database_url: str = Field(..., description="PostgreSQL DSN")
 
-    # Google Gemini — reference blueprint generation only
-    gemini_api_key: str = Field(..., description="Google Gemini API key (free tier)")
-    gemini_model: str = "gemini-2.0-flash"
-
-    # Ollama — all secondary reasoning (coverage diff, recommender, processor)
+    # Ollama -- all LLM calls: blueprint generation, coverage diff, recommender, processor
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "phi3"
 
@@ -40,7 +36,7 @@ class Settings(BaseSettings):
     @field_validator("pipeline_domains", mode="before")
     @classmethod
     def _parse_pipeline_domains(cls, value: object) -> object:
-        # Already a list (e.g. default_factory or programmatic init) — keep as-is.
+        # Already a list (e.g. default_factory or programmatic init) -- keep as-is.
         if not isinstance(value, str):
             return value
         value = value.strip()
