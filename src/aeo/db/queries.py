@@ -61,17 +61,31 @@ async def finish_run(
 # ── blueprints ────────────────────────────────────────────────────────────────
 
 async def upsert_blueprint(pool: asyncpg.Pool, blueprint: Blueprint) -> None:
+    # 30-day lock window: an existing (domain, version) row is only overwritten once its
+    # locked_until has passed. Inside the window the WHERE guard makes the UPDATE a no-op,
+    # so a blueprint's persisted core stays immutable until the lock expires. engine_target,
+    # locked_until and content_hash (computed fields) are denormalised into columns for
+    # querying; the full model still lives in `data`.
     await pool.execute(
         """
-        INSERT INTO blueprints (id, domain, version, data, created_at)
-        VALUES ($1, $2, $3, $4::jsonb, $5)
-        ON CONFLICT (domain, version) DO UPDATE SET data = EXCLUDED.data
+        INSERT INTO blueprints
+            (id, domain, version, data, created_at, engine_target, locked_until, content_hash)
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+        ON CONFLICT (domain, version) DO UPDATE
+            SET data = EXCLUDED.data,
+                engine_target = EXCLUDED.engine_target,
+                locked_until = EXCLUDED.locked_until,
+                content_hash = EXCLUDED.content_hash
+            WHERE blueprints.locked_until IS NULL OR blueprints.locked_until < NOW()
         """,
         blueprint.id,
         blueprint.domain,
         blueprint.version,
         blueprint.model_dump_json(),
         blueprint.created_at,
+        str(blueprint.engine_target),
+        blueprint.locked_until,
+        blueprint.content_hash,
     )
 
 

@@ -7,7 +7,13 @@ from google import genai
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from aeo.config import get_settings
-from aeo.models.blueprint import Blueprint, ContentSection
+from aeo.models.blueprint import (
+    Blueprint,
+    CompetitorIntel,
+    ContentSection,
+    EngineTarget,
+    TaxonomyTag,
+)
 from aeo.utils.observability import get_logger, get_tracer
 
 logger = get_logger(__name__)
@@ -38,9 +44,16 @@ Respond with ONLY valid JSON — no markdown fences, no explanation — matching
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-async def generate_blueprint(domain: str, seed_queries: list[str] | None = None) -> Blueprint:
+async def generate_blueprint(
+    domain: str,
+    seed_queries: list[str] | None = None,
+    engine_target: EngineTarget = EngineTarget.GENERIC,
+    taxonomy_tags: list[TaxonomyTag] | None = None,
+    competitor_intel: list[CompetitorIntel] | None = None,
+) -> Blueprint:
     with tracer.start_as_current_span("reference_generator.generate") as span:
         span.set_attribute("domain", domain)
+        span.set_attribute("engine_target", str(engine_target))
         settings = get_settings()
         client = genai.Client(api_key=settings.gemini_api_key)
 
@@ -63,13 +76,20 @@ async def generate_blueprint(domain: str, seed_queries: list[str] | None = None)
             raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
         data: dict[str, Any] = json.loads(raw)
+        # engine_target, taxonomy_tags and competitor_intel are caller-supplied (Layer 2
+        # guardrail + Layer 1 empirical floor) — the generator never lets Gemini invent
+        # taxonomy categories. created_at + locked_until (+30d) + content_hash are derived
+        # on the model. Core structural fields are frozen once constructed.
         blueprint = Blueprint(
             domain=domain,
+            engine_target=engine_target,
+            taxonomy_tags=taxonomy_tags or [],
             target_queries=data.get("target_queries", []),
             required_entities=data.get("required_entities", []),
             schema_types=data.get("schema_types", []),
             content_sections=[ContentSection(**s) for s in data.get("content_sections", [])],
             citation_sources=data.get("citation_sources", []),
+            competitor_intel=competitor_intel or [],
             freshness_days=int(data.get("freshness_days", 7)),
         )
         logger.info(

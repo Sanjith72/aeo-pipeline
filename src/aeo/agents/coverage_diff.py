@@ -1,15 +1,35 @@
-"""Coverage diff — Ollama phi3 for semantic query coverage; deterministic for entities/schema."""
+"""Gap analysis — Ollama phi3 for semantic query coverage; deterministic for entities/schema.
+
+Block 3 adds a 4-track parallel evaluator (:func:`evaluate_gaps`) on top of the original
+per-page :func:`compute_coverage_diff`. The four tracks fan out via ``asyncio.gather`` and
+each is a standalone ``async def`` with no shared mutable state.
+
+NOTE (conflict with task spec): the v4 brief asks for the Gemini API key here. This codebase
+deliberately reserves Gemini for the Reference Architecture Generator and runs all secondary
+reasoning on local Ollama (see config.py / architecture v4). That existing pattern is preserved;
+the Gemini key is still loadable from .env via Settings but is not called from this module.
+"""
 from __future__ import annotations
+import asyncio
 import json
 import re
 from datetime import datetime
 from typing import Any
 
-import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from aeo.config import get_settings
-from aeo.models.blueprint import Blueprint, CoveredEntity, CoveredQuery, CoverageDiff, CrawledPage
+from aeo.models.blueprint import (
+    Blueprint,
+    CoveredEntity,
+    CoveredQuery,
+    CoverageDiff,
+    CrawledPage,
+    EngineTarget,
+    GapAnalysisReport,
+    GapTrackResult,
+)
+from aeo.utils.http import async_client
 from aeo.utils.observability import get_logger, get_tracer
 
 logger = get_logger(__name__)
@@ -39,7 +59,7 @@ async def _ollama_coverage(
         excerpt=body_text[:2000],
         queries=queries_block,
     )
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with async_client(timeout=60.0) as client:
         resp = await client.post(
             f"{settings.ollama_base_url}/api/chat",
             json={
@@ -134,3 +154,219 @@ async def compute_coverage_diff(page: CrawledPage, blueprint: Blueprint) -> Cove
         logger.info("coverage_diff_computed", url=page.url, score=coverage_score)
         span.set_attribute("coverage_score", coverage_score)
         return diff
+
+
+# ── Block 3: 4-track parallel gap evaluator ────────────────────────────────────
+
+# engine_target → emphasis injected into the content-gap LLM prompt.
+_ENGINE_EMPHASIS: dict[EngineTarget, str] = {
+    EngineTarget.PERPLEXITY: (
+        "Weight CITATION DENSITY heavily: a query is only 'covered' if the page answers it "
+        "with specific, sourceable claims that Perplexity could cite."
+    ),
+    EngineTarget.CHATGPT_SEARCH: (
+        "Weight CONVERSATIONAL COVERAGE: a query is 'covered' if the page answers it in a "
+        "direct, natural-language way a ChatGPT Search summary would reuse."
+    ),
+    EngineTarget.GEMINI: (
+        "Weight STRUCTURED ENTITY coverage: a query is 'covered' if the relevant entities and "
+        "their relationships are explicitly present and well-structured."
+    ),
+    EngineTarget.GENERIC: "Assess whether the page substantively answers each query.",
+}
+
+
+def _select_emphasis(engine_target: EngineTarget) -> str:
+    """Dynamically select the prompt emphasis for an engine target (default = generic)."""
+    return _ENGINE_EMPHASIS.get(engine_target, _ENGINE_EMPHASIS[EngineTarget.GENERIC])
+
+
+def _extract_dates(schema_markup: list[dict]) -> list[str]:
+    dates: list[str] = []
+    for item in schema_markup:
+        for node in [item, *item.get("@graph", [])]:
+            for key in ("datePublished", "dateModified"):
+                val = node.get(key)
+                if isinstance(val, str):
+                    dates.append(val)
+    return dates
+
+
+# Each track below is a standalone async def with NO shared mutable state — it reads only
+# its arguments and returns its own GapTrackResult. This keeps the asyncio.gather fan-out safe.
+
+
+async def _content_gap_track(
+    page: CrawledPage, blueprint: Blueprint, engine_target: EngineTarget, settings: Any
+) -> GapTrackResult:
+    """Track 1 — semantic query coverage via Ollama, with engine-routed emphasis."""
+    emphasis = _select_emphasis(engine_target)
+    queries_block = "\n".join(f"{i+1}. {q}" for i, q in enumerate(blueprint.target_queries))
+    prompt = (
+        f"{emphasis}\n\n"
+        + _COVERAGE_PROMPT.format(
+            title=page.title, excerpt=page.body_text[:2000], queries=queries_block
+        )
+    )
+    covered: list[dict[str, Any]] = []
+    try:
+        async with async_client(timeout=60.0) as client:
+            resp = await client.post(
+                f"{settings.ollama_base_url}/api/chat",
+                json={
+                    "model": settings.ollama_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": 0.0},
+                },
+            )
+            resp.raise_for_status()
+            content = resp.json()["message"]["content"]
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            covered = json.loads(match.group()).get("coverage", [])
+    except Exception as exc:  # noqa: BLE001 — track degrades gracefully, never crashes the fan-out
+        logger.warning("content_gap_track_failed", url=page.url, error=str(exc))
+
+    covered_map = {c.get("query", ""): bool(c.get("covered")) for c in covered}
+    total = len(blueprint.target_queries) or 1
+    hit = sum(1 for q in blueprint.target_queries if covered_map.get(q))
+    missing = [q for q in blueprint.target_queries if not covered_map.get(q)]
+    return GapTrackResult(
+        track="content_gap",
+        engine_target=engine_target,
+        score=round(hit / total, 4),
+        findings=[f"uncovered query: {q}" for q in missing[:10]],
+        details={"covered": hit, "total": total},
+    )
+
+
+async def _citation_gap_track(
+    page: CrawledPage, blueprint: Blueprint, engine_target: EngineTarget, settings: Any
+) -> GapTrackResult:
+    """Track 2 — deterministic: are the blueprint's authoritative citation sources present?"""
+    haystack = f"{page.body_text} {' '.join(page.links)}".lower()
+    sources = blueprint.citation_sources
+    present = [s for s in sources if s.lower() in haystack]
+    missing = [s for s in sources if s.lower() not in haystack]
+    score = 1.0 if not sources else round(len(present) / len(sources), 4)
+    return GapTrackResult(
+        track="citation_gap",
+        engine_target=engine_target,
+        score=score,
+        findings=[f"missing citation source: {s}" for s in missing[:10]],
+        details={"present": len(present), "expected": len(sources)},
+    )
+
+
+async def _freshness_gap_track(
+    page: CrawledPage, blueprint: Blueprint, engine_target: EngineTarget, settings: Any
+) -> GapTrackResult:
+    """Track 3 — deterministic: does the page carry a recent published/modified date?"""
+    dates = _extract_dates(page.schema_markup)
+    score = 0.0
+    findings: list[str] = []
+    if not dates:
+        findings.append("no datePublished/dateModified in schema markup")
+    else:
+        newest: datetime | None = None
+        for raw in dates:
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                continue
+            if newest is None or parsed > newest:
+                newest = parsed
+        if newest is None:
+            findings.append("date fields present but unparseable")
+            score = 0.25
+        else:
+            age_days = (datetime.utcnow() - newest).days
+            score = 1.0 if age_days <= blueprint.freshness_days else 0.5
+            if score < 1.0:
+                findings.append(f"content is {age_days}d old (> {blueprint.freshness_days}d window)")
+    return GapTrackResult(
+        track="freshness_gap",
+        engine_target=engine_target,
+        score=score,
+        findings=findings,
+        details={"dates_found": len(dates)},
+    )
+
+
+async def _entity_coverage_gap_track(
+    page: CrawledPage, blueprint: Blueprint, engine_target: EngineTarget, settings: Any
+) -> GapTrackResult:
+    """Track 4 — deterministic: are the blueprint's required entities mentioned on the page?"""
+    combined = f"{page.title} {' '.join(page.headings)} {page.body_text}"
+    coverage = [_entity_coverage(e, combined) for e in blueprint.required_entities]
+    total = len(coverage) or 1
+    present = sum(1 for c in coverage if c.present)
+    missing = [c.entity for c in coverage if not c.present]
+    return GapTrackResult(
+        track="entity_coverage_gap",
+        engine_target=engine_target,
+        score=round(present / total, 4),
+        findings=[f"missing entity: {e}" for e in missing[:10]],
+        details={"present": present, "total": total},
+    )
+
+
+async def evaluate_gaps(
+    page: CrawledPage,
+    blueprint: Blueprint,
+    engine_target: EngineTarget | None = None,
+) -> GapAnalysisReport:
+    """Run all four gap-analysis tracks in parallel and merge into one report.
+
+    ``engine_target`` defaults to the blueprint's own target. The four tracks are launched
+    concurrently with ``asyncio.gather``; a track that raises degrades to a zero-score result
+    rather than failing the whole evaluation.
+    """
+    settings = get_settings()
+    target = engine_target or blueprint.engine_target
+
+    with tracer.start_as_current_span("gap_analysis.evaluate") as span:
+        span.set_attribute("url", page.url)
+        span.set_attribute("engine_target", str(target))
+
+        tracks = (
+            _content_gap_track,
+            _citation_gap_track,
+            _freshness_gap_track,
+            _entity_coverage_gap_track,
+        )
+        results = await asyncio.gather(
+            *(fn(page, blueprint, target, settings) for fn in tracks),
+            return_exceptions=True,
+        )
+
+        merged: list[GapTrackResult] = []
+        for fn, res in zip(tracks, results, strict=True):
+            if isinstance(res, BaseException):
+                logger.error("gap_track_error", track=fn.__name__, error=str(res))
+                merged.append(
+                    GapTrackResult(
+                        track=fn.__name__.strip("_").removesuffix("_track"),  # type: ignore[arg-type]
+                        engine_target=target,
+                        score=0.0,
+                        findings=[f"track errored: {res}"],
+                    )
+                )
+            else:
+                merged.append(res)
+
+        aggregate = round(sum(t.score for t in merged) / len(merged), 4) if merged else 0.0
+        report = GapAnalysisReport(
+            url=page.url,
+            domain=blueprint.domain,
+            blueprint_id=blueprint.id,
+            engine_target=target,
+            tracks=merged,
+            aggregate_score=aggregate,
+        )
+        logger.info(
+            "gap_analysis_done", url=page.url, engine_target=str(target), score=aggregate
+        )
+        span.set_attribute("aggregate_score", aggregate)
+        return report

@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS blueprints (
 );
 CREATE INDEX IF NOT EXISTS blueprints_domain_idx ON blueprints (domain);
 
+-- v4 blueprint contract migration (idempotent — safe to re-run on existing DBs).
+-- NOTE: the existing `version` column already serves as the blueprint version; a
+-- duplicate `blueprint_version` column is intentionally NOT added to avoid two
+-- sources of truth. The columns below are the genuinely-new v4 fields.
+ALTER TABLE blueprints ADD COLUMN IF NOT EXISTS engine_target VARCHAR(32) NOT NULL DEFAULT 'generic';
+ALTER TABLE blueprints ADD COLUMN IF NOT EXISTS locked_until  TIMESTAMPTZ;
+ALTER TABLE blueprints ADD COLUMN IF NOT EXISTS content_hash  CHAR(64);
+CREATE INDEX IF NOT EXISTS blueprints_locked_until_idx ON blueprints (locked_until);
+
 -- ── crawled pages ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pages (
     id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
