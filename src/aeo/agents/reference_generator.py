@@ -31,6 +31,23 @@ Return a single JSON object with these exact keys:
 - citation_sources: list of real authoritative URLs relevant to {domain}
 - freshness_days: integer (7){seed_block}"""
 
+_VALID_SECTION_TYPES = {"faq", "howto", "definition", "comparison", "listicle", "narrative"}
+_SECTION_TYPE_MAP = {
+    "faqpage": "faq", "faq_page": "faq",
+    "howto": "howto", "how-to": "howto", "how_to": "howto",
+    "article": "narrative", "blogposting": "narrative", "narrative": "narrative",
+    "definition": "definition", "comparison": "comparison",
+    "listicle": "listicle", "list": "listicle",
+}
+
+
+def _normalise_section_type(raw: str) -> str:
+    """Map any LLM-generated section type string to a valid ContentSection literal."""
+    normalised = raw.strip().lower().replace(" ", "_")
+    if normalised in _VALID_SECTION_TYPES:
+        return normalised
+    return _SECTION_TYPE_MAP.get(normalised, "narrative")
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 async def generate_blueprint(
@@ -52,8 +69,6 @@ async def generate_blueprint(
         prompt = _PROMPT_TEMPLATE.format(domain=domain, seed_block=seed_block)
         logger.info("generating_blueprint", domain=domain)
 
-        # Ollama -- IPv4-bound, consistent with the rest of the pipeline (OCI ARM requirement)
-        # format="json" forces the model to emit valid JSON regardless of model quirks
         async with httpx.AsyncClient(
             timeout=settings.ollama_timeout,
             transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
@@ -71,12 +86,10 @@ async def generate_blueprint(
             resp.raise_for_status()
             raw: str = resp.json()["message"]["content"].strip()
 
-        # Strip markdown code fences if the model wraps its output
         if raw.startswith("```"):
             lines = raw.splitlines()
             raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
-        # Extract first JSON object in case the model emits extra prose
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if not match:
             raise ValueError(f"Ollama returned no JSON object for domain={domain!r}")
@@ -86,8 +99,6 @@ async def generate_blueprint(
             logger.warning("blueprint_json_error", domain=domain, error=str(exc), raw=raw[:300])
             raise ValueError(f"Ollama returned invalid JSON for domain={domain!r}: {exc}") from exc
 
-        # engine_target, taxonomy_tags and competitor_intel are caller-supplied --
-        # the model must never invent taxonomy categories.
         blueprint = Blueprint(
             domain=domain,
             engine_target=engine_target,
@@ -96,7 +107,7 @@ async def generate_blueprint(
             required_entities=data.get("required_entities", []),
             schema_types=data.get("schema_types", []),
             content_sections=[
-                ContentSection(**{**s, "type": s.get("type", "narrative").lower()})
+                ContentSection(**{**s, "type": _normalise_section_type(s.get("type", ""))})
                 for s in data.get("content_sections", [])
                 if isinstance(s, dict)
             ],
