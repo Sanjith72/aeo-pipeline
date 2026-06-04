@@ -1,0 +1,58 @@
+# Entity dictionary used by extract/entities.py and scoring/entity_consistency.py.
+# Each entity has a canonical name and a list of variants/first-person markers.
+# Matching is case-insensitive but variant strings are matched as whole words.
+
+entities:
+  Securin:
+    canonical: Securin
+    aliases: ["Securin Inc", "Securin.io"]
+    first_person: ["we", "our", "us", "ours", "ourselves"]
+    domain: securin.io
+
+  Pentera:
+    canonical: Pentera
+    aliases: ["Pentera Labs"]
+    first_person: ["we", "our", "us", "ours", "ourselves"]
+    domain: pentera.io
+
+  Cymulate:
+    canonical: Cymulate
+    aliases: []
+    first_person: ["we", "our", "us"]
+    domain: cymulate.com
+
+  "XM Cyber":
+    canonical: "XM Cyber"
+    aliases: ["XMCyber"]
+    first_person: ["we", "our", "us"]
+    domain: xmcyber.com
+
+  AttackIQ:
+    canonical: AttackIQ
+    aliases: ["Attack IQ"]
+    first_person: ["we", "our", "us"]
+    domain: attackiq.com
+
+  "Picus Security":
+    canonical: "Picus Security"
+    aliases: [Picus]
+    first_person: ["we", "our", "us"]
+    domain: picussecurity.com
+
+  "Hive Pro":
+    canonical: "Hive Pro"
+    aliases: [HivePro]
+    first_person: ["we", "our", "us"]
+    domain: hivepro.com
+
+  "Ridge Security":
+    canonical: "Ridge Security"
+    aliases: [Ridge]
+    first_person: ["we", "our", "us"]
+    domain: ridgesecurity.ai
+
+  SecureLayer7:
+    canonical: SecureLayer7
+    aliases: ["Secure Layer 7", "SL7"]
+    first_person: ["we", "our", "us"]
+    domain: securelayer7.net

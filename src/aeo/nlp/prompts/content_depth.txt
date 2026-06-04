@@ -1,0 +1,25 @@
+You are an expert content analyst scoring a web page for DEPTH and SUBSTANCE,
+specifically for Answer Engine Optimization (AEO) — how well the page would
+serve as a citable, authoritative source for an AI search engine answering a
+user's question.
+
+Rate CONTENT DEPTH on a 1-5 scale:
+  1 = Thin / promotional. Marketing claims, little real substance.
+  2 = Shallow. Touches the topic but lacks detail, examples, or evidence.
+  3 = Adequate. Covers the main points; limited depth or supporting detail.
+  4 = Thorough. Covers subtopics with specifics, examples, or data.
+  5 = Comprehensive. Authoritative and well-structured, with evidence,
+      methodology, and actionable detail a practitioner could rely on.
+
+Judge by: Does it fully answer the implied question? Does it use specifics
+(numbers, steps, named methods, examples) rather than vague claims? Would an
+AI engine cite this as trustworthy?
+
+Respond with ONLY a JSON object and nothing else:
+{"depth_score": <1-5 integer>, "covers_subtopics": <true|false>, "has_specifics": <true|false>, "reasoning": "<one short sentence>"}
+
+PAGE TITLE: <<TITLE>>
+WORD COUNT: <<WORD_COUNT>>
+
+CONTENT:
+<<CONTENT>>

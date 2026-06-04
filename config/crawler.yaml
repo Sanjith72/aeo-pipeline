@@ -1,0 +1,41 @@
+# Crawler runtime knobs. Env vars (AEO__CRAWLER__*) override any value here.
+user_agent: "AEOBot/0.2 (+https://securin.io/bot)"
+
+# Async fan-out; per-host cap is separate (see rate_limit below)
+concurrency: 4
+request_timeout_sec: 30
+
+# Respect robots.txt and the host's stated crawl-delay
+respect_robots: true
+
+# Polite per-host pacing — token bucket
+rate_limit:
+  requests_per_minute: 30
+  burst: 5
+
+retry:
+  max_attempts: 4
+  initial_backoff_sec: 1.5
+  max_backoff_sec: 30
+  # Only retry these — anything else is permanent
+  retry_on_status: [408, 425, 429, 500, 502, 503, 504]
+
+# Skip extraction + scoring when content hash is unchanged from the last run
+fingerprint:
+  enabled: true
+  algorithm: sha256
+
+# Crawl4AI tuning
+browser:
+  headless: true
+  remove_overlay_elements: true
+  word_count_threshold: 0
+
+# Site Discovery — build the URL inventory the prioritizer ranks. Sitemap first
+# (robots.txt + /sitemap.xml), recursive BFS fallback. Uses plain HTTP GETs.
+# max_urls caps discovery; prioritization.top_n then selects the pages to process.
+discovery:
+  max_urls: 200
+  max_depth: 2
+  max_sitemaps: 50
+  timeout_sec: 15

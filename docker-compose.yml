@@ -1,0 +1,80 @@
+# Local / single-host stack: Postgres + (optional) Ollama + the crawler.
+#
+#   cp .env.example .env            # set POSTGRES_PASSWORD at minimum
+#   docker compose up -d db         # start Postgres
+#   docker compose run --rm migrate # apply schema
+#   docker compose up -d worker     # drain the crawl queue
+#   docker compose --profile llm up -d ollama   # opt in to the local LLM
+#
+# Enqueue work from the host (or `docker compose run --rm worker` variants):
+#   docker compose run --rm app enqueue https://example.com/page -t Securin
+
+x-app: &app
+  build: .
+  image: aeo-crawler:latest
+  env_file: .env
+  environment:
+    # Override the .env localhost URL — Postgres is reachable as `db` on the
+    # compose network. Password still comes from .env (POSTGRES_PASSWORD).
+    DATABASE_URL: postgresql://aeo:${POSTGRES_PASSWORD:-aeo}@db:5432/aeo
+    AEO__CONFIG_DIR: /app/config
+    AEO__LLM__HOST: http://ollama:11434
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aeo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aeo}
+      POSTGRES_DB: aeo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aeo -d aeo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: apply pending migrations, then exit. `run --rm migrate`.
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    restart: "no"
+
+  # Long-running queue drainer. Scale with `--scale worker=N`.
+  worker:
+    <<: *app
+    command: ["worker", "--idle-sleep", "5"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Ad-hoc CLI (enqueue / run / status). Not started by `up`; use `run --rm app`.
+  app:
+    <<: *app
+    profiles: ["cli"]
+
+  # Optional local LLM. Enable with `--profile llm`. Pull a model once:
+  #   docker compose --profile llm exec ollama ollama pull phi3
+  # Then set AEO__LLM__ENABLED=true in .env.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    profiles: ["llm"]
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+
+volumes:
+  pgdata:
+  ollama:

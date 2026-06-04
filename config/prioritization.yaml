@@ -1,0 +1,47 @@
+# Page Prioritization — which URLs the per-page optimization loop processes.
+# final_score = base_weight(page_type) × traffic_signal, ranked desc, top-N selected.
+# Provisional weights (tunable; no code change needed). Traffic signal is the
+# internal-link count today (a GSC clicks export can replace it later).
+
+# How many top-ranked URLs feed the per-page pipeline.
+top_n: 30
+
+# Pages with no inbound internal links still rank by base_weight (floor avoids ×0).
+min_traffic_signal: 1.0
+
+# Page-type used when no pattern matches.
+default_type: default
+
+# Base weight per page-type. Higher = more worth optimizing for AEO. Cornerstone
+# informational content (pillar) and commercial pages rank above thin utility pages.
+base_weights:
+  pillar: 1.0
+  product: 0.9
+  solution: 0.9
+  blog: 0.8
+  homepage: 0.7
+  about: 0.4
+  contact: 0.3
+  utility: 0.2
+  default: 0.5
+
+# Bare-domain paths that count as the homepage (matched after stripping a trailing
+# slash; "/" is always the homepage).
+homepage_paths:
+  - /home
+  - /index.html
+  - /index.htm
+
+# First match wins. Order so section markers that appear early in a path (e.g.
+# /blog/new-product → blog, not product) classify correctly. Substring match
+# against the URL *path*; singular needles also catch plurals (/product→/products).
+precedence: [utility, blog, pillar, solution, product, contact, about]
+
+url_patterns:
+  utility:  [/login, /signin, /sign-in, /register, /privacy, /terms, /legal, /sitemap, /cookie, /account]
+  blog:     [/blog, /article, /news, /post]
+  pillar:   [/resource, /guide, /learn, /glossary, /what-is, /define, /research, /report, /whitepaper, /knowledge]
+  solution: [/solution, /use-case]
+  product:  [/product, /platform]
+  contact:  [/contact, /demo, /request, /get-started, /free-trial, /trial, /pricing]
+  about:    [/about, /company, /team, /career, /leadership, /partner]

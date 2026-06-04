@@ -1,0 +1,14 @@
+# systemd timer — runs the weekly AEO audit cycle (Mondays 03:00, server time).
+# Persistent=true catches up a run missed while the VM was down.
+
+[Unit]
+Description=Weekly AEO audit cycle
+Requires=aeo-audit.service
+
+[Timer]
+OnCalendar=Mon *-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

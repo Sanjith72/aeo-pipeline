@@ -1,0 +1,76 @@
+# Reference Layer (PROVISIONAL — Aayush refines later).
+#
+# The best-practice baseline the Dual-Layer Gap Analysis scores against (the 60%
+# layer), the ideal content architecture per page-type, and a lightweight
+# query-intent heuristic. Seeded from the 8-criterion rubric + cybersecurity AEO
+# norms. Consumers (gap analysis, recommender) depend only on the reference
+# loader's accessors, so a richer future version (e.g. vector-backed) changes
+# only the loader — not its consumers.
+
+# ── Per-criterion target score (1-5). gap = max(0, target - actual). ────────
+# Covers all 10 rubric criteria (8 shipped + render_accessibility &
+# answer_readability added in build step C).
+targets:
+  schema_markup: 4
+  qa_blocks: 4
+  stats_in_html: 4
+  entity_consistency: 4
+  heading_structure: 4
+  content_depth: 4
+  citation_signals: 4
+  load_speed: 4
+  render_accessibility: 5   # JS-only content is invisible to answer engines
+  answer_readability: 4
+
+# ── Content Architecture Framework: ideal structure per page-type. ──────────
+# `default` is the fallback for any page-type not listed.
+architecture:
+  homepage:
+    must_have: [Organization schema, clear value proposition, links to pillar pages]
+    headings: [What we do, Solutions, Why us, Resources]
+    target_word_count: 600
+  product:
+    must_have: [Product schema, feature list, FAQ block, comparison or proof points]
+    headings: [Overview, Features, How it works, FAQ]
+    target_word_count: 800
+  solution:
+    must_have: [problem framing, outcomes, FAQPage schema, internal links to products]
+    headings: [The problem, The solution, Outcomes, FAQ]
+    target_word_count: 900
+  pillar:
+    must_have: [TechArticle schema, definitive answer up top, stats, citations, deep sections]
+    headings: [What is, Why it matters, How to, Best practices, FAQ]
+    target_word_count: 2000
+  blog:
+    must_have: [Article schema, author + date, citations, takeaways]
+    headings: [Intro, Body sections, Key takeaways]
+    target_word_count: 1200
+  about:
+    must_have: [Organization schema, team/credentials, trust signals]
+    headings: [Who we are, Our team, Credentials]
+    target_word_count: 500
+  contact:
+    must_have: [contact details, Organization schema, clear next step]
+    headings: [Contact us]
+    target_word_count: 200
+  utility:
+    must_have: [clear purpose, minimal noise]
+    headings: []
+    target_word_count: 150
+  default:
+    must_have: [clear answer up top, structured headings, supporting evidence]
+    headings: [What, Why, How]
+    target_word_count: 700
+
+# ── Query-intent heuristic (CONCEPTUAL — URL substrings + heading keywords). ─
+# Precedence when several match: commercial > navigational > informational.
+query_intent:
+  default: informational
+  url_patterns:
+    commercial: [/pricing, /buy, /demo, /quote, /trial, /product, /solutions, /contact]
+    navigational: [/login, /signin, /account, /dashboard, /about, /careers, /support]
+    informational: [/blog, /guide, /resources, /what-is, /how-to, /learn, /docs, /glossary]
+  heading_keywords:
+    commercial: [pricing, buy now, request a demo, get started, free trial, contact sales]
+    navigational: [log in, sign in, contact us, careers, my account]
+    informational: [what is, how to, why, overview, introduction, guide, explained]

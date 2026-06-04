@@ -1,0 +1,65 @@
+# Regex packs and pickers used by the deterministic extractors.
+
+stats:
+  # A claim is "concrete" if it's a number in body text with a unit, currency,
+  # percent, or a CVE/CVSS/CWE identifier. We over-collect with regex and
+  # filter false positives downstream (page numbers, dates, etc.).
+  patterns:
+    percent:    '\b\d{1,3}(?:\.\d+)?\s?%'
+    multiplier: '\b\d+(?:\.\d+)?x\b'
+    money:      '(?i)(?:\$|usd|eur|£|€)\s?\d[\d,.]*(?:\s?(?:million|billion|k|m|b))?'
+    big_num:    '\b\d{1,3}(?:,\d{3})+\b'
+    cve:        'CVE-\d{4}-\d{4,7}'
+    cwe:        'CWE-\d+'
+    cvss:       '(?i)\bcvss(?:v?\d)?\s*[:=]?\s*\d+(?:\.\d+)?\b'
+    time_unit:  '(?i)\b\d+(?:\.\d+)?\s*(?:seconds|minutes|hours|days|weeks|months|years)\b'
+
+  # Discard hits matching any of these (page numbers, fig refs, copyright years)
+  blacklist_patterns:
+    - '(?i)page\s+\d+'
+    - '(?i)fig(?:ure)?\.\s*\d+'
+    - '\b(?:19|20)\d{2}\b\s*(?:©|all rights reserved)'
+
+authority_links:
+  # Hostnames considered authoritative external links for E-E-A-T scoring
+  domains_file: ../config/scoring.yaml   # reuses citation_signals.authority_domains
+
+author_selectors:
+  # Tried in order; first hit wins
+  meta:
+    - 'meta[name="author"]'
+    - 'meta[property="article:author"]'
+    - 'meta[name="dc.creator"]'
+  jsonld_paths:
+    - "author.name"
+    - "creator.name"
+  css:
+    - ".author"
+    - ".byline"
+    - "[rel=author]"
+    - "[itemprop=author]"
+
+date_selectors:
+  meta:
+    - 'meta[property="article:published_time"]'
+    - 'meta[property="article:modified_time"]'
+    - 'meta[name="date"]'
+    - 'meta[name="dc.date"]'
+  css:
+    - "time[datetime]"
+    - ".published"
+    - ".publish-date"
+    - "[itemprop=datePublished]"
+
+render_mode:
+  # If body text length after JS render exceeds N× initial HTML text length,
+  # the page is JS-dependent → penalty.
+  js_inflation_ratio: 3.0
+  min_initial_text_chars: 200
+
+template_h1_patterns:
+  # CMS template bugs the audit explicitly calls out
+  - '^Resources$'
+  - '^Welcome$'
+  - '^Home$'
+  - '^Page Not Found$'

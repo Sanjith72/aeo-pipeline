@@ -1,0 +1,115 @@
+# The 10 AEO rubric criteria. Single source of truth for scoring.
+# Each criterion is scored 1-5 per the rubric. Weights default to 1.0
+# (equal weighting → max 50). Set a higher weight to bias the total.
+# Criteria 1-8 are the shipped hard contract; 9-10 were added in v3.
+
+scale:
+  min: 1
+  max: 5
+
+criteria:
+  schema_markup:
+    label: "Schema Markup"
+    weight: 1.0
+    # Schema types that count as high-value structured data
+    valued_types: [FAQPage, HowTo, TechArticle, Article, NewsArticle, Organization,
+                   DefinedTerm, ItemList, BreadcrumbList, Product, BlogPosting]
+
+  qa_blocks:
+    label: "Q&A Blocks"
+    weight: 1.0
+    # Minimum length (chars) for a paragraph to count as a real answer
+    min_answer_chars: 80
+    # Lookups for "question word" patterns at heading start
+    question_words: [what, why, how, when, where, who, which, is, are, do, does, can, should]
+
+  stats_in_html:
+    label: "Stats in HTML"
+    weight: 1.0
+    # Required count of distinct concrete numeric claims to hit the next tier
+    tiers: { 1: 0, 2: 1, 3: 3, 4: 6, 5: 10 }
+
+  entity_consistency:
+    label: "Entity Consistency"
+    weight: 1.0
+    # Target ratio of canonical entity mentions to first-person mentions.
+    # 1.0 = balanced; >1.0 = entity dominant (good); <1.0 = first-person dominant (bad).
+    tiers: { 1: 0.0, 2: 0.5, 3: 1.0, 4: 1.5, 5: 2.5 }
+
+  heading_structure:
+    label: "Heading Structure"
+    weight: 1.0
+    # % of H2+H3 headings that are questions OR contain a named concept
+    tiers: { 1: 0.0, 2: 0.10, 3: 0.25, 4: 0.45, 5: 0.65 }
+    # Penalties (subtract before mapping to tier)
+    penalty_missing_h1: 1
+    penalty_template_h1: 1   # H1 == "Resources" / "Welcome" / page name only
+
+  content_depth:
+    label: "Content Depth"
+    weight: 1.0
+    # Multiple deterministic signals contribute. LLM provides a final judgment
+    # in the 'judgement' field when LLM_ENABLED is true.
+    min_word_count_for_credit: 400
+    methodology_keywords: [methodology, dataset, sample size, n=, study, research,
+                           analysis, findings, results, evidence, framework, protocol]
+
+  citation_signals:
+    label: "Citation Signals (E-E-A-T)"
+    weight: 1.0
+    # External domains that count as authority links
+    authority_domains:
+      - nist.gov
+      - cisa.gov
+      - nvd.nist.gov
+      - mitre.org
+      - owasp.org
+      - ietf.org
+      - first.org
+      - sans.org
+      - verizon.com   # DBIR
+      - microsoft.com
+      - google.com
+      - cloudflare.com
+    # Credential strings to look for in body text
+    credentials: [CISSP, OSCP, OSCE, CEH, GIAC, GPEN, GWAPT, GCIH, GCFA, CISA, CISM,
+                  CRISC, CCSP, OSWE, OSED]
+    # Minimum counts per tier (any combination of date/author/external)
+    tiers:
+      1: { author: false, date: false, authority_links: 0 }
+      2: { author: false, date: false, authority_links: 1 }
+      3: { author: false, date: true,  authority_links: 2 }
+      4: { author: true,  date: true,  authority_links: 3 }
+      5: { author: true,  date: true,  authority_links: 5 }
+
+  load_speed:
+    label: "Load Speed"
+    weight: 1.0
+    # PageSpeed Insights mobile performance score thresholds (0-100)
+    tiers: { 1: 0, 2: 30, 3: 50, 4: 75, 5: 90 }
+    # Penalty when key content is JS-rendered (not in initial HTML)
+    penalty_js_only_content: 1
+
+  # ── Criterion 9 (v3): does an answer engine see the content without JS? ──
+  render_accessibility:
+    label: "Render Accessibility"
+    weight: 1.0
+    # Inflation ratio = rendered_text / initial_HTML_text. LOWER is better
+    # (content already present in raw HTML). Each tier sets the MAX inflation it
+    # tolerates; ratio above tier-2's max → tier 1. js_only_content → tier 1.
+    inflation_max: { 5: 1.5, 4: 2.5, 3: 4.0, 2: 8.0 }
+    min_initial_text_chars: 200
+
+  # ── Criterion 10 (v3): is the content phrased/segmented to be quotable? ──
+  answer_readability:
+    label: "Answer Readability"
+    weight: 1.0
+    # Flesch reading ease bands (higher = easier). Technical content sits lower;
+    # reward clarity without demanding listicle-level simplicity.
+    flesch_tiers: { 1: 0, 2: 20, 3: 30, 4: 45, 5: 55 }
+    # Average sentence length (words) above this docks a point (hard to extract).
+    max_avg_sentence_len: 28
+    # Passage segmentation (chunker): enough well-sized chunks → +1; monolith → -1.
+    min_chunks_for_credit: 3
+    # Pages below this word count have no readable answer to assess → floor.
+    min_word_count: 50

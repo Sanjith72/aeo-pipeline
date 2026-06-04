@@ -1,0 +1,12 @@
+# Crontab alternative to the systemd timer for the v4 Weekly Audit Loop.
+# Use this when systemd isn't available. Install with:  crontab ops/crontab.example
+#
+# The weekly cron is the ONLY scheduler the v4 design needs — the content-hash
+# gate skips unchanged pages and carries their last report forward, so a weekly
+# re-audit is cheap. The site-level Coverage Diff runs every week regardless,
+# since missing pages have no hash to compare.
+#
+# Adjust paths, domain, and target. Load secrets/settings from the env file.
+
+# Monday 03:00 — full audit cycle for the primary client.
+0 3 * * 1  cd /opt/aeo && set -a && . /etc/aeo/audit.env && set +a && /opt/aeo/.venv/bin/aeo audit-cycle securin.io --target Securin >> /var/log/aeo/audit.log 2>&1

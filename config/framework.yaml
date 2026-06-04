@@ -1,0 +1,240 @@
+# =============================================================================
+# Reference Architecture Framework — L2 guardrail + ceiling (Aayush's layer).
+#
+# This is the curated framework, topic taxonomy, and criteria definitions the v4
+# Reference Architecture Generator combines with competitor structural patterns
+# (L1, the empirical floor) to synthesize a versioned blueprint (ideal sitemap +
+# coverage map). It bounds what the LLM (L3) may propose — node page-types,
+# intents, journey stages, and the required-entity vocabulary all come from here,
+# so synthesis can enrich (titles, seed questions, extra supporting pages) but
+# cannot hallucinate categories the rest of the system can't route.
+#
+# Seeded for ONE topic — PEV (Proactive Exposure / Vulnerability management) on
+# Securin — per the v4 build sequence ("build the generator for ONE topic, end to
+# end, before generalizing"). Generalizing = add another topic block; no code
+# change. Bump `version` whenever the structure changes so blueprints re-version.
+# =============================================================================
+
+version: "1"
+topic: PEV
+
+# The entity set this topic must cover (the coverage map's required entities).
+# A node may reference only entities from this list (generator guardrail).
+required_entities:
+  - MITRE ATT&CK
+  - CVSS
+  - EPSS
+  - KEV
+  - CTEM
+  - BAS                  # Breach & Attack Simulation
+  - RemOps               # Remediation Operations
+  - CISA
+  - NIST
+  - Attack Surface
+
+journey_stages: [awareness, consideration, decision]
+
+# ── Topical-authority clusters: one pillar + supporting pages each. ───────────
+# min_pages encodes the "10–20 pieces per cluster" target the Coverage Diff flags
+# a cluster as *thin* against.
+clusters:
+  - name: ctem
+    min_pages: 10
+    pillar:
+      slug: /what-is-ctem
+      title: "What Is Continuous Threat Exposure Management (CTEM)?"
+      page_type: pillar
+      intent: informational
+      journey_stage: awareness
+      required_entities: [CTEM, MITRE ATT&CK, Attack Surface]
+      seed_questions:
+        - "What is Continuous Threat Exposure Management?"
+        - "What are the five stages of CTEM?"
+    supporting:
+      - slug: /ctem-vs-vulnerability-management
+        title: "CTEM vs. Vulnerability Management: What's the Difference?"
+        page_type: pillar
+        intent: informational
+        journey_stage: consideration
+        required_entities: [CTEM, CVSS, KEV]
+        seed_questions: ["How is CTEM different from vulnerability management?"]
+      - slug: /ctem-program
+        title: "How to Build a CTEM Program"
+        page_type: pillar
+        intent: informational
+        journey_stage: consideration
+        required_entities: [CTEM, RemOps]
+        seed_questions: ["How do you implement a CTEM program?"]
+      - slug: /ctem-tools
+        title: "CTEM Tools and Platforms"
+        page_type: solution
+        intent: commercial
+        journey_stage: decision
+        required_entities: [CTEM, BAS]
+        seed_questions: ["What tools support a CTEM program?"]
+
+  - name: continuous-validation
+    min_pages: 10
+    pillar:
+      slug: /what-is-continuous-validation
+      title: "What Is Continuous Security Validation?"
+      page_type: pillar
+      intent: informational
+      journey_stage: awareness
+      required_entities: [BAS, MITRE ATT&CK]
+      seed_questions:
+        - "What is continuous security validation?"
+        - "Why is point-in-time pentesting not enough?"
+    supporting:
+      - slug: /breach-and-attack-simulation
+        title: "Breach and Attack Simulation (BAS) Explained"
+        page_type: pillar
+        intent: informational
+        journey_stage: consideration
+        required_entities: [BAS, MITRE ATT&CK]
+        seed_questions: ["What is breach and attack simulation?"]
+      - slug: /security-control-validation
+        title: "Security Control Validation"
+        page_type: solution
+        intent: commercial
+        journey_stage: decision
+        required_entities: [BAS, MITRE ATT&CK]
+        seed_questions: ["How do you validate security controls continuously?"]
+
+  - name: exposure-management
+    min_pages: 10
+    pillar:
+      slug: /what-is-exposure-management
+      title: "What Is Exposure Management?"
+      page_type: pillar
+      intent: informational
+      journey_stage: awareness
+      required_entities: [Attack Surface, KEV, EPSS]
+      seed_questions:
+        - "What is exposure management?"
+        - "How is exposure management different from attack surface management?"
+    supporting:
+      - slug: /attack-surface-management
+        title: "Attack Surface Management (ASM)"
+        page_type: pillar
+        intent: informational
+        journey_stage: consideration
+        required_entities: [Attack Surface, KEV]
+        seed_questions: ["What is attack surface management?"]
+      - slug: /kev-epss-prioritization
+        title: "Prioritizing Vulnerabilities with KEV and EPSS"
+        page_type: pillar
+        intent: informational
+        journey_stage: consideration
+        required_entities: [KEV, EPSS, CVSS, CISA]
+        seed_questions: ["How do KEV and EPSS improve vulnerability prioritization?"]
+
+  - name: remediation
+    min_pages: 8
+    pillar:
+      slug: /what-is-remediation-operations
+      title: "What Is Remediation Operations (RemOps)?"
+      page_type: pillar
+      intent: informational
+      journey_stage: awareness
+      required_entities: [RemOps, KEV]
+      seed_questions: ["What is remediation operations?"]
+    supporting:
+      - slug: /vulnerability-remediation-best-practices
+        title: "Vulnerability Remediation Best Practices"
+        page_type: pillar
+        intent: informational
+        journey_stage: consideration
+        required_entities: [RemOps, CVSS, KEV]
+        seed_questions: ["What are vulnerability remediation best practices?"]
+
+# ── Standalone (non-cluster) nodes the ideal site must have. ──────────────────
+standalone_nodes:
+  - slug: /
+    title: "Securin — Proactive Cybersecurity"
+    page_type: homepage
+    intent: navigational
+    journey_stage: awareness
+    required_entities: [CTEM, Attack Surface]
+    seed_questions: []
+  - slug: /platform
+    title: "The Securin Platform"
+    page_type: product
+    intent: commercial
+    journey_stage: decision
+    required_entities: [CTEM, BAS, RemOps]
+    seed_questions: ["What does the Securin platform do?"]
+  - slug: /contact
+    title: "Contact / Request a Demo"
+    page_type: contact
+    intent: commercial
+    journey_stage: decision
+    required_entities: []
+    seed_questions: []
+
+# ── Criteria definitions: perfect vs. average page, with checkable items. ─────
+# The "ceiling" half of L2 — what *better-than-competitor* means per criterion.
+# `target` mirrors config/best_practices.yaml targets; the generator and the
+# validated-wins loop read these definitions. 3–5 checkable items + schema.org
+# mapping each, per the v4 spec.
+criteria_definitions:
+  schema_markup:
+    target: 4
+    perfect: "High-value JSON-LD (FAQPage, TechArticle, DefinedTerm) matching the page intent, all valid."
+    average: "Generic Organization/WebPage schema only, or none."
+    checkable: ["FAQPage present on Q&A pages", "TechArticle on pillars", "DefinedTerm on glossary", "No invalid JSON-LD blocks"]
+    schema_org: [FAQPage, TechArticle, DefinedTerm, HowTo]
+  qa_blocks:
+    target: 4
+    perfect: "3–6 real question→answer pairs, each answered in 2–4 sentences directly under a question heading."
+    average: "One implicit FAQ or none; answers buried in prose."
+    checkable: ["≥3 Q&A pairs", "Answers under question headings", "Backed by FAQPage schema"]
+    schema_org: [FAQPage, Question, Answer]
+  stats_in_html:
+    target: 4
+    perfect: "≥6 concrete, sourced numeric claims (percentages, CVE/CVSS/KEV figures) as plain HTML text."
+    average: "1–2 vague figures, or numbers locked in images."
+    checkable: ["≥6 distinct numeric claims", "Numbers in text not images", "Sourced/dated"]
+    schema_org: []
+  entity_consistency:
+    target: 4
+    perfect: "Brand and domain entities named explicitly; first-person 'we/our' replaced with the named entity."
+    average: "Heavy first-person voice; entities implied not named."
+    checkable: ["Brand named in opening", "Entity:first-person ratio ≥ 1.5", "Key entities defined"]
+    schema_org: [Organization, DefinedTerm]
+  heading_structure:
+    target: 4
+    perfect: "Single descriptive H1; H2/H3s phrased as the questions users ask; clean hierarchy."
+    average: "Template H1; statement headings; skipped levels."
+    checkable: ["One non-template H1", "≥45% question-phrased H2/H3", "No level skips"]
+    schema_org: []
+  content_depth:
+    target: 4
+    perfect: "Page-type word-count target met with methodology, data, and worked examples; non-promotional."
+    average: "Thin or promotional content well below the target length."
+    checkable: ["Meets page-type word target", "Methodology/data present", "Low promotional tone"]
+    schema_org: [TechArticle]
+  citation_signals:
+    target: 4
+    perfect: "Named author with credentials, visible publish/updated date, links to NIST/CISA/MITRE/OWASP."
+    average: "No byline or date; few/no authoritative outbound links."
+    checkable: ["Author byline", "Visible date", "≥2 authoritative external links"]
+    schema_org: [Article, Person]
+  load_speed:
+    target: 4
+    perfect: "Mobile PageSpeed ≥ 90; content not gated behind heavy JS."
+    average: "Mobile PageSpeed 50–80."
+    checkable: ["Mobile PSI ≥ 90", "Compressed images", "Deferred non-critical JS"]
+    schema_org: []
+  render_accessibility:
+    target: 5
+    perfect: "The answer is in the server-rendered HTML; no JS-only content."
+    average: "Key content injected client-side."
+    checkable: ["Answer in server HTML", "Low render inflation", "No JS-only content"]
+    schema_org: []
+  answer_readability:
+    target: 4
+    perfect: "A liftable ≤50-word answer up top; short sentences; segmented passages."
+    average: "Long monolithic paragraphs; no clear lead answer."
+    checkable: ["Lead answer ≤ 50 words", "Avg sentence ≤ 28 words", "Segmented into passages"]
+    schema_org: []

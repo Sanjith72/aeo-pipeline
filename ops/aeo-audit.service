@@ -1,0 +1,30 @@
+# systemd service for the v4 Weekly Audit Loop.
+# LangGraph (here: the async Orchestrator) runs the graph; it does NOT schedule
+# itself. On a single always-on OCI VM the schedule is just this oneshot service
+# driven by aeo-audit.timer — no Cloud Scheduler needed.
+#
+# Install:
+#   sudo cp ops/aeo-audit.service ops/aeo-audit.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aeo-audit.timer
+#   systemctl list-timers aeo-audit.timer      # verify next run
+#
+# Edit AEO_DOMAIN / AEO_TARGET below (or set them in /etc/aeo/audit.env).
+
+[Unit]
+Description=AEO weekly audit cycle (discover → blueprint → coverage → crawl → analyze → report)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aeo
+WorkingDirectory=/opt/aeo
+# Secrets + AEO__* settings (DATABASE_URL, LLM/Perplexity keys, FORCE_IPV4=true on Ampere).
+EnvironmentFile=/etc/aeo/audit.env
+Environment=AEO_DOMAIN=securin.io
+Environment=AEO_TARGET=Securin
+ExecStart=/opt/aeo/.venv/bin/aeo audit-cycle ${AEO_DOMAIN} --target ${AEO_TARGET}
+# Don't let one bad weekly run wedge the timer; the Error Sink already isolates pages.
+TimeoutStartSec=3600
+Nice=10
