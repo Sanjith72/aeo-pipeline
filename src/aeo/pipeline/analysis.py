@@ -42,8 +42,10 @@ from ..storage.models import ExtractionBundle, PageScore
 from ..validation import (
     STATUS_COULD_NOT_IMPROVE,
     STATUS_IMPROVED,
+    AdversarialVerdict,
     IndependentVerdict,
     ValidationOutcome,
+    adversarial_audit,
     validate_independent,
     validate_page,
 )
@@ -61,6 +63,7 @@ class AnalysisResult:
     validation: ValidationOutcome | None = None
     report: PageReport | None = None
     independent: IndependentVerdict | None = None
+    adversarial: AdversarialVerdict | None = None
 
 
 def build_competitor_pool(rows: list[dict[str, Any]], reference: Reference) -> list[CompetitorPage]:
@@ -102,6 +105,8 @@ def analyze_page(
     trace: bool = True,
     perplexity=None,
     independent: bool = False,
+    adversarial: bool = False,
+    verify_citations: bool = False,
     question: str | None = None,
 ) -> AnalysisResult:
     """Run Gap -> Validate -> [Independent-Validate] -> Report for one scored page.
@@ -143,17 +148,30 @@ def analyze_page(
             if persist and independent_verdict.citation is not None and independent_verdict.citation.available:
                 _record_citation(page_id, run_id, url, independent_verdict)
 
+    # Adversarial audit (ported): a model-isolated skeptic over the proposed edits +
+    # deterministic citation-hallucination checks. Optional; degrades to the
+    # deterministic citation layer when the LLM is off, and never gates the pipeline.
+    adversarial_verdict: AdversarialVerdict | None = None
+    if adversarial and validation.recommendations:
+        with _step(trace, "validator", run_id, page_id, "adversarial", model=model):
+            adversarial_verdict = adversarial_audit(
+                _audit_text(validation.recommendations),
+                llm=llm, verify_reachability=verify_citations,
+            )
+
     with _step(trace, "reporter", run_id, page_id, "report"):
         report = build_report(
             url=url, score=score, gap=gap, validation=validation,
             page_type=page_type, intent=intent, independent=independent_verdict,
+            adversarial=adversarial_verdict,
         )
         if persist:
             persist_report(report)
 
     return AnalysisResult(
         page_id=page_id, run_id=run_id, intent=intent,
-        gap=gap, validation=validation, report=report, independent=independent_verdict,
+        gap=gap, validation=validation, report=report,
+        independent=independent_verdict, adversarial=adversarial_verdict,
     )
 
 
@@ -196,3 +214,13 @@ def _headings(bundle: ExtractionBundle) -> list[str]:
     h = bundle.get("headings", {}) or {}
     by_level = h.get("by_level", {}) or {}
     return [*(by_level.get("h2", []) or []), *(by_level.get("h3", []) or [])]
+
+
+def _audit_text(recs: list) -> str:
+    """Flatten the proposed edits into text for the adversarial audit (title +
+    rationale + the concrete edit payload), so cited URLs and claims are visible."""
+    parts: list[str] = []
+    for r in recs:
+        payload_text = " ".join(str(v) for v in (r.payload or {}).values())
+        parts.append("\n".join(p for p in (r.title, r.rationale, payload_text) if p))
+    return "\n\n".join(parts)

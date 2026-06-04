@@ -56,6 +56,32 @@ _SYNTH_SYSTEM = (
     "page types, intents, or entities outside the allowed lists. Reply with JSON only."
 )
 
+# Per-answer-engine emphasis injected into the synthesis prompt (ported idea).
+# Routes the PROMPT only — the deterministic floor and closed-vocab guardrail are
+# unchanged, so an unknown/garbage target safely falls back to 'generic'.
+_ENGINE_EMPHASIS: dict[str, str] = {
+    "perplexity": (
+        "Engine emphasis (Perplexity): weight CITATION DENSITY — favor pages and seed "
+        "questions whose answers are specific, sourceable claims a citation engine can quote."
+    ),
+    "chatgpt_search": (
+        "Engine emphasis (ChatGPT Search): weight CONVERSATIONAL COVERAGE — favor pages that "
+        "answer real questions directly in natural language a chat summary would reuse."
+    ),
+    "gemini": (
+        "Engine emphasis (Gemini / Google AI): weight STRUCTURED ENTITY coverage — favor pages "
+        "that make the required entities and their relationships explicit and well-structured."
+    ),
+    "generic": (
+        "Engine emphasis (generic): favor substantive, well-structured pages that answer the "
+        "topic's real questions."
+    ),
+}
+
+
+def _engine_emphasis(engine_target: str | None) -> str:
+    return _ENGINE_EMPHASIS.get((engine_target or "generic").lower(), _ENGINE_EMPHASIS["generic"])
+
 
 def _refine_priority(node: SitemapNode, patterns: CompetitorPatterns | None) -> float:
     """Lift a node's base priority by how heavily competitors cover its page-type
@@ -112,6 +138,7 @@ def _augment_with_llm(
     framework: Framework,
     patterns: CompetitorPatterns | None,
     llm: LLMClient,
+    engine_target: str = "generic",
 ) -> Blueprint:
     """Ask the LLM for extra seed questions + net-new supporting pages, then
     re-validate every proposal against the contract. Returns ``base`` unchanged on
@@ -120,7 +147,7 @@ def _augment_with_llm(
     cluster_names = {c.name for c in framework.clusters}
     existing = {n.slug for n in base.sitemap}
 
-    prompt = _synthesis_prompt(base, framework, patterns)
+    prompt = _synthesis_prompt(base, framework, patterns, engine_target)
     try:
         data = llm.generate_json(prompt, _SYNTH_SYSTEM)
     except Exception as exc:  # never let synthesis break generation
@@ -197,13 +224,19 @@ def _augment_with_llm(
     )
 
 
-def _synthesis_prompt(base: Blueprint, framework: Framework, patterns: CompetitorPatterns | None) -> str:
+def _synthesis_prompt(
+    base: Blueprint,
+    framework: Framework,
+    patterns: CompetitorPatterns | None,
+    engine_target: str = "generic",
+) -> str:
     existing = "\n".join(f"  - {n.slug} [{n.page_type}/{n.intent}] {n.title}" for n in base.sitemap)
     comp = patterns.to_summary() if patterns else {"page_count": 0}
     # Source the allowed vocabularies from the contract's own Literals (not hardcoded
     # strings or config) so the prompt can never advertise a value SitemapNode
     # validation will reject and then silently drop.
     return (
+        f"{_engine_emphasis(engine_target)}\n"
         f"Topic: {base.topic}\n"
         f"Allowed page_types: {', '.join(get_args(PageType))}\n"
         f"Allowed intents: {', '.join(get_args(Intent))}\n"
@@ -229,17 +262,19 @@ def generate_blueprint(
     patterns: CompetitorPatterns | None = None,
     llm: LLMClient | None = None,
     version: int = 1,
+    engine_target: str = "generic",
 ) -> Blueprint:
     """Synthesize a versioned blueprint from L1 (patterns) + L2 (framework) [+ L3 (llm)].
 
-    Deterministic and complete with no LLM; the LLM only enriches. Returns a
-    hash-stamped blueprint at the given provisional ``version`` — the repo decides
-    reuse-vs-bump from the content hash."""
+    Deterministic and complete with no LLM; the LLM only enriches. ``engine_target``
+    routes the synthesis prompt's emphasis (Perplexity/ChatGPT/Gemini/generic) and is
+    a no-op on the deterministic floor. Returns a hash-stamped blueprint at the given
+    provisional ``version`` — the repo decides reuse-vs-bump from the content hash."""
     framework = framework or load_framework()
     topic = topic or framework.topic or "default"
 
     blueprint = _deterministic_blueprint(topic, framework, patterns)
     if llm is not None and llm.enabled:
-        blueprint = _augment_with_llm(blueprint, framework, patterns, llm)
+        blueprint = _augment_with_llm(blueprint, framework, patterns, llm, engine_target)
 
     return blueprint.model_copy(update={"version": version}).with_hash()

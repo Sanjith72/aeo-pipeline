@@ -237,6 +237,51 @@ class TestPromptVocabulary:
         assert "retention" not in prompt  # config-only stage is not advertised
 
 
+class TestEngineTargetRouting:
+    """Ported idea: engine_target routes the synthesis PROMPT emphasis only; the
+    deterministic floor is untouched and unknown targets fall back to generic."""
+
+    def test_emphasis_injected_per_engine(self):
+        from aeo.reference.framework import load_framework
+        from aeo.reference.generator import _deterministic_blueprint, _synthesis_prompt
+
+        fw = load_framework()
+        base = _deterministic_blueprint("PEV", fw, None)
+        assert "CITATION DENSITY" in _synthesis_prompt(base, fw, None, "perplexity")
+        assert "CONVERSATIONAL COVERAGE" in _synthesis_prompt(base, fw, None, "chatgpt_search")
+        assert "STRUCTURED ENTITY" in _synthesis_prompt(base, fw, None, "gemini")
+
+    def test_unknown_engine_falls_back_to_generic(self):
+        from aeo.reference.framework import load_framework
+        from aeo.reference.generator import (
+            _ENGINE_EMPHASIS,
+            _deterministic_blueprint,
+            _synthesis_prompt,
+        )
+
+        fw = load_framework()
+        base = _deterministic_blueprint("PEV", fw, None)
+        prompt = _synthesis_prompt(base, fw, None, "nonsense-engine")
+        assert _ENGINE_EMPHASIS["generic"] in prompt
+
+    def test_deterministic_floor_unchanged_by_engine_target(self):
+        # No LLM → engine_target has no effect on the produced blueprint.
+        a = generate_blueprint(llm=None, engine_target="perplexity")
+        b = generate_blueprint(llm=None, engine_target="gemini")
+        assert a.content_hash == b.content_hash
+
+    def test_engine_target_threads_into_llm_prompt(self):
+        captured: dict[str, str] = {}
+
+        class CapLLM(FakeLLM):
+            def generate_json(self, prompt, system=None):
+                captured["prompt"] = prompt
+                return super().generate_json(prompt, system)
+
+        generate_blueprint(llm=CapLLM({"augment_nodes": []}), engine_target="perplexity")
+        assert "CITATION DENSITY" in captured.get("prompt", "")
+
+
 class TestVersioningHash:
     def test_same_inputs_same_hash(self):
         a = generate_blueprint(llm=None)

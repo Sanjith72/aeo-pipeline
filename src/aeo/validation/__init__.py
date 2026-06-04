@@ -10,6 +10,13 @@ Public surface:
 
 from __future__ import annotations
 
+from .adversarial import (
+    AdversarialVerdict,
+    CitationSignal,
+    adversarial_audit,
+    check_citation_signals,
+    extract_citation_urls,
+)
 from .independent import (
     CitationVerdict,
     IndependentCheck,
@@ -34,12 +41,17 @@ __all__ = [
     "STATUS_COULD_NOT_IMPROVE",
     "STATUS_IMPROVED",
     "STATUS_NO_ACTION",
+    "AdversarialVerdict",
+    "CitationSignal",
     "CitationVerdict",
     "IndependentCheck",
     "IndependentVerdict",
     "ValidationOutcome",
+    "adversarial_audit",
     "apply_recommendation",
+    "check_citation_signals",
     "derive_question",
+    "extract_citation_urls",
     "validate_independent",
     "validate_page",
 ]

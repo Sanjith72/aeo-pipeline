@@ -229,6 +229,8 @@ class Orchestrator:
         settings = get_settings()
         perplexity = get_perplexity_client()
         independent = settings.validation.independent_enabled
+        adversarial = settings.validation.adversarial_enabled
+        verify_citations = settings.validation.verify_citations
         concurrency = max(1, settings.validation.analysis_concurrency)
 
         summary = AnalysisSummary(run_id=run_id)
@@ -236,13 +238,14 @@ class Orchestrator:
         summary.total = len(pages)
         log.info(
             "analyze_run_start", run_id=run_id, pages=len(pages), competitors=len(pool),
-            independent=independent, concurrency=concurrency,
+            independent=independent, adversarial=adversarial, concurrency=concurrency,
         )
 
         def work(row: dict) -> dict[str, bool]:
             return self._analyze_one(
                 row, run_id=run_id, reference=reference, rubric=rubric, cfg=cfg,
-                pool=pool, perplexity=perplexity, independent=independent, persist=persist,
+                pool=pool, perplexity=perplexity, independent=independent,
+                adversarial=adversarial, verify_citations=verify_citations, persist=persist,
             )
 
         if concurrency > 1 and len(pages) > 1:
@@ -261,7 +264,8 @@ class Orchestrator:
         return summary
 
     def _analyze_one(
-        self, row: dict, *, run_id: int, reference, rubric, cfg, pool, perplexity, independent: bool, persist: bool
+        self, row: dict, *, run_id: int, reference, rubric, cfg, pool, perplexity,
+        independent: bool, adversarial: bool = False, verify_citations: bool = False, persist: bool,
     ) -> dict[str, bool]:
         """Analyze a single scored page, isolated by the Error Sink. Returns the
         per-page tally contribution (so the loop can run sequentially or pooled)."""
@@ -284,6 +288,8 @@ class Orchestrator:
                 persist=persist,
                 perplexity=perplexity,
                 independent=independent,
+                adversarial=adversarial,
+                verify_citations=verify_citations,
             )
             out["analyzed"] = True
             out["improved"] = is_improved(result)

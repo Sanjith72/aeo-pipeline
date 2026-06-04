@@ -116,6 +116,16 @@ class ValidationCfg(BaseModel):
     # Each page is independent and Error-Sink isolated, so they run in a thread
     # pool. 1 = sequential (the v3 behavior). Real win when an LLM is enabled.
     analysis_concurrency: int = 1
+    # v4+ Adversarial auditor (ported idea): an independent, model-isolated skeptic
+    # that tries to REFUTE each recommendation, plus deterministic citation-
+    # hallucination checks on any URLs it cites. Off by default; when on but the LLM
+    # is disabled it degrades to the deterministic citation checks alone (never
+    # fails a page for a missing model — the deterministic-first contract).
+    adversarial_enabled: bool = False
+    adversarial_max_attempts: int = 3
+    # Verify cited URLs are actually reachable (a HEAD request per citation). Off by
+    # default since it makes outbound network calls; structural validity is always checked.
+    verify_citations: bool = False
 
 
 class PerplexityCfg(BaseModel):
@@ -147,6 +157,12 @@ class ReferenceArchitectureCfg(BaseModel):
     framework_version: str = "1"
     min_pages_per_cluster: int = 10  # topical-authority target; thin-cluster threshold
     regenerate_cadence_days: int = 30  # regenerate only this often (else reuse pinned version)
+    # Per-engine emphasis for LLM blueprint synthesis (ported idea): perplexity →
+    # citation density; chatgpt_search → conversational coverage; gemini → entity
+    # structure; generic → engine-neutral. Routes the synthesis PROMPT only — the
+    # deterministic floor and the closed-vocab guardrail are unchanged. Unknown
+    # values fall back to 'generic'.
+    engine_target: str = "generic"
     # The generator uses the configured LLM (set llm.provider=cloud pointed at
     # Gemini's OpenAI-compatible endpoint) for synthesis; falls back to the
     # deterministic builder when the LLM is disabled or fails.

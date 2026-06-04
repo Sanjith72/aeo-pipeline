@@ -70,7 +70,10 @@ def generate_and_pin_blueprint(
     framework = load_framework()
     topic = topic or cfg.topic or framework.topic
     patterns = build_competitor_patterns(framework.required_entities)
-    blueprint = generate_blueprint(topic=topic, framework=framework, patterns=patterns, llm=llm)
+    blueprint = generate_blueprint(
+        topic=topic, framework=framework, patterns=patterns, llm=llm,
+        engine_target=cfg.engine_target,
+    )
     stored = blueprints_repo.save_versioned(blueprint)
     blueprints_repo.pin_run(run_id, stored.id)
     log.info(

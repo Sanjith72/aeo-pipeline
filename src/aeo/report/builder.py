@@ -30,6 +30,7 @@ from ..validation import (
     STATUS_COULD_NOT_IMPROVE,
     STATUS_IMPROVED,
     STATUS_NO_ACTION,
+    AdversarialVerdict,
     IndependentVerdict,
     ValidationOutcome,
 )
@@ -68,6 +69,7 @@ def build_report(
     page_type: str | None = None,
     intent: str | None = None,
     independent: IndependentVerdict | None = None,
+    adversarial: AdversarialVerdict | None = None,
 ) -> PageReport:
     """Assemble the per-page AEO/SEO report from the pipeline's outputs."""
     recs = recommendations if recommendations is not None else (
@@ -93,6 +95,10 @@ def build_report(
     # + optional Perplexity citation). Only present when independent validation ran.
     if independent is not None:
         sections["independent_validation"] = independent.to_detail()
+    # v4+: the adversarial auditor's verdict (model-isolated skeptic + citation-
+    # hallucination checks). Only present when the adversarial audit ran.
+    if adversarial is not None:
+        sections["adversarial_audit"] = adversarial.to_detail()
     summary = _summary(url, score, gap, validation, len(recs), review_status)
 
     return PageReport(
