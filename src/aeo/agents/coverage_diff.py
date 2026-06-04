@@ -66,6 +66,7 @@ async def _ollama_coverage(
                 "model": settings.ollama_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
+                "format": "json",
                 "options": {"temperature": 0.0},
             },
         )
@@ -217,6 +218,7 @@ async def _content_gap_track(
                     "model": settings.ollama_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "format": "json",
                     "options": {"temperature": 0.0},
                 },
             )
