@@ -1,0 +1,196 @@
+# AEO Domain Configuration — rapid7.com
+# Generated from provided research + live competitor fetches (2026-06-04)
+#
+# TAXONOMY NOTE: The tags below use only values currently valid in TaxonomyTag enum
+# (mitre:*, cvss:*, cisa-kev:*). The following business-domain tags from your brief
+# are not yet in the enum and should be added to blueprint.py when the enum is extended:
+#   vulnerability-management, exposure-management, xdr, siem, mdr,
+#   cloud-security, pentesting, threat-intelligence, zero-day, incident-response
+
+domain: rapid7.com
+engine_target: perplexity
+freshness_days: 7
+
+taxonomy_tags:
+  - mitre:initial-access
+  - mitre:execution
+  - mitre:persistence
+  - mitre:privilege-escalation
+  - mitre:credential-access
+  - mitre:exfiltration
+  - cvss:critical
+  - cvss:high
+  - cisa-kev:listed
+
+seed_queries:
+  - "best vulnerability management platform for enterprise 2025"
+  - "how to prioritize CVEs by exploitability and business risk"
+  - "what is exposure management vs vulnerability management"
+  - "Rapid7 InsightVM vs Tenable Nessus comparison"
+  - "how does MDR differ from MSSP"
+  - "MITRE ATT&CK coverage comparison for SIEM tools"
+  - "what is attack surface management"
+  - "how to reduce mean time to detect MTTD in SOC"
+  - "best tools for cloud security posture management CSPM 2025"
+  - "how to respond to a zero-day vulnerability before patch is available"
+
+required_entities:
+  - Rapid7
+  - InsightVM
+  - InsightIDR
+  - Exposure Command
+  - Command Platform
+  - Metasploit
+  - MDR
+  - AttackerKB
+  - Project Sonar
+  - Intelligence Hub
+  - MITRE ATT&CK
+  - CVSS
+  - CISA KEV
+  - NIST CSF
+  - XDR
+  - SIEM
+  - Incident Command
+
+competitors:
+  # --- Vulnerability Management Platform ---
+  - domain: tenable.com
+    structural_patterns:
+      - hub+spoke          # Tenable One as platform hub; VM/ASM/Cloud/OT/Identity as product spokes
+      - use-case-led       # Solutions nav organised by use case and industry verticals
+    observed_entities:
+      - Tenable One
+      - Nessus
+      - Tenable.io
+      - Tenable Security Center
+      - CNAPP
+      - CIEM
+      - OT Security
+      - Hexa AI
+      - exposure management
+      - attack surface management
+    citation_sources:
+      - https://www.tenable.com/research
+      - https://nvd.nist.gov/vuln-metrics/cvss
+      - https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+
+  # --- Exposure Management / Attack Path ---
+  - domain: xmcyber.com
+    structural_patterns:
+      - pillar+cluster     # Exposure management pillar; attack path, identity risk as clusters
+    observed_entities:
+      - XM Cyber
+      - attack path management
+      - hybrid cloud exposure
+      - identity risk
+      - CTEM
+    citation_sources:
+      - https://attack.mitre.org
+
+  - domain: picussecurity.com
+    structural_patterns:
+      - pillar+cluster     # BAS pillar; SCV/DRV/APV/CSV as validation cluster; Red+Blue Report research pillars
+      - research-led       # Picus Labs / Red Report / Blue Report drive topical authority
+    observed_entities:
+      - Picus Security Validation Platform
+      - Breach and Attack Simulation
+      - BAS
+      - Security Control Validation
+      - Attack Path Validation
+      - Detection Rule Validation
+      - CTEM
+      - MITRE ATT&CK
+      - Adversarial Exposure Validation
+      - Numi AI
+    citation_sources:
+      - https://attack.mitre.org
+      - https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+      - https://www.gartner.com/reviews/market/adversarial-exposure-validation
+
+  - domain: armadin.com
+    structural_patterns:
+      - product-led
+    observed_entities:
+      - attack surface management
+      - exposure management
+      - asset discovery
+    citation_sources: []
+
+  - domain: terra.security
+    structural_patterns:
+      - product-led
+    observed_entities:
+      - exposure management
+      - attack surface
+      - risk prioritization
+    citation_sources: []
+
+  # --- Automated Pentesting / Attack Simulation ---
+  - domain: pentera.io
+    structural_patterns:
+      - product-led        # Single product focus with use-case pages
+    observed_entities:
+      - Pentera
+      - automated penetration testing
+      - attack surface validation
+      - RBVM
+      - credential exposure
+    citation_sources:
+      - https://attack.mitre.org
+      - https://nvd.nist.gov
+
+  - domain: xbow.com
+    structural_patterns:
+      - product-led
+    observed_entities:
+      - autonomous pentesting
+      - attack simulation
+      - vulnerability exploitation
+    citation_sources: []
+
+  - domain: horizon3.ai
+    structural_patterns:
+      - product-led
+    observed_entities:
+      - NodeZero
+      - autonomous penetration testing
+      - attack paths
+      - credential attacks
+    citation_sources:
+      - https://attack.mitre.org
+
+  - domain: ridgesecurity.ai
+    structural_patterns:
+      - product-led
+    observed_entities:
+      - RidgeBot
+      - automated pentesting
+      - risk-based vulnerability management
+    citation_sources: []
+
+  # --- Risk Quantification / Posture ---
+  - domain: safe.security
+    structural_patterns:
+      - dashboard-led      # Cyber risk quantification dashboard as primary CTA
+    observed_entities:
+      - SAFE Platform
+      - cyber risk quantification
+      - breach likelihood
+      - financial impact
+      - FAIR model
+    citation_sources:
+      - https://www.fairinstitute.org
+
+  - domain: zafran.io
+    structural_patterns:
+      - comparison-led     # Heavy use of vs-competitor and mitigation-focused content
+    observed_entities:
+      - Zafran
+      - risk mitigation
+      - compensating controls
+      - vulnerability prioritization
+      - existing security tools
+    citation_sources:
+      - https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+      - https://nvd.nist.gov

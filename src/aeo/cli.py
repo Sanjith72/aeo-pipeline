@@ -127,7 +127,15 @@ async def _pipeline(domain: str | None, all_domains: bool, regenerate: bool) -> 
                 t = p.add_task("Fetching blueprint…", total=None)
                 blueprint = (None if regenerate else await get_latest_blueprint(pool, d))
                 if blueprint is None:
-                    blueprint = await generate_blueprint(d)
+                    from aeo.domain_config import load_domain_config
+                    cfg = load_domain_config(d)
+                    blueprint = await generate_blueprint(
+                        d,
+                        seed_queries=cfg.seed_queries if cfg else None,
+                        engine_target=cfg.engine_target if cfg else None,
+                        taxonomy_tags=cfg.taxonomy_tags if cfg else None,
+                        competitor_intel=cfg.competitors if cfg else None,
+                    )
                     await upsert_blueprint(pool, blueprint)
                 p.update(t, description=f"Blueprint ready — {len(blueprint.target_queries)} queries")
 
@@ -231,8 +239,20 @@ async def _dry_run_pipeline(domain: str, max_pages: int = 10) -> None:
 
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
 
-        t = p.add_task("Generating reference blueprint via Gemini…", total=None)
-        blueprint = await generate_blueprint(domain)
+        # Load domain config from domains/{domain}.yaml if it exists
+        from aeo.domain_config import load_domain_config
+        cfg = load_domain_config(domain)
+        if cfg:
+            console.print(f"[dim]Loaded domain config: {len(cfg.seed_queries)} seed queries, {len(cfg.competitors)} competitors[/dim]")
+
+        t = p.add_task("Generating reference blueprint via Ollama…", total=None)
+        blueprint = await generate_blueprint(
+            domain,
+            seed_queries=cfg.seed_queries if cfg else None,
+            engine_target=cfg.engine_target if cfg else None,
+            taxonomy_tags=cfg.taxonomy_tags if cfg else None,
+            competitor_intel=cfg.competitors if cfg else None,
+        )
         p.update(t, description=f"Blueprint — {len(blueprint.target_queries)} queries, {len(blueprint.required_entities)} entities")
 
         t = p.add_task(f"Crawling https://{domain} (cap: {max_pages} pages)…", total=None)
