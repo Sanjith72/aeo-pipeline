@@ -384,14 +384,20 @@ class Orchestrator:
 
         # Sample the new content-drafting on the top missing pages (deterministic
         # scaffold by default; full prose when --llm). Bounded so the preview stays fast.
+        from ..validation.draft_check import validate_page_draft
+
         top_missing: list[dict] = []
         for i, m in enumerate(cov.missing_by_priority()[:10]):
             entry = {"slug": m.slug, "priority": m.priority, "page_type": m.page_type, "title": m.title}
             if i < 3:
-                entry["draft"] = draft_missing_page(
+                payload = draft_missing_page(
                     m, topic=topic, llm=(self._llm if use_llm else None),
                     reference=reference, origin=domain,
                 ).to_payload()
+                # Same Block-4 gate as the persisted site report: no LLM-authored
+                # page reaches the preview without the independent + citation check.
+                payload["validation"] = validate_page_draft(payload, url=domain)
+                entry["draft"] = payload
             top_missing.append(entry)
 
         # Optional per-page scoring of the top-N, in memory (no persist).

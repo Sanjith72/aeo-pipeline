@@ -370,19 +370,35 @@ def draft_site_pages(
     reference: Reference | None = None,
     origin: str | None = None,
     limit: int = 10,
+    perplexity: Any = None,
 ) -> list[dict[str, Any]]:
     """Attach a ready-to-publish ``draft`` to the highest-priority missing-page briefs.
 
     Briefs are assumed already priority-ordered (the site builder sorts them). Only the
     top ``limit`` are drafted — drafting is the expensive, LLM-backed step, and the long
-    tail stays as lightweight briefs. Returns the same brief list, enriched in place."""
+    tail stays as lightweight briefs. Each draft is then validated (Independent Validator
+    + citation-signal check) and the verdict attached under ``draft["validation"]``; pass
+    ``perplexity`` to also run the real-world citation probe. Returns the same brief list,
+    enriched in place."""
     if limit <= 0 or not briefs:
         return briefs
     reference = reference or load_reference()
+    # Local import: pulls in the validation block (extractors + independent auditor),
+    # which the lightweight brief-only path must not require. Runtime-only, so no
+    # import cycle with validation -> recommender.
+    from ..validation.draft_check import validate_page_draft
+
     for brief in briefs[:limit]:
         try:
             draft = draft_missing_page(brief, topic=topic, llm=llm, reference=reference, origin=origin)
-            brief["draft"] = draft.to_payload()
+            payload = draft.to_payload()
+            # Full LLM-authored pages (invented prose + JSON-LD) must pass the
+            # non-circular Independent Validator + citation-signal check before they
+            # ship -- nothing else re-scores them.
+            payload["validation"] = validate_page_draft(
+                payload, url=origin, perplexity=perplexity
+            )
+            brief["draft"] = payload
         except Exception as exc:  # one bad draft never sinks the report
             log.warning("page_draft_skipped", slug=brief.get("slug"), error=str(exc))
     return briefs
