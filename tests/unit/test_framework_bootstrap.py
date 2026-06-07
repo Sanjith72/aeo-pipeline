@@ -96,6 +96,41 @@ def test_llm_empty_output_falls_back_to_generic():
     assert "_generated_by" not in data
 
 
+def test_generic_skeleton_seeds_category_ceiling():
+    # A category seeds the deterministic skeleton's required_entities with its
+    # Taxonomic Ceiling standards — no LLM needed.
+    fw = generic_framework("acme-health.com", category="healthcare")
+    assert "HIPAA" in fw["required_entities"]
+
+
+def test_generic_skeleton_without_category_is_empty():
+    assert generic_framework("acme.com")["required_entities"] == []
+
+
+def test_bootstrap_unions_ceiling_even_when_llm_omits_it():
+    # The LLM returns domain entities but forgets the regulators; the ceiling is
+    # still unioned into required_entities so the regulatory floor holds.
+    payload = {
+        "topic": "Lending",
+        "required_entities": ["Acme Loans", "APR"],
+        "clusters": [],
+        "standalone_nodes": [
+            {"slug": "/pricing", "title": "Pricing", "page_type": "product",
+             "intent": "commercial", "journey_stage": "decision"},
+        ],
+    }
+    data = bootstrap_framework("acme-loans.com", llm=FakeLLM(payload), category="personal finance")
+    ents = data["required_entities"]
+    assert "SEC regulations" in ents and "CFPB guidelines" in ents  # ceiling unioned in
+    assert "Acme Loans" in ents                                     # LLM entities preserved
+    assert data["_generated_by"] == "bootstrap:phi3"
+
+
+def test_bootstrap_unknown_category_no_ceiling_seed():
+    data = bootstrap_framework("acme.com", llm=None, category="underwater basket weaving")
+    assert data["required_entities"] == []  # unknown vertical → no curated seed
+
+
 def test_tailored_framework_loads_end_to_end(tmp_path, monkeypatch):
     payload = {
         "topic": "Payments",

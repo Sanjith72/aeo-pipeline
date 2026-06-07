@@ -22,6 +22,7 @@ from ..processor import GapResult
 from ..reference import Reference, load_reference
 from ..storage.models import ExtractionBundle
 from .content import recommend_content
+from .draft import PageDraft, draft_missing_page, draft_site_pages
 from .entity import recommend_entity
 from .models import CONTENT, ENTITY, SCHEMA, Recommendation
 from .schema import recommend_schema
@@ -30,7 +31,10 @@ __all__ = [
     "CONTENT",
     "ENTITY",
     "SCHEMA",
+    "PageDraft",
     "Recommendation",
+    "draft_missing_page",
+    "draft_site_pages",
     "persist",
     "recommend",
     "recommend_content",

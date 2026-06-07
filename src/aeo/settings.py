@@ -177,6 +177,12 @@ class ReferenceArchitectureCfg(BaseModel):
     # The generator uses the configured LLM (set llm.provider=cloud pointed at
     # Gemini's OpenAI-compatible endpoint) for synthesis; falls back to the
     # deterministic builder when the LLM is disabled or fails.
+    # v4+ Content drafting: turn missing-page coverage gaps into ready-to-publish
+    # drafts (H1 + headers + body prose + JSON-LD) attached to the site report. The
+    # top `draft_limit` missing pages (priority order) are drafted — LLM-authored
+    # prose when enabled, a deterministic scaffold otherwise. 0 → draft none.
+    draft_missing_pages: bool = True
+    draft_limit: int = 10
 
 
 # ---------------------------------------------------------------------------

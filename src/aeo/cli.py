@@ -435,13 +435,18 @@ def framework_bootstrap_cmd(
     use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Tailor to the topic via the LLM (else a generic skeleton)"),
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite an existing framework file"),
     topic: str | None = typer.Option(None, "--topic", help="Topic hint (default: derived from the domain)"),
+    category: str | None = typer.Option(
+        None, "--category",
+        help="Industry vertical for the Taxonomic Ceiling, e.g. 'healthcare', 'personal finance', 'legal services'",
+    ),
 ) -> None:
     """Generate config/domains/<domain>.framework.yaml so ANY website can be AEO-optimized.
 
     Writes a per-domain ideal-site taxonomy the blueprint + site-level coverage diff measure
     against. Deterministic generic skeleton by default; --llm tailors it to the site's real
     topic (real entities, topic clusters, seed questions), re-validated against the contract.
-    Review the file, then `aeo add-target` + `aeo audit-cycle`."""
+    --category fuses an industry Taxonomic Ceiling (HIPAA for healthcare, SEC/CFPB for finance,
+    …) into the required entities. Review the file, then `aeo add-target` + `aeo audit-cycle`."""
     _bootstrap()
     from .nlp.llm import get_client
     from .reference.domain_config import normalize_domain
@@ -457,7 +462,7 @@ def framework_bootstrap_cmd(
         raise typer.Exit(1)
 
     llm = get_client() if use_llm else None
-    data = bootstrap_framework(domain, llm=llm, topic=topic)
+    data = bootstrap_framework(domain, llm=llm, topic=topic, category=category)
     out = write_framework(domain, data)
     ideal_pages = sum(1 + len(c.get("supporting", [])) for c in data.get("clusters", [])) + len(data.get("standalone_nodes", []))
     host = normalize_domain(domain)
