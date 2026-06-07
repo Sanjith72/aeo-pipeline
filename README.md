@@ -70,6 +70,12 @@ aeo blueprint show           print a stored blueprint (ideal sitemap + coverage 
 aeo coverage    -r RUN_ID    site-level Coverage Diff (missing / thin pages)
 aeo site-report -r RUN_ID    render the site-level AEO report
 aeo refinements [--propose]  validated-wins criteria-target proposals (human-gated)
+
+# v4.1 (beta) — onboarding · dry-run · OpenTelemetry
+aeo audit DOMAIN --dry-run   in-memory preview (discover → blueprint → coverage [+ score]); writes NOTHING to the DB
+#  onboarding : drop config/domains/<domain>.yaml to set topic / engine_target / max_urls / label per client
+#  OTEL       : AEO__OBS__OTEL_ENABLED=true + pip install -e ".[otel]" exports OTLP spans alongside agent_traces
+#  config pin : the scoring-contract configs are folded into the blueprint version hash (week-over-week comparability)
 ```
 
 ---

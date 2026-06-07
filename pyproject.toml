@@ -29,6 +29,14 @@ dependencies = [
 
 [project.optional-dependencies]
 embeddings = ["sentence-transformers>=3.0.0"]
+# Optional OpenTelemetry OTLP export (obs/otel.py). Without it, OTEL is a no-op and
+# the custom agent_traces table is the only tracer. Install with: pip install -e ".[otel]"
+otel = [
+    "opentelemetry-sdk>=1.25.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.25.0",
+]
+# Optional PDF export of the AEO reports (aeo report --pdf / aeo site-report --pdf).
+pdf = ["reportlab>=4.0.0"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",

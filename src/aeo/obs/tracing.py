@@ -29,6 +29,7 @@ import structlog
 
 from ..logging import get_logger
 from ..storage.repos import traces as traces_repo
+from .otel import otel_span
 
 log = get_logger(__name__)
 
@@ -68,23 +69,44 @@ def trace_step(
     )
     start = time.perf_counter()
     log.info("step_started")
+    # An OTLP span runs alongside the agent_traces row (no-op unless OTEL is enabled).
+    with otel_span(
+        f"aeo.{agent}", **{"aeo.agent": agent, "aeo.step": step or "", "aeo.run_id": run_id, "aeo.page_id": page_id}
+    ) as span:
+        try:
+            yield handle
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            _safe_record(
+                agent=agent, status="failed", run_id=run_id, page_id=page_id, step=step,
+                duration_ms=duration_ms, model=handle.model, tokens=handle.tokens,
+                error=str(exc),
+            )
+            log.warning("step_failed", duration_ms=duration_ms, error=str(exc))
+            _annotate_span(span, "failed", duration_ms, handle)
+            raise
+        else:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            _safe_record(
+                agent=agent, status="success", run_id=run_id, page_id=page_id, step=step,
+                duration_ms=duration_ms, model=handle.model, tokens=handle.tokens,
+            )
+            log.info("step_succeeded", duration_ms=duration_ms)
+            _annotate_span(span, "success", duration_ms, handle)
+        finally:
+            structlog.contextvars.reset_contextvars(**tokens)
+
+
+def _annotate_span(span, status: str, duration_ms: int, handle: StepHandle) -> None:
+    """Mirror the trace row's runtime facts onto the OTLP span (best-effort)."""
+    if span is None:
+        return
     try:
-        yield handle
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        _safe_record(
-            agent=agent, status="failed", run_id=run_id, page_id=page_id, step=step,
-            duration_ms=duration_ms, model=handle.model, tokens=handle.tokens,
-            error=str(exc),
-        )
-        log.warning("step_failed", duration_ms=duration_ms, error=str(exc))
-        raise
-    else:
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        _safe_record(
-            agent=agent, status="success", run_id=run_id, page_id=page_id, step=step,
-            duration_ms=duration_ms, model=handle.model, tokens=handle.tokens,
-        )
-        log.info("step_succeeded", duration_ms=duration_ms)
-    finally:
-        structlog.contextvars.reset_contextvars(**tokens)
+        span.set_attribute("aeo.status", status)
+        span.set_attribute("aeo.duration_ms", duration_ms)
+        if handle.model:
+            span.set_attribute("llm.model", handle.model)
+        if handle.tokens is not None:
+            span.set_attribute("llm.tokens", handle.tokens)
+    except Exception:  # pragma: no cover - defensive
+        pass

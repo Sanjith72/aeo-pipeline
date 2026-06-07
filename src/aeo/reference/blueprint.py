@@ -179,6 +179,12 @@ class Blueprint(BaseModel):
     sitemap: list[SitemapNode] = Field(default_factory=list)
     coverage: CoverageMap = Field(default_factory=CoverageMap)
     content_hash: str = ""
+    # Fingerprint of the scoring/best-practice/prioritization config files in
+    # effect when this blueprint was generated. Folded into hash_inputs() so that
+    # editing the measuring stick (rubric targets, thresholds) bumps the blueprint
+    # version — week-over-week scores stay comparable, and a jump reads as "new
+    # baseline" not "real change". Empty for blueprints built outside the generator.
+    config_fingerprint: str = ""
     notes: str = ""
 
     @field_validator("topic")
@@ -226,6 +232,7 @@ class Blueprint(BaseModel):
         payload = {
             "topic": self.topic,
             "framework_version": self.framework_version,
+            "config_fingerprint": self.config_fingerprint,
             "competitors": sorted(self.competitors),
             "sitemap": sorted(
                 (

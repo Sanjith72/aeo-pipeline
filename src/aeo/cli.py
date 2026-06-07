@@ -30,7 +30,9 @@ delegates. Commands:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import sys
 from pathlib import Path
 
 import typer
@@ -46,6 +48,13 @@ from .storage.repos import reports as reports_repo
 from .storage.repos import scores as scores_repo
 from .storage.repos import targets as targets_repo
 from .storage.repos import traces as traces_repo
+
+# Help/report text uses Unicode (→, ≤, …). On a Windows cp1252 console, rendering it
+# raises UnicodeEncodeError, so force UTF-8 on the streams at import — covers both the
+# ``aeo`` entry point (calls ``app`` directly) and ``python -m aeo.cli`` (calls ``main``).
+for _stream in (sys.stdout, sys.stderr):
+    with contextlib.suppress(Exception):  # pragma: no cover - non-reconfigurable / non-Windows
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
 
 app = typer.Typer(add_completion=False, help="AEO content crawler & rubric scorer.")
 log = get_logger(__name__)
@@ -97,6 +106,23 @@ def targets() -> None:
             typer.echo(f"{kind:11} {t.name:18} {t.domain}")
 
 
+@app.command(name="add-target")
+def add_target(
+    name: str = typer.Argument(..., help="Display name for the target, e.g. Acme"),
+    domain: str = typer.Argument(..., help="Domain or URL, e.g. acme.com or https://acme.com"),
+    competitor: bool = typer.Option(False, "--competitor", help="Register as a competitor (default: client)"),
+    url: str | None = typer.Option(None, "--url", help="Full website URL (default https://<domain>)"),
+) -> None:
+    """Register a client (or --competitor) so `aeo audit` / `audit-cycle` can target it.
+    Idempotent: re-running updates the domain/url. This is the one-time onboarding step
+    for auditing a brand-new website."""
+    _bootstrap()
+    kind = "competitor" if competitor else "client"
+    tgt = targets_repo.upsert(name, domain, kind, website_url=url)
+    typer.echo(f"{kind} target ready: {tgt.name} ({tgt.domain}) id={tgt.id}")
+    typer.echo(f"next: aeo audit-cycle {tgt.domain} -t {tgt.name}")
+
+
 @app.command()
 def run(
     urls: list[str] | None = typer.Argument(None, help="URLs to crawl"),
@@ -136,12 +162,25 @@ def audit(
     max_urls: int | None = typer.Option(None, "--max-urls", help="Cap discovery before ranking"),
     score: bool = typer.Option(True, "--score/--no-score", help="Score after extraction"),
     analyze: bool = typer.Option(False, "--analyze", help="Run Gap→Validate→Report after scoring"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="In-memory preview (discover→blueprint→coverage[+score]); writes NOTHING to the DB"
+    ),
+    pages: int = typer.Option(5, "--pages", help="[dry-run] crawl+score this many top pages in memory (0 = structural only)"),
+    use_llm: bool = typer.Option(False, "--llm/--no-llm", help="[dry-run] use the LLM for blueprint synthesis"),
 ) -> None:
     """Site Discovery → Page Prioritization (top-N) → crawl → extract → score
-    [→ analyze]. The single-command path from a bare domain to per-page reports."""
+    [→ analyze]. The single-command path from a bare domain to per-page reports.
+
+    ``--dry-run`` previews what an audit would surface (discovered pages, the ideal-
+    site blueprint, and the site-level coverage gap) entirely in memory, with no DB —
+    ideal for onboarding a new domain or a stakeholder demo."""
     _bootstrap()
-    tgt = _resolve_target(target)
     orch = Orchestrator()
+    if dry_run:
+        result = asyncio.run(orch.dry_run(domain, max_urls=max_urls, pages=pages, use_llm=use_llm))
+        _print(result)
+        return
+    tgt = _resolve_target(target)
     summary = asyncio.run(
         orch.run_site(domain, target=tgt, label=label, do_score=score, max_urls=max_urls)
     )
@@ -262,11 +301,12 @@ def report(
     run_id: int | None = typer.Option(None, "--run-id", "-r", help="Limit to a run"),
     page_id: int | None = typer.Option(None, "--page-id", "-p", help="A single page's report"),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON instead of rendered text"),
+    pdf: Path | None = typer.Option(None, "--pdf", help="Write the report(s) to a PDF file (client-ready deliverable)"),
 ) -> None:
     """Render the optimized per-page AEO/SEO report(s) — the final deliverable.
 
     Scope precedence: --page-id, then TARGET (its latest run, or --run-id), then
-    --run-id alone. Surfaces each page's Human-Review status.
+    --run-id alone. Surfaces each page's Human-Review status. Use --pdf to export.
     """
     _bootstrap()
     if page_id is not None:
@@ -281,6 +321,15 @@ def report(
 
     if not rows:
         typer.echo("no reports found for that scope")
+        return
+    if pdf is not None:
+        from .report.pdf import PdfUnavailable, write_page_reports_pdf
+        try:
+            out = write_page_reports_pdf(rows, str(pdf))
+        except PdfUnavailable as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"wrote {out}  ({len(rows)} report(s))")
         return
     if as_json:
         _print(rows)
@@ -375,6 +424,52 @@ def blueprint_show(
             typer.echo(f"  {c.name:22} pillar={c.pillar_slug} min_pages={c.min_pages}")
 
 
+# ── Per-domain AEO frameworks (make it work for ANY website) ─────────────────
+framework_app = typer.Typer(add_completion=False, help="Per-domain ideal-site frameworks.")
+app.add_typer(framework_app, name="framework")
+
+
+@framework_app.command("bootstrap")
+def framework_bootstrap_cmd(
+    domain: str = typer.Argument(..., help="Domain to generate an ideal-site framework for, e.g. acme.com"),
+    use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Tailor to the topic via the LLM (else a generic skeleton)"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite an existing framework file"),
+    topic: str | None = typer.Option(None, "--topic", help="Topic hint (default: derived from the domain)"),
+) -> None:
+    """Generate config/domains/<domain>.framework.yaml so ANY website can be AEO-optimized.
+
+    Writes a per-domain ideal-site taxonomy the blueprint + site-level coverage diff measure
+    against. Deterministic generic skeleton by default; --llm tailors it to the site's real
+    topic (real entities, topic clusters, seed questions), re-validated against the contract.
+    Review the file, then `aeo add-target` + `aeo audit-cycle`."""
+    _bootstrap()
+    from .nlp.llm import get_client
+    from .reference.domain_config import normalize_domain
+    from .reference.framework_bootstrap import (
+        bootstrap_framework,
+        framework_file_path,
+        write_framework,
+    )
+
+    path = framework_file_path(domain)
+    if path.exists() and not overwrite:
+        typer.secho(f"{path} already exists — use --overwrite to replace it", fg=typer.colors.YELLOW)
+        raise typer.Exit(1)
+
+    llm = get_client() if use_llm else None
+    data = bootstrap_framework(domain, llm=llm, topic=topic)
+    out = write_framework(domain, data)
+    ideal_pages = sum(1 + len(c.get("supporting", [])) for c in data.get("clusters", [])) + len(data.get("standalone_nodes", []))
+    host = normalize_domain(domain)
+    typer.echo(f"wrote {out}")
+    typer.echo(
+        f"  topic={data.get('topic')}  entities={len(data.get('required_entities', []))}  "
+        f"clusters={len(data.get('clusters', []))}  ideal_pages={ideal_pages}  "
+        f"source={data.get('_generated_by', 'generic-skeleton')}"
+    )
+    typer.echo(f"next:  aeo add-target <Name> {host}   &&   aeo audit-cycle {host} -t <Name>")
+
+
 @app.command()
 def coverage(run_id: int = typer.Option(..., "--run-id", "-r", help="Run to show the coverage diff for")) -> None:
     """Show the site-level Coverage Diff for a run (missing pages + thin clusters)."""
@@ -397,7 +492,10 @@ def coverage(run_id: int = typer.Option(..., "--run-id", "-r", help="Run to show
 
 
 @app.command(name="site-report")
-def site_report(run_id: int = typer.Option(..., "--run-id", "-r", help="Run to render the site report for")) -> None:
+def site_report(
+    run_id: int = typer.Option(..., "--run-id", "-r", help="Run to render the site report for"),
+    pdf: Path | None = typer.Option(None, "--pdf", help="Write the site report to a PDF file"),
+) -> None:
     """Render the site-level AEO report (coverage + per-page rollup) for a run."""
     _bootstrap()
     from .report import render_site_report
@@ -406,6 +504,15 @@ def site_report(run_id: int = typer.Option(..., "--run-id", "-r", help="Run to r
     row = site_reports_repo.for_run(run_id)
     if not row:
         typer.echo(f"no site report for run {run_id}")
+        return
+    if pdf is not None:
+        from .report.pdf import PdfUnavailable, write_site_report_pdf
+        try:
+            out = write_site_report_pdf(row, str(pdf))
+        except PdfUnavailable as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"wrote {out}")
         return
     typer.echo(render_site_report(row))
 

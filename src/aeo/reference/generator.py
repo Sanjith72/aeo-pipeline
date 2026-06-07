@@ -39,6 +39,7 @@ from .blueprint import (
     normalize_slug,
 )
 from .competitor_patterns import CompetitorPatterns
+from .config_pin import config_fingerprint
 from .framework import Framework, load_framework
 
 log = get_logger(__name__)
@@ -277,4 +278,8 @@ def generate_blueprint(
     if llm is not None and llm.enabled:
         blueprint = _augment_with_llm(blueprint, framework, patterns, llm, engine_target)
 
-    return blueprint.model_copy(update={"version": version}).with_hash()
+    # Pin the scoring-contract config (rubric/targets/thresholds) into the version
+    # hash so editing the measuring stick bumps the blueprint version too.
+    return blueprint.model_copy(
+        update={"version": version, "config_fingerprint": config_fingerprint()}
+    ).with_hash()

@@ -1,0 +1,21 @@
+# Per-domain onboarding config for securin.io.
+# Overrides the global reference_architecture settings for this client per run.
+# Onboarding a new client = copy this file to config/domains/<their-domain>.yaml.
+
+domain: securin.io
+
+# Topic taxonomy this client is measured against (must exist in framework.yaml).
+topic: PEV
+
+# Answer engine to optimize toward. Routes the blueprint-synthesis prompt emphasis:
+#   perplexity     -> citation density
+#   chatgpt_search -> conversational coverage
+#   gemini         -> structured entity coverage
+#   generic        -> engine-neutral
+engine_target: perplexity
+
+# Optional discovery cap before prioritization (omit to use crawler.discovery.max_urls).
+max_urls: 150
+
+# Optional run label.
+label: "securin weekly audit"

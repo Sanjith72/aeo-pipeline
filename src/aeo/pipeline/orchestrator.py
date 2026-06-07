@@ -35,6 +35,7 @@ from ..nlp.llm import LLMClient, get_client
 from ..nlp.perplexity import get_perplexity_client
 from ..obs import page_guard
 from ..reference import load_reference
+from ..reference.domain_config import load_domain_config
 from ..scoring.rubric import load_rubric
 from ..settings import get_settings
 from ..storage.models import FetchedPage, PageScore, Target
@@ -130,12 +131,17 @@ class Orchestrator:
         Crawler block the v3 architecture specifies — Site Discovery → Page
         Prioritization → Page Crawler — as one call."""
         cfg = load_prioritization_cfg()
+        # Per-domain onboarding (config/domains/{domain}.yaml): supplies defaults for
+        # max_urls / label and (downstream) topic + engine_target for the blueprint.
+        dc = load_domain_config(domain)
+        if max_urls is None and dc is not None and dc.max_urls is not None:
+            max_urls = dc.max_urls
         discovery = await discover(domain, max_urls=max_urls)
         scored = prioritize(
             [PageInput(d.url, d.internal_links) for d in discovery.urls], cfg
         )
 
-        run = runs_repo.start(label=label or f"site:{domain}")
+        run = runs_repo.start(label=label or (dc.label if dc else None) or f"site:{domain}")
         persist_ranking(run.id, scored)
         selected = [s.url for s in scored if s.selected]
         log.info(
@@ -148,7 +154,7 @@ class Orchestrator:
         # the crawled top-N). Best-effort and isolated — a generator/DB hiccup logs
         # and is skipped so it never aborts the crawl that follows.
         try:
-            stored_bp = generate_and_pin_blueprint(run.id, llm=self._llm)
+            stored_bp = generate_and_pin_blueprint(run.id, domain=domain, llm=self._llm)
             if stored_bp is not None:
                 compute_and_persist_coverage(
                     run.id, stored_bp, scored, target_id=target.id, reference=load_reference()
@@ -324,6 +330,104 @@ class Orchestrator:
             "run": run_summary.as_dict(),
             "analysis": analysis.as_dict(),
             "site_report_id": site_report_id,
+        }
+
+    async def dry_run(
+        self,
+        domain: str,
+        *,
+        max_urls: int | None = None,
+        pages: int = 5,
+        use_llm: bool = False,
+    ) -> dict:
+        """In-memory preview — discover → blueprint → site coverage diff [→ score top
+        pages], writing NOTHING to the database. The demo/onboarding path (ported
+        idea): show what an audit *would* surface for a domain without a DB, a run
+        row, or any persistence. Network is still used (discovery + optional crawl);
+        only persistence is skipped.
+
+        ``use_llm=False`` (default) keeps it fast + offline-friendly with a
+        deterministic blueprint. ``pages`` caps how many top URLs are crawled+scored
+        in memory (0 = structural preview only)."""
+        from ..processor.coverage_diff import coverage_diff
+        from ..reference.competitor_patterns import CompetitorPatterns
+        from ..reference.domain_config import load_domain_config
+        from ..reference.framework import load_framework
+        from ..reference.generator import generate_blueprint
+        from .reference_arch import discovered_pages
+
+        settings = get_settings()
+        cfg = load_prioritization_cfg()
+        dc = load_domain_config(domain)
+        if max_urls is None and dc is not None and dc.max_urls is not None:
+            max_urls = dc.max_urls
+
+        discovery = await discover(domain, max_urls=max_urls)
+        scored = prioritize([PageInput(d.url, d.internal_links) for d in discovery.urls], cfg)
+        selected = [s for s in scored if s.selected]
+
+        # Blueprint (in-memory, not persisted). Deterministic by default; competitor
+        # patterns are empty (dry-run never reads the DB).
+        ra = settings.reference_architecture
+        framework = load_framework(domain)  # per-domain override if present
+        topic = (dc.topic if dc else None) or framework.topic or ra.topic
+        engine_target = (dc.engine_target if dc and dc.engine_target else None) or ra.engine_target
+        blueprint = generate_blueprint(
+            topic=topic, framework=framework, patterns=CompetitorPatterns(),
+            llm=(self._llm if use_llm else None), engine_target=engine_target,
+        )
+
+        # Site-level coverage diff (pure).
+        reference = load_reference()
+        cov = coverage_diff(blueprint, discovered_pages(scored, reference))
+
+        # Optional per-page scoring of the top-N, in memory (no persist).
+        page_scores: list[dict] = []
+        crawl_urls = [s.url for s in selected][: max(0, pages)]
+        if crawl_urls:
+            fetched = await fetch_many(crawl_urls)
+            for page in fetched:
+                if not page.success:
+                    page_scores.append({"url": page.url, "error": page.error or "fetch failed"})
+                    continue
+                bundle = self.extract.run(page, 0, None)  # page_id=0 — not persisted
+                ps = self.score.run(bundle, 0)            # run_id=0 — not persisted
+                page_scores.append({
+                    "url": page.url, "total": ps.total, "max_possible": ps.max_possible,
+                    "priority_tier": ps.priority_tier,
+                })
+
+        log.info(
+            "dry_run_complete", domain=domain, discovered=len(scored), selected=len(selected),
+            topic=topic, engine_target=engine_target, coverage_pct=cov.coverage_pct, scored_pages=len(page_scores),
+        )
+        return {
+            "mode": "dry-run",
+            "domain": domain,
+            "source": discovery.source,
+            "discovered": len(scored),
+            "selected": len(selected),
+            "topic": topic,
+            "engine_target": engine_target,
+            "blueprint": {
+                "version": blueprint.version,
+                "generator": blueprint.generator,
+                "nodes": len(blueprint.sitemap),
+                "config_fingerprint": blueprint.config_fingerprint,
+            },
+            "coverage": {
+                "pct": cov.coverage_pct,
+                "matched": cov.matched_count,
+                "total_nodes": cov.total_nodes,
+                "missing": len(cov.missing),
+                "thin_clusters": len(cov.thin_clusters),
+                "top_missing": [
+                    {"slug": m.slug, "priority": m.priority, "page_type": m.page_type, "title": m.title}
+                    for m in cov.missing_by_priority()[:10]
+                ],
+            },
+            "pages": page_scores,
+            "db_writes": 0,
         }
 
     def _build_and_persist_site_report(self, run_id: int, target: Target) -> int | None:

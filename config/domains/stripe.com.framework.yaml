@@ -1,0 +1,67 @@
+# Auto-generated AEO framework for stripe.com.
+# Review + edit, then: aeo add-target <Name> stripe.com && aeo audit-cycle stripe.com -t <Name>
+version: '1'
+topic: Stripe
+required_entities: []
+journey_stages:
+- awareness
+- consideration
+- decision
+clusters:
+- name: core-content
+  min_pages: 3
+  pillar:
+    slug: /resources
+    title: Resources / Knowledge Hub
+    page_type: pillar
+    intent: informational
+    journey_stage: awareness
+    seed_questions:
+    - What does Stripe do?
+    - How does Stripe work?
+  supporting:
+  - slug: /faq
+    title: Frequently Asked Questions
+    page_type: pillar
+    intent: informational
+    journey_stage: consideration
+    seed_questions:
+    - What are the most common questions about this product?
+  - slug: /blog
+    title: Blog / Articles
+    page_type: blog
+    intent: informational
+    journey_stage: awareness
+standalone_nodes:
+- slug: /
+  title: Stripe — Homepage
+  page_type: homepage
+  intent: navigational
+  journey_stage: awareness
+- slug: /product
+  title: Product / Platform
+  page_type: product
+  intent: commercial
+  journey_stage: decision
+  seed_questions:
+  - What does Stripe offer?
+- slug: /solutions
+  title: Solutions / Use Cases
+  page_type: solution
+  intent: commercial
+  journey_stage: consideration
+- slug: /pricing
+  title: Pricing
+  page_type: product
+  intent: commercial
+  journey_stage: decision
+- slug: /about
+  title: About
+  page_type: about
+  intent: navigational
+  journey_stage: awareness
+- slug: /contact
+  title: Contact / Request a Demo
+  page_type: contact
+  intent: commercial
+  journey_stage: decision

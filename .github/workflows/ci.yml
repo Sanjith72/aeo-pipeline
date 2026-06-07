@@ -32,8 +32,41 @@ jobs:
       - name: Test
         run: pytest -q
 
+  # Exercises the migrations 0001-0009 + DB-gated integration tests against a real
+  # Postgres (the offline `test` job skips these). Closes the "first deploy is the
+  # first real migration" gap flagged in the architecture review.
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aeo
+          POSTGRES_PASSWORD: aeo
+          POSTGRES_DB: aeo
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aeo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://aeo:aeo@localhost:5432/aeo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Apply migrations
+        run: aeo migrate
+      - name: Integration tests (DB-backed)
+        run: pytest -q tests/integration
+
   image:
-    needs: test
+    needs: [test, migrations]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

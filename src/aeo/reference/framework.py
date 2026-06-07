@@ -16,9 +16,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
-from ..settings import load_yaml_file
+import yaml
+
+from ..settings import get_settings, load_yaml_file
 from .blueprint import SitemapNode, normalize_slug
+from .domain_config import normalize_domain
 
 # Base blueprint-importance per page-type, used when no competitor signal refines
 # it. Pillars/products are the AEO cornerstone; utility pages barely matter.
@@ -104,9 +109,31 @@ def _node_from_cfg(raw: dict, *, cluster: str | None, allowed_entities: set[str]
     )
 
 
-@lru_cache(maxsize=1)
-def load_framework() -> Framework:
-    raw = load_yaml_file("framework.yaml")
+def domain_framework_path(domain: str | None) -> Path | None:
+    """Path to a per-domain framework override (``config/domains/{domain}.framework.yaml``)
+    if it exists, else None. This is the seam that makes the tool topic-agnostic: any
+    site can carry its own ideal-site taxonomy without touching the shared framework."""
+    if not domain:
+        return None
+    key = normalize_domain(domain)
+    if not key:
+        return None
+    path = Path(get_settings().config_dir) / "domains" / f"{key}.framework.yaml"
+    return path if path.exists() else None
+
+
+def _load_framework_raw(domain: str | None) -> dict[str, Any]:
+    path = domain_framework_path(domain)
+    if path is not None:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return load_yaml_file("framework.yaml")
+
+
+@lru_cache(maxsize=16)
+def load_framework(domain: str | None = None) -> Framework:
+    """Load the reference framework. With ``domain`` set and a per-domain override
+    present, that override is used; otherwise the shared ``framework.yaml``."""
+    raw = _load_framework_raw(domain)
 
     required_entities = [str(e) for e in (raw.get("required_entities") or [])]
     allowed = set(required_entities)

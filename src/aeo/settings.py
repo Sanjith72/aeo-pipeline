@@ -148,6 +148,17 @@ class ScoringCfg(BaseModel):
     max_workers: int = 8
 
 
+class ObsCfg(BaseModel):
+    # Observability. The custom ``agent_traces`` table + ``aeo trace`` are always on
+    # (queryable per-page journey). This adds OPTIONAL OpenTelemetry OTLP export
+    # ALONGSIDE it (ported idea) — standards-aligned distributed tracing for an OTLP
+    # collector (Tempo/Jaeger/Honeycomb). Off by default; a no-op when the SDK isn't
+    # installed or no endpoint is set, so it never adds a hard dependency.
+    otel_enabled: bool = False
+    otel_endpoint: str = ""  # OTLP gRPC endpoint, e.g. http://localhost:4317
+    otel_service_name: str = "aeo"
+
+
 class ReferenceArchitectureCfg(BaseModel):
     # v4 Reference Architecture Generator: the versioned, per-topic ideal-site
     # blueprint. Generated on a slow cadence and pinned per run so the measuring
@@ -189,6 +200,7 @@ class Settings(BaseSettings):
     perplexity: PerplexityCfg = PerplexityCfg()
     scoring: ScoringCfg = ScoringCfg()
     reference_architecture: ReferenceArchitectureCfg = ReferenceArchitectureCfg()
+    obs: ObsCfg = ObsCfg()
 
     log_level: str = "INFO"
     log_format: str = "console"

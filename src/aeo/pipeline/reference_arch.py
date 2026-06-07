@@ -27,6 +27,7 @@ from ..processor.coverage_diff import CoverageDiffResult, DiscoveredPage, covera
 from ..reference import Reference, load_reference
 from ..reference.blueprint import normalize_slug
 from ..reference.competitor_patterns import CompetitorPatterns, extract_patterns
+from ..reference.domain_config import load_domain_config, normalize_domain
 from ..reference.framework import load_framework
 from ..reference.generator import generate_blueprint
 from ..settings import get_settings
@@ -60,25 +61,36 @@ def build_competitor_patterns(allowed_entities: list[str]) -> CompetitorPatterns
 
 
 def generate_and_pin_blueprint(
-    run_id: int, *, topic: str | None = None, llm: LLMClient | None = None
+    run_id: int, *, topic: str | None = None, domain: str | None = None,
+    llm: LLMClient | None = None,
 ) -> StoredBlueprint | None:
     """Generate (or reuse) the versioned blueprint and pin it to the run.
-    Returns None when the generator is disabled."""
+    Returns None when the generator is disabled.
+
+    ``domain`` opts the run into per-domain onboarding (``config/domains/{domain}.yaml``):
+    its ``topic`` / ``engine_target`` override the global settings for this run.
+    Resolution order (highest wins): explicit ``topic`` arg → domain config →
+    settings → framework default."""
     cfg = get_settings().reference_architecture
     if not cfg.enabled:
         return None
-    framework = load_framework()
-    topic = topic or cfg.topic or framework.topic
+    dc = load_domain_config(domain) if domain else None
+    framework = load_framework(domain)  # per-domain override if config/domains/{domain}.framework.yaml exists
+    # The loaded framework is the topic authority (per-domain override wins); the
+    # settings default is only a last resort when nothing more specific exists.
+    topic = topic or (dc.topic if dc else None) or framework.topic or cfg.topic
+    engine_target = (dc.engine_target if dc and dc.engine_target else None) or cfg.engine_target
     patterns = build_competitor_patterns(framework.required_entities)
     blueprint = generate_blueprint(
         topic=topic, framework=framework, patterns=patterns, llm=llm,
-        engine_target=cfg.engine_target,
+        engine_target=engine_target,
     )
     stored = blueprints_repo.save_versioned(blueprint)
     blueprints_repo.pin_run(run_id, stored.id)
     log.info(
         "blueprint_pinned", run_id=run_id, topic=topic, version=stored.blueprint.version,
         reused=stored.reused, generator=stored.blueprint.generator, nodes=len(stored.blueprint.sitemap),
+        engine_target=engine_target, domain=normalize_domain(domain) if domain else None,
     )
     return stored
 
