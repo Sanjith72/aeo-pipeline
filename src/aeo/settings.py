@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -177,6 +178,12 @@ class ReferenceArchitectureCfg(BaseModel):
     # The generator uses the configured LLM (set llm.provider=cloud pointed at
     # Gemini's OpenAI-compatible endpoint) for synthesis; falls back to the
     # deterministic builder when the LLM is disabled or fails.
+    # v4+ Content drafting: turn missing-page coverage gaps into ready-to-publish
+    # drafts (H1 + headers + body prose + JSON-LD) attached to the site report. The
+    # top `draft_limit` missing pages (priority order) are drafted — LLM-authored
+    # prose when enabled, a deterministic scaffold otherwise. 0 → draft none.
+    draft_missing_pages: bool = True
+    draft_limit: int = 10
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +229,13 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    # Load .env into the process environment BEFORE constructing Settings or
+    # reading os.getenv below. pydantic-settings' own env_file parsing only
+    # populates AEO__-prefixed model fields; the unprefixed DATABASE_URL /
+    # DB_POOL_* contract (read via os.getenv) needs the values in os.environ.
+    # override=False keeps real OS env vars winning over .env (prod-safe).
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+
     s = Settings()
     cfg_dir = Path(s.config_dir)
 

@@ -52,15 +52,26 @@ def apply_recommendation(
 ) -> bool:
     """Apply one recommendation to ``bundle`` in place. Returns True if a signal
     changed. Advisory-only recs (no concrete edit) and criteria without an
-    applier are deliberate no-ops."""
+    applier are deliberate no-ops.
+
+    When the recommendation carries ready-to-publish ``draft`` copy for a criterion
+    we *measure* its actual signals (via the real extractors) and substitute those,
+    so the re-score reflects what would ship rather than an applier optimistically
+    assuming the target tier was reached. The optimistic edits appliers remain the
+    fallback for advisory/scaffold recs that have no draft."""
     if rec.rec_type == SCHEMA:
         return _apply_schema(bundle, rec)
+
+    criterion = rec.criterion
+
+    # Measured-draft path: re-score on the content that would actually ship.
+    if rec.payload.get("draft") and criterion in _DRAFT_FIELDS:
+        return _apply_draft(bundle, criterion, str(rec.payload["draft"]))
 
     # Only concrete edits can be simulated; a static advisory has nothing to apply.
     if "edits" not in rec.payload:
         return False
 
-    criterion = rec.criterion
     applier = _APPLIERS.get(criterion) if criterion else None
     if applier is None:
         return False
@@ -225,3 +236,65 @@ _APPLIERS: dict[str, Callable[[ExtractionBundle, int, Rubric], bool]] = {
     "content_depth": _apply_depth,
     "answer_readability": _apply_readability,
 }
+
+
+# ---------------------------------------------------------------------------
+# measured-draft path (re-score on the copy that would actually ship)
+# ---------------------------------------------------------------------------
+
+# Per criterion: which extracted section(s) the draft overlays, and for each
+# scoring-relevant field the direction in which a *better* value moves (+1 higher
+# is better, -1 lower is better). The draft's measured value replaces the page's
+# only when it scores strictly better, so a thin draft cannot manufacture an
+# improvement -- which is exactly what drives the retry / could-not-improve path.
+_DRAFT_FIELDS: dict[str, dict[str, dict[str, int]]] = {
+    "qa_blocks": {"qa_blocks": {"pair_count": +1, "question_heading_count": +1}},
+    "stats_in_html": {"stats": {"count": +1}},
+    "content_depth": {"readability": {"word_count": +1}},
+    "heading_structure": {"headings": {"h23_question_ratio": +1}},
+    "answer_readability": {
+        "readability": {
+            "flesch_reading_ease": +1,
+            "word_count": +1,
+            "avg_sentence_length": -1,
+        },
+        "chunker": {"chunk_count": +1},
+    },
+}
+
+
+def _apply_draft(bundle: ExtractionBundle, criterion: str, draft: str) -> bool:
+    """Overlay the criterion's scored signals with values *measured* from the draft
+    (HTML/Markdown run through the real extractors), taking the draft value only when
+    it scores better than the page's current one. Returns True if a signal changed."""
+    # Local import: the extractor suite (bs4 + textstat + config) must not be a
+    # module-load dependency of the otherwise pure, network-free simulator.
+    from .draft_check import signals_from_draft
+
+    spec = _DRAFT_FIELDS.get(criterion)
+    if not spec:
+        return False
+    measured = signals_from_draft(draft)
+    changed = False
+    for section_name, fields in spec.items():
+        draft_sec = measured.get(section_name) or {}
+        sec = _section(bundle, section_name)
+        for field, direction in fields.items():
+            dv = draft_sec.get(field)
+            if not isinstance(dv, (int, float)):
+                continue
+            cur = sec.get(field)
+            if not isinstance(cur, (int, float)) or (direction > 0 and dv > cur) or (direction < 0 and dv < cur):
+                sec[field] = dv
+                changed = True
+
+    # The heading rewrite can only *clear* the H1 defects the scorer penalizes; it
+    # never (re)introduces them, so a draft with a real, non-template H1 fixes them.
+    if criterion == "heading_structure":
+        draft_h = measured.get("headings") or {}
+        sec = _section(bundle, "headings")
+        for defect in ("missing_h1", "template_h1"):
+            if sec.get(defect) and not draft_h.get(defect, True):
+                sec[defect] = False
+                changed = True
+    return changed

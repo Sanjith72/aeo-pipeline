@@ -6,6 +6,7 @@ delegates. Commands:
 
     aeo migrate                 apply pending DB migrations
     aeo targets                 list configured clients & competitors
+    aeo onboard NAME DOMAIN     name + domain in -> framework + entities.yaml + competitors out
     aeo audit  DOMAIN -t NAME   discover → prioritize → crawl → extract → score
     aeo discover DOMAIN         discover + rank a site's URLs (no crawl, no DB)
     aeo run    URLS… -t NAME    crawl → extract → score (the full pipeline)
@@ -121,6 +122,56 @@ def add_target(
     tgt = targets_repo.upsert(name, domain, kind, website_url=url)
     typer.echo(f"{kind} target ready: {tgt.name} ({tgt.domain}) id={tgt.id}")
     typer.echo(f"next: aeo audit-cycle {tgt.domain} -t {tgt.name}")
+
+
+@app.command()
+def onboard(
+    name: str = typer.Argument(..., help="Display name for the client, e.g. Acme"),
+    domain: str = typer.Argument(..., help="Domain or URL, e.g. acme.com or https://acme.com"),
+    competitors: int = typer.Option(5, "--competitors", "-c", help="How many competitors to discover (capped at 12)"),
+    engine_target: str | None = typer.Option(
+        None, "--engine-target", help="perplexity | chatgpt_search | gemini | generic (default: generic)"
+    ),
+    category: str | None = typer.Option(
+        None, "--category", help="Industry vertical for the Taxonomic Ceiling, e.g. 'healthcare', 'personal finance'"
+    ),
+    topic: str | None = typer.Option(None, "--topic", help="Topic hint (default: derived by the framework bootstrap)"),
+    use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Use the LLM for framework tailoring + competitor discovery"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite an existing per-domain onboarding YAML if present"),
+) -> None:
+    """One command from a bare client name + domain to a fully wired audit target.
+
+    Chains what used to be three hand-authored steps: generates the per-domain
+    ideal-site framework (``aeo framework bootstrap``), writes the per-run onboarding
+    YAML (the file you'd otherwise copy from ``securin.io.yaml``), discovers and
+    LIVE-VERIFIES real competitors via the LLM + a reachability probe (hallucinated
+    domains are dropped, never written), merges the client + verified competitors into
+    ``entities.yaml``, and registers every target. Idempotent — safe to re-run; existing
+    files and entity entries are left alone, not clobbered. Review the generated/updated
+    files, then `aeo audit-cycle`."""
+    _bootstrap()
+    from .reference.onboard import onboard_client
+
+    result = onboard_client(
+        name, domain, topic=topic, category=category, engine_target=engine_target,
+        competitor_count=competitors, use_llm=use_llm, overwrite_domain_config=overwrite,
+    )
+    host = result.client.domain
+    typer.echo(f"client target ready: {result.client.name} ({host}) id={result.client.id}")
+    typer.echo(f"  framework   {result.framework_path}  [{result.framework_source}]")
+    cfg_note = "" if result.domain_config_written else "  (already existed — left as-is; use --overwrite to replace)"
+    typer.echo(f"  domain cfg  {result.domain_config_path}{cfg_note}")
+
+    d = result.discovery
+    typer.echo(f"  competitors proposed={d.raw_count}  verified={len(d.verified)}  dropped={len(d.dropped)}")
+    for c in d.verified:
+        typer.echo(f"    + {c.name:24} {c.domain}")
+    for c in d.dropped:
+        typer.secho(f"    x {c.name:24} {c.domain}   domain didn't resolve — check by hand", fg=typer.colors.YELLOW)
+
+    e = result.entities
+    typer.echo(f"  entities    {result.entities_path}  added={len(e.added)}  skipped(already present)={len(e.skipped)}")
+    typer.echo(f"next: review the files above, then  aeo audit-cycle {host} -t {name}")
 
 
 @app.command()
@@ -435,13 +486,18 @@ def framework_bootstrap_cmd(
     use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Tailor to the topic via the LLM (else a generic skeleton)"),
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite an existing framework file"),
     topic: str | None = typer.Option(None, "--topic", help="Topic hint (default: derived from the domain)"),
+    category: str | None = typer.Option(
+        None, "--category",
+        help="Industry vertical for the Taxonomic Ceiling, e.g. 'healthcare', 'personal finance', 'legal services'",
+    ),
 ) -> None:
     """Generate config/domains/<domain>.framework.yaml so ANY website can be AEO-optimized.
 
     Writes a per-domain ideal-site taxonomy the blueprint + site-level coverage diff measure
     against. Deterministic generic skeleton by default; --llm tailors it to the site's real
     topic (real entities, topic clusters, seed questions), re-validated against the contract.
-    Review the file, then `aeo add-target` + `aeo audit-cycle`."""
+    --category fuses an industry Taxonomic Ceiling (HIPAA for healthcare, SEC/CFPB for finance,
+    …) into the required entities. Review the file, then `aeo add-target` + `aeo audit-cycle`."""
     _bootstrap()
     from .nlp.llm import get_client
     from .reference.domain_config import normalize_domain
@@ -457,7 +513,7 @@ def framework_bootstrap_cmd(
         raise typer.Exit(1)
 
     llm = get_client() if use_llm else None
-    data = bootstrap_framework(domain, llm=llm, topic=topic)
+    data = bootstrap_framework(domain, llm=llm, topic=topic, category=category)
     out = write_framework(domain, data)
     ideal_pages = sum(1 + len(c.get("supporting", [])) for c in data.get("clusters", [])) + len(data.get("standalone_nodes", []))
     host = normalize_domain(domain)

@@ -321,7 +321,7 @@ class Orchestrator:
             domain, target=target, label=label or f"audit:{domain}", do_score=True, max_urls=max_urls
         )
         analysis = self.analyze_run(run_summary.run_id)
-        site_report_id = self._build_and_persist_site_report(run_summary.run_id, target)
+        site_report_id = self._build_and_persist_site_report(run_summary.run_id, target, domain=domain)
         log.info(
             "audit_cycle_complete", run_id=run_summary.run_id, domain=domain,
             site_report_id=site_report_id,
@@ -350,6 +350,7 @@ class Orchestrator:
         deterministic blueprint. ``pages`` caps how many top URLs are crawled+scored
         in memory (0 = structural preview only)."""
         from ..processor.coverage_diff import coverage_diff
+        from ..recommender.draft import draft_missing_page
         from ..reference.competitor_patterns import CompetitorPatterns
         from ..reference.domain_config import load_domain_config
         from ..reference.framework import load_framework
@@ -380,6 +381,24 @@ class Orchestrator:
         # Site-level coverage diff (pure).
         reference = load_reference()
         cov = coverage_diff(blueprint, discovered_pages(scored, reference))
+
+        # Sample the new content-drafting on the top missing pages (deterministic
+        # scaffold by default; full prose when --llm). Bounded so the preview stays fast.
+        from ..validation.draft_check import validate_page_draft
+
+        top_missing: list[dict] = []
+        for i, m in enumerate(cov.missing_by_priority()[:10]):
+            entry = {"slug": m.slug, "priority": m.priority, "page_type": m.page_type, "title": m.title}
+            if i < 3:
+                payload = draft_missing_page(
+                    m, topic=topic, llm=(self._llm if use_llm else None),
+                    reference=reference, origin=domain,
+                ).to_payload()
+                # Same Block-4 gate as the persisted site report: no LLM-authored
+                # page reaches the preview without the independent + citation check.
+                payload["validation"] = validate_page_draft(payload, url=domain)
+                entry["draft"] = payload
+            top_missing.append(entry)
 
         # Optional per-page scoring of the top-N, in memory (no persist).
         page_scores: list[dict] = []
@@ -421,19 +440,20 @@ class Orchestrator:
                 "total_nodes": cov.total_nodes,
                 "missing": len(cov.missing),
                 "thin_clusters": len(cov.thin_clusters),
-                "top_missing": [
-                    {"slug": m.slug, "priority": m.priority, "page_type": m.page_type, "title": m.title}
-                    for m in cov.missing_by_priority()[:10]
-                ],
+                "top_missing": top_missing,
             },
             "pages": page_scores,
             "db_writes": 0,
         }
 
-    def _build_and_persist_site_report(self, run_id: int, target: Target) -> int | None:
+    def _build_and_persist_site_report(
+        self, run_id: int, target: Target, *, domain: str | None = None
+    ) -> int | None:
         """Assemble + persist the site-level report from the run's coverage diff,
         pinned blueprint, and per-page reports. Returns the report id, or None when
-        no blueprint/coverage was produced for the run."""
+        no blueprint/coverage was produced for the run. When content drafting is enabled
+        (``reference_architecture.draft_missing_pages``), the top missing pages are
+        drafted into ready-to-publish copy + JSON-LD on the site report."""
         from ..processor.coverage_diff import CoverageDiffResult
         from ..report import build_site_report
         from ..storage.repos import blueprints as blueprints_repo
@@ -462,9 +482,12 @@ class Orchestrator:
                 }
             )
 
+        ra = get_settings().reference_architecture
+        draft_limit = ra.draft_limit if ra.draft_missing_pages else 0
         site = build_site_report(
             blueprint=stored.blueprint, coverage=coverage, pages=pages,
             run_id=run_id, target_id=target.id, blueprint_id=stored.id,
+            llm=self._llm, origin=domain, draft_limit=draft_limit,
         )
         return site_reports_repo.put(site)
 

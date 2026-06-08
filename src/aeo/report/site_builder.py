@@ -89,11 +89,28 @@ def build_site_report(
     run_id: int,
     target_id: int | None = None,
     blueprint_id: int | None = None,
+    llm: Any = None,
+    origin: str | None = None,
+    draft_limit: int = 0,
 ) -> SiteReport:
     """Assemble the site-level AEO report from the blueprint, coverage diff, and
-    per-page summaries."""
+    per-page summaries.
+
+    When ``draft_limit > 0`` the top missing pages get a ready-to-publish ``draft``
+    (H1 + headers + body prose + JSON-LD) — LLM-authored when ``llm`` is enabled, a
+    deterministic scaffold otherwise. ``origin`` (the site's base URL/domain) is used to
+    build absolute URLs in the drafted JSON-LD. Defaults keep the builder a pure
+    transform (no drafting) for tests and lightweight callers."""
     rollup = _page_rollup(pages)
     briefs = new_page_briefs(coverage)
+    if draft_limit > 0 and briefs:
+        # Local import: the drafter pulls in the recommender + LLM client, which the
+        # pure default path (draft_limit=0) must not require.
+        from ..recommender.draft import draft_site_pages
+
+        briefs = draft_site_pages(
+            briefs, topic=blueprint.topic, llm=llm, origin=origin, limit=draft_limit
+        )
     thin = [
         {"cluster": t.name, "present": t.present_count, "target": t.min_pages, "shortfall": t.shortfall}
         for t in coverage.thin_clusters

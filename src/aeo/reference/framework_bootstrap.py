@@ -33,6 +33,7 @@ from ..nlp.llm import LLMClient
 from ..settings import get_settings
 from .blueprint import Intent, JourneyStage, PageType, SitemapNode, normalize_slug
 from .domain_config import normalize_domain
+from .taxonomic_ceiling import ceiling_prompt_clause, ceiling_standards, merge_ceiling_entities
 
 log = get_logger(__name__)
 
@@ -53,13 +54,17 @@ def _topic_from_domain(domain: str) -> str:
     return " ".join(w.capitalize() for w in label.replace("-", " ").replace("_", " ").split()) or "Site"
 
 
-def generic_framework(domain: str, topic: str | None = None) -> dict[str, Any]:
-    """A universal, deterministic ideal-site skeleton — valid for ANY business site."""
+def generic_framework(domain: str, topic: str | None = None, category: str | None = None) -> dict[str, Any]:
+    """A universal, deterministic ideal-site skeleton — valid for ANY business site.
+
+    When ``category`` matches a curated vertical, its Taxonomic Ceiling standards
+    (HIPAA, SEC, …) seed ``required_entities`` so the regulatory ceiling holds even with
+    no LLM. Unknown/no category → empty entity set (the prior behavior)."""
     topic = topic or _topic_from_domain(domain)
     return {
         "version": "1",
         "topic": topic,
-        "required_entities": [],
+        "required_entities": ceiling_standards(category),
         "journey_stages": ["awareness", "consideration", "decision"],
         "clusters": [
             {
@@ -103,14 +108,16 @@ _BOOTSTRAP_SYSTEM = (
 )
 
 
-def _bootstrap_prompt(domain: str, topic_hint: str) -> str:
+def _bootstrap_prompt(domain: str, topic_hint: str, category: str | None = None) -> str:
     return (
         f"Website: {domain}\n"
-        f"Working topic guess: {topic_hint}\n\n"
+        f"Working topic guess: {topic_hint}\n"
+        f"{ceiling_prompt_clause(category)}\n"
         "Design the ideal site for THIS website's actual topic. Return JSON with keys:\n"
         '  "topic": a short topic name;\n'
         '  "required_entities": 8-15 REAL product/company/standard/concept names central to this '
-        "site's topic (no placeholders);\n"
+        "site's topic, INCLUDING the regulatory/compliance standards from the taxonomic ceiling "
+        "above when a category was given (no placeholders);\n"
         '  "clusters": 2-4 topical-authority clusters, each {name, min_pages (int 5-10), '
         "pillar:{slug,title,page_type,intent,journey_stage,required_entities,seed_questions}, "
         "supporting:[ up to 3 of the same node shape ]};\n"
@@ -150,22 +157,37 @@ def _clean_node(raw: dict, allowed_entities: set[str]) -> dict[str, Any] | None:
     }
 
 
-def bootstrap_framework(domain: str, *, llm: LLMClient | None = None, topic: str | None = None) -> dict[str, Any]:
+def bootstrap_framework(
+    domain: str,
+    *,
+    llm: LLMClient | None = None,
+    topic: str | None = None,
+    category: str | None = None,
+) -> dict[str, Any]:
     """Generate a per-domain framework. Deterministic generic skeleton, tailored by the LLM
-    when available (re-validated against the contract; falls back cleanly on any failure)."""
-    fw = generic_framework(domain, topic=topic)
+    when available (re-validated against the contract; falls back cleanly on any failure).
+
+    ``category`` (e.g. 'healthcare', 'personal finance', 'legal services') fuses an
+    industry-appropriate Taxonomic Ceiling: its regulatory/compliance standards are
+    injected into the synthesis prompt AND unioned into ``required_entities`` so the
+    ceiling survives regardless of what the LLM returns. Unknown/no category → the prior
+    generic behavior."""
+    fw = generic_framework(domain, topic=topic, category=category)
     if llm is None or not llm.enabled:
         return fw
 
     try:
-        data = llm.generate_json(_bootstrap_prompt(domain, fw["topic"]), _BOOTSTRAP_SYSTEM)
+        data = llm.generate_json(_bootstrap_prompt(domain, fw["topic"], category), _BOOTSTRAP_SYSTEM)
     except Exception as exc:
         log.warning("framework_bootstrap_llm_failed", domain=domain, error=str(exc))
         return fw
     if not isinstance(data, dict):
         return fw
 
-    entities = [str(e) for e in (data.get("required_entities") or [])][:_MAX_ENTITIES]
+    # Union the curated ceiling standards in first so a category's regulatory entities are
+    # guaranteed present even if the model omitted them; cap at _MAX_ENTITIES.
+    llm_entities = [str(e) for e in (data.get("required_entities") or [])]
+    entities = merge_ceiling_entities(category, llm_entities, limit=_MAX_ENTITIES)
     allowed = set(entities)
     clusters: list[dict] = []
     for craw in (data.get("clusters") or [])[:_MAX_CLUSTERS]:

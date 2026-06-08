@@ -2,7 +2,7 @@
 Entity recommender — fix brand-vs-first-person consistency (criterion 4).
 
 Entity Consistency scores the ratio of canonical brand mentions to first-person
-language ("we/our/us"). Cybersecurity marketing pages routinely run first-person
+language ("we/our/us"). Marketing pages across verticals routinely run first-person
 2:1 over the brand name, which reads as anonymous to an answer engine trying to
 attribute a claim to a named organization.
 
@@ -21,6 +21,9 @@ from .models import ENTITY, Recommendation
 
 # The single criterion this generator owns.
 ENTITY_CRITERIA = {"entity_consistency"}
+
+# Bound the ready-to-publish draft a model may return (untrusted, cost/abuse guard).
+_MAX_DRAFT_LEN = 8000
 
 
 def recommend_entity(
@@ -80,18 +83,20 @@ def _excerpt(bundle: ExtractionBundle) -> str:
 def _llm_edit(bundle: ExtractionBundle, reference: Reference, llm: LLMClient) -> Recommendation | None:
     name, entity_count, first_person, _ratio = _state(bundle)
     brand = name or "the organization"
+    # Topic/industry-agnostic — the fix (named entity owns each claim) applies to any vertical.
     system = (
-        "You are an AEO (Answer Engine Optimization) editor for cybersecurity content. "
-        "Rewrite first-person marketing copy so a named organization owns each claim. "
-        'Reply as JSON with keys "summary" (one sentence) and "edits" (an array of '
-        "concrete before/after rewrite strings)."
+        "You are an AEO (Answer Engine Optimization) editor. Rewrite first-person "
+        "marketing copy so a named organization owns each claim. Reply as JSON with keys "
+        '"summary" (one sentence), "edits" (an array of concrete before/after rewrite '
+        'strings), and "draft" (the finished, ready-to-publish rewritten passage).'
     )
     prompt = (
         f"Entity to foreground: {brand}\n"
         f"Best practice: {_grounding(reference, name, entity_count, first_person)}\n\n"
         f"Current page:\n{_excerpt(bundle)}\n\n"
         "Propose specific rewrites that replace 'we/our/us' with the entity name "
-        "where it strengthens attribution. Return JSON only."
+        "where it strengthens attribution, and write the finished passage in \"draft\". "
+        "Return JSON only."
     )
     data = llm.generate_json(prompt, system)
     if not data:
@@ -99,15 +104,20 @@ def _llm_edit(bundle: ExtractionBundle, reference: Reference, llm: LLMClient) ->
     edits = data.get("edits")
     if isinstance(edits, str):
         edits = [edits]
-    if not edits:
+    draft = data.get("draft")
+    draft = str(draft).strip()[:_MAX_DRAFT_LEN] if draft else ""
+    if not edits and not draft:
         return None
     summary = str(data.get("summary") or "Improve entity consistency")
+    payload: dict = {"edits": [str(e) for e in (edits or [])], "primary_entity": name}
+    if draft:
+        payload["draft"] = draft  # the ready-to-publish rewritten copy
     return Recommendation(
         rec_type=ENTITY,
         criterion="entity_consistency",
         title=summary,
         rationale=_grounding(reference, name, entity_count, first_person),
-        payload={"edits": [str(e) for e in edits], "primary_entity": name},
+        payload=payload,
         scored_by=llm.model,
     )
 

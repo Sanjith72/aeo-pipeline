@@ -52,8 +52,8 @@ _MAX_QUESTIONS_PER_SLUG = 5
 _MAX_QUESTION_LEN = 300
 
 _SYNTH_SYSTEM = (
-    "You are a senior content strategist designing the ideal site for a "
-    "cybersecurity topic. You enrich an existing blueprint; you never invent "
+    "You are a senior content strategist designing the ideal site for the given "
+    "topic and industry. You enrich an existing blueprint; you never invent "
     "page types, intents, or entities outside the allowed lists. Reply with JSON only."
 )
 
