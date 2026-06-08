@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -228,6 +229,13 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    # Load .env into the process environment BEFORE constructing Settings or
+    # reading os.getenv below. pydantic-settings' own env_file parsing only
+    # populates AEO__-prefixed model fields; the unprefixed DATABASE_URL /
+    # DB_POOL_* contract (read via os.getenv) needs the values in os.environ.
+    # override=False keeps real OS env vars winning over .env (prod-safe).
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+
     s = Settings()
     cfg_dir = Path(s.config_dir)
 
