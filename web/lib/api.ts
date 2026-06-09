@@ -1,0 +1,46 @@
+// Typed client for the AEO HTTP API (SP-4a). Every call maps to one endpoint;
+// no business logic lives here. Base URL from NEXT_PUBLIC_API_BASE.
+
+import type {
+  BriefPlan,
+  BriefRequest,
+  DeliverablesResponse,
+  ProfileResponse,
+} from "./types";
+
+const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error(`Cannot reach the API at ${BASE}. Is it running?  (aeo serve)`);
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`);
+  }
+  return (await res.json()) as T;
+}
+
+export const api = {
+  base: BASE,
+  async health(): Promise<{ status: string; db: string }> {
+    const res = await fetch(`${BASE}/api/health`);
+    return (await res.json()) as { status: string; db: string };
+  },
+  plan(req: BriefRequest): Promise<BriefPlan> {
+    return postJson<BriefPlan>("/api/plan", req);
+  },
+  deliverables(req: BriefRequest & { draft_limit?: number }): Promise<DeliverablesResponse> {
+    return postJson<DeliverablesResponse>("/api/deliverables", req);
+  },
+  profile(req: { domain: string; use_llm?: boolean; max_urls?: number }): Promise<ProfileResponse> {
+    return postJson<ProfileResponse>("/api/profile", req);
+  },
+};

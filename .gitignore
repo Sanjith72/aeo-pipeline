@@ -17,3 +17,4 @@ htmlcov/
 ops/data/
 .DS_Store
 .claude/
+.superpowers/
