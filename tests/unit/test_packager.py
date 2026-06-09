@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from xml.etree import ElementTree as ET
 
 from aeo.intelligence.brief import plan_from_brief
@@ -80,6 +82,21 @@ def test_write_materializes_files(tmp_path) -> None:
     assert list((tmp_path / "pages").glob("*.md"))
     manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["asset_count"] == len(bundle.assets)
+
+
+def test_to_zip_bytes_is_a_valid_zip_with_every_asset() -> None:
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="acme.com", draft_limit=2)
+    data = bundle.to_zip_bytes()
+    assert data[:2] == b"PK"  # zip magic
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        names = set(zf.namelist())
+        assert "sitemap.xml" in names
+        assert "manifest.json" in names
+        assert any(n.startswith("pages/") for n in names)
+        # every declared asset is present in the archive
+        for a in bundle.assets:
+            assert a.path in names
+        assert zf.read("sitemap.xml").decode("utf-8").startswith("<?xml")
 
 
 def test_bundle_from_brief_plan_no_website(tmp_path) -> None:

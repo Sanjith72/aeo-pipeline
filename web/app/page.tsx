@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import type { FormEvent } from "react";
 import { api } from "@/lib/api";
 import type {
   BriefPlan,
@@ -12,9 +11,6 @@ import type {
   SiteProfile,
   SitemapNode,
 } from "@/lib/types";
-
-type Mode = "plan" | "profile";
-type Tab = "strategy" | "blueprint" | "deliverables";
 
 function splitList(value: string): string[] {
   return value
@@ -29,54 +25,85 @@ const EFFORT_COLOR: Record<string, string> = {
   high: "bg-rose-100 text-rose-800",
 };
 
+const GOAL_OPTIONS = [
+  "Rank in AI search / answer engines",
+  "Generate leads",
+  "Sell products (e-commerce)",
+  "Local foot traffic",
+  "Establish topical authority",
+  "Improve a client's site (agency)",
+];
+
+const STEPS = [
+  "Business Info",
+  "Goals",
+  "Website Info",
+  "Competitors",
+  "Challenges",
+  "Analysis",
+  "Blueprint",
+  "Implementation Plan",
+  "Deliverables",
+] as const;
+
 export default function Page() {
-  const [mode, setMode] = useState<Mode>("plan");
+  const [step, setStep] = useState(0);
+
+  // brief
   const [name, setName] = useState("");
-  const [domain, setDomain] = useState("");
   const [category, setCategory] = useState("");
+  const [location, setLocation] = useState("");
   const [servicesText, setServicesText] = useState("");
+  const [goals, setGoals] = useState<string[]>([]);
+  const [hasSite, setHasSite] = useState(false);
+  const [analyzeLive, setAnalyzeLive] = useState(false);
+  const [domain, setDomain] = useState("");
   const [competitorsText, setCompetitorsText] = useState("");
-  const [goalsText, setGoalsText] = useState("");
+  const [challenges, setChallenges] = useState("");
   const [useLlm, setUseLlm] = useState(false);
 
+  // results
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<BriefPlan | null>(null);
   const [profileResult, setProfileResult] = useState<ProfileResponse | null>(null);
-  const [tab, setTab] = useState<Tab>("strategy");
   const [deliverables, setDeliverables] = useState<DeliverablesResponse | null>(null);
   const [delivLoading, setDelivLoading] = useState(false);
 
+  const liveMode = hasSite && analyzeLive && domain.trim().length > 0;
   const profile: SiteProfile | null = plan?.profile ?? profileResult?.profile ?? null;
+  const analyzed = profile !== null;
 
   function briefFromForm(): BriefRequest {
     return {
       name: name.trim(),
       domain: domain.trim() || undefined,
       category: category.trim() || undefined,
+      location: location.trim() || undefined,
       services: splitList(servicesText),
       competitors: splitList(competitorsText),
-      goals: splitList(goalsText),
+      goals,
       use_llm: useLlm,
     };
   }
 
-  async function onGenerate(e: FormEvent) {
-    e.preventDefault();
+  function toggleGoal(goal: string) {
+    setGoals((prev) => (prev.includes(goal) ? prev.filter((g) => g !== goal) : [...prev, goal]));
+  }
+
+  async function runAnalysis() {
     setError(null);
     setPlan(null);
     setProfileResult(null);
     setDeliverables(null);
     setLoading(true);
     try {
-      if (mode === "profile") {
-        if (!domain.trim()) throw new Error("Enter a website domain to analyze.");
+      if (liveMode) {
         setProfileResult(await api.profile({ domain: domain.trim(), use_llm: useLlm }));
       } else {
-        if (!name.trim()) throw new Error("Enter a business name.");
+        if (!name.trim()) throw new Error("Enter a business name (step 1).");
         setPlan(await api.plan(briefFromForm()));
       }
-      setTab("strategy");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -84,7 +111,7 @@ export default function Page() {
     }
   }
 
-  async function onGenerateDeliverables() {
+  async function generateDeliverables() {
     setDelivLoading(true);
     setError(null);
     try {
@@ -96,15 +123,24 @@ export default function Page() {
     }
   }
 
-  function startOver() {
-    setPlan(null);
-    setProfileResult(null);
-    setDeliverables(null);
+  async function downloadZip() {
     setError(null);
+    try {
+      const blob = await api.deliverablesZip({ ...briefFromForm(), draft_limit: 10 });
+      triggerDownload(blob, `${name.trim() || "aeo"}-bundle.zip`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
+  const canNext = (() => {
+    if (step === 0) return name.trim().length > 0 || liveMode;
+    if (step === 5) return analyzed; // must analyze before advancing
+    return true;
+  })();
+
   return (
-    <main className="mx-auto max-w-5xl px-4 py-10">
+    <main className="mx-auto max-w-6xl px-4 py-10">
       <header className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight">AEO Studio</h1>
         <p className="mt-1 text-slate-600">
@@ -113,138 +149,199 @@ export default function Page() {
         </p>
       </header>
 
-      {error && (
-        <div className="mb-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-          {error}
-        </div>
-      )}
+      <div className="grid gap-8 md:grid-cols-[220px_1fr]">
+        <Stepper current={step} analyzed={analyzed} onJump={setStep} />
 
-      {!profile ? (
-        <BriefForm
-          mode={mode}
-          setMode={setMode}
-          name={name}
-          setName={setName}
-          domain={domain}
-          setDomain={setDomain}
-          category={category}
-          setCategory={setCategory}
-          servicesText={servicesText}
-          setServicesText={setServicesText}
-          competitorsText={competitorsText}
-          setCompetitorsText={setCompetitorsText}
-          goalsText={goalsText}
-          setGoalsText={setGoalsText}
-          useLlm={useLlm}
-          setUseLlm={setUseLlm}
-          loading={loading}
-          onSubmit={onGenerate}
-        />
-      ) : (
         <section>
-          <ScenarioHeader profile={profile} onStartOver={startOver} />
-          <Tabs tab={tab} setTab={setTab} showBlueprint={plan !== null} showDeliverables={mode === "plan"} />
-          <div className="mt-6">
-            {tab === "strategy" && <StrategyPanel profile={profile} />}
-            {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} />}
-            {tab === "deliverables" && mode === "plan" && (
+          {error && (
+            <div className="mb-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              {error}
+            </div>
+          )}
+
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <StepHeader index={step} />
+
+            {step === 0 && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Business name *">
+                  <input className="inp" value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Security" />
+                </Field>
+                <Field label="Industry / category">
+                  <input className="inp" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="cybersecurity, healthcare, …" />
+                </Field>
+                <Field label="Location (optional)">
+                  <input className="inp" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Boston, US" />
+                </Field>
+                <Field label="Services (comma / newline separated)">
+                  <input className="inp" value={servicesText} onChange={(e) => setServicesText(e.target.value)} placeholder="CTEM, ASM" />
+                </Field>
+              </div>
+            )}
+
+            {step === 1 && (
+              <div className="space-y-2">
+                <p className="text-sm text-slate-600">What are you trying to achieve? (select any)</p>
+                {GOAL_OPTIONS.map((g) => (
+                  <label key={g} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={goals.includes(g)} onChange={() => toggleGoal(g)} />
+                    {g}
+                  </label>
+                ))}
+              </div>
+            )}
+
+            {step === 2 && (
+              <div className="space-y-4">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={hasSite} onChange={(e) => setHasSite(e.target.checked)} />
+                  I already have a website
+                </label>
+                <Field label={hasSite ? "Website domain" : "Planned domain (optional)"}>
+                  <input className="inp" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="acme.com" />
+                </Field>
+                {hasSite && (
+                  <label className="flex items-center gap-2 text-sm text-slate-600">
+                    <input type="checkbox" checked={analyzeLive} onChange={(e) => setAnalyzeLive(e.target.checked)} />
+                    Crawl &amp; analyze my live site (else we plan the ideal site from the brief)
+                  </label>
+                )}
+              </div>
+            )}
+
+            {step === 3 && (
+              <Field label="Competitors (comma / newline separated)">
+                <textarea className="inp h-28" value={competitorsText} onChange={(e) => setCompetitorsText(e.target.value)} placeholder="rapid7.com, tenable.com" />
+              </Field>
+            )}
+
+            {step === 4 && (
+              <Field label="Current challenges (for context)">
+                <textarea className="inp h-28" value={challenges} onChange={(e) => setChallenges(e.target.value)} placeholder="We don't show up in ChatGPT / Perplexity answers…" />
+              </Field>
+            )}
+
+            {step === 5 && (
+              <div>
+                <p className="mb-4 text-sm text-slate-600">
+                  {liveMode
+                    ? `Crawl & classify ${domain.trim()} and route it to a strategy.`
+                    : "Generate the ideal-site blueprint and strategy from your brief."}
+                </p>
+                <label className="mb-4 flex items-center gap-2 text-sm text-slate-600">
+                  <input type="checkbox" checked={useLlm} onChange={(e) => setUseLlm(e.target.checked)} />
+                  Use the LLM to tailor prose (slower; deterministic scaffold otherwise)
+                </label>
+                <button onClick={runAnalysis} disabled={loading} className="btn-primary">
+                  {loading ? "Analyzing…" : analyzed ? "Re-run analysis" : "Run analysis"}
+                </button>
+                {analyzed && profile && (
+                  <div className="mt-5">
+                    <ScenarioHeader profile={profile} />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {step === 6 &&
+              (plan ? (
+                <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />
+              ) : (
+                <p className="text-sm text-slate-600">
+                  Blueprint generation applies to the planned-site flow. For a live-site analysis, see the
+                  Implementation Plan next.
+                </p>
+              ))}
+
+            {step === 7 &&
+              (profile ? <StrategyPanel profile={profile} /> : <Empty>Run the analysis first (step 6).</Empty>)}
+
+            {step === 8 && (
               <DeliverablesPanel
                 deliverables={deliverables}
                 loading={delivLoading}
-                onGenerate={onGenerateDeliverables}
+                onGenerate={generateDeliverables}
+                onDownloadZip={downloadZip}
               />
             )}
           </div>
+
+          <div className="mt-6 flex items-center justify-between">
+            <button onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0} className="btn-ghost">
+              ← Back
+            </button>
+            <span className="text-xs text-slate-400">
+              Step {step + 1} of {STEPS.length}
+            </span>
+            <button
+              onClick={() => setStep((s) => Math.min(STEPS.length - 1, s + 1))}
+              disabled={step === STEPS.length - 1 || !canNext}
+              className="btn-primary"
+            >
+              {step === 5 && !analyzed ? "Analyze to continue" : "Next →"}
+            </button>
+          </div>
         </section>
-      )}
+      </div>
+
+      <style>{`
+        .inp{width:100%;border:1px solid #cbd5e1;border-radius:0.5rem;padding:0.5rem 0.75rem;font-size:0.875rem}
+        .btn-primary{border-radius:0.5rem;background:#1d4ed8;color:#fff;padding:0.5rem 1.25rem;font-weight:500}
+        .btn-primary:disabled{opacity:0.5}
+        .btn-ghost{border-radius:0.5rem;border:1px solid #cbd5e1;padding:0.5rem 1rem;color:#475569}
+        .btn-ghost:disabled{opacity:0.4}
+      `}</style>
     </main>
   );
 }
 
-interface BriefFormProps {
-  mode: Mode;
-  setMode: (m: Mode) => void;
-  name: string;
-  setName: (v: string) => void;
-  domain: string;
-  setDomain: (v: string) => void;
-  category: string;
-  setCategory: (v: string) => void;
-  servicesText: string;
-  setServicesText: (v: string) => void;
-  competitorsText: string;
-  setCompetitorsText: (v: string) => void;
-  goalsText: string;
-  setGoalsText: (v: string) => void;
-  useLlm: boolean;
-  setUseLlm: (v: boolean) => void;
-  loading: boolean;
-  onSubmit: (e: FormEvent) => void;
+function Stepper({ current, analyzed, onJump }: { current: number; analyzed: boolean; onJump: (i: number) => void }) {
+  return (
+    <nav className="space-y-1">
+      {STEPS.map((label, i) => {
+        const done = i < current && (i !== 5 || analyzed);
+        const active = i === current;
+        return (
+          <button
+            key={label}
+            onClick={() => onJump(i)}
+            className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${
+              active ? "bg-brand-50 font-medium text-brand-700" : "text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            <span
+              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs ${
+                done ? "bg-green-500 text-white" : active ? "bg-brand-600 text-white" : "bg-slate-200 text-slate-600"
+              }`}
+            >
+              {done ? "✓" : i + 1}
+            </span>
+            {label}
+          </button>
+        );
+      })}
+    </nav>
+  );
 }
 
-function BriefForm(props: BriefFormProps) {
-  const { mode, setMode } = props;
+function StepHeader({ index }: { index: number }) {
+  const blurbs = [
+    "Tell us about your business.",
+    "What outcomes matter most?",
+    "Do you already have a website?",
+    "Who are your competitors?",
+    "What's not working today?",
+    "Generate your AEO analysis.",
+    "Your ideal site architecture.",
+    "Do this, in priority order.",
+    "Download the developer-ready bundle.",
+  ];
   return (
-    <form onSubmit={props.onSubmit} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="mb-6 inline-flex rounded-lg border border-slate-200 p-1">
-        <button
-          type="button"
-          onClick={() => setMode("plan")}
-          className={`rounded-md px-4 py-1.5 text-sm font-medium ${mode === "plan" ? "bg-brand-600 text-white" : "text-slate-600"}`}
-        >
-          Plan a new site
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode("profile")}
-          className={`rounded-md px-4 py-1.5 text-sm font-medium ${mode === "profile" ? "bg-brand-600 text-white" : "text-slate-600"}`}
-        >
-          Analyze an existing site
-        </button>
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        {mode === "plan" && (
-          <Field label="Business name *">
-            <input className="input" value={props.name} onChange={(e) => props.setName(e.target.value)} placeholder="Acme Security" />
-          </Field>
-        )}
-        <Field label={mode === "profile" ? "Website domain *" : "Domain (planned, optional)"}>
-          <input className="input" value={props.domain} onChange={(e) => props.setDomain(e.target.value)} placeholder="acme.com" />
-        </Field>
-        {mode === "plan" && (
-          <>
-            <Field label="Industry / category">
-              <input className="input" value={props.category} onChange={(e) => props.setCategory(e.target.value)} placeholder="cybersecurity, healthcare, …" />
-            </Field>
-            <Field label="Services (comma or newline separated)">
-              <input className="input" value={props.servicesText} onChange={(e) => props.setServicesText(e.target.value)} placeholder="CTEM, ASM" />
-            </Field>
-            <Field label="Competitors">
-              <input className="input" value={props.competitorsText} onChange={(e) => props.setCompetitorsText(e.target.value)} placeholder="rapid7.com, tenable.com" />
-            </Field>
-            <Field label="Goals">
-              <input className="input" value={props.goalsText} onChange={(e) => props.setGoalsText(e.target.value)} placeholder="rank in AI search, generate leads" />
-            </Field>
-          </>
-        )}
-      </div>
-
-      <label className="mt-5 flex items-center gap-2 text-sm text-slate-600">
-        <input type="checkbox" checked={props.useLlm} onChange={(e) => props.setUseLlm(e.target.checked)} />
-        Use the LLM to tailor prose (slower; deterministic scaffold otherwise)
-      </label>
-
-      <button
-        type="submit"
-        disabled={props.loading}
-        className="mt-6 rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white hover:bg-brand-700 disabled:opacity-50"
-      >
-        {props.loading ? "Analyzing…" : mode === "profile" ? "Analyze site" : "Generate plan"}
-      </button>
-
-      <style>{`.input{width:100%;border:1px solid #cbd5e1;border-radius:0.5rem;padding:0.5rem 0.75rem;font-size:0.875rem}`}</style>
-    </form>
+    <div className="mb-5">
+      <span className="text-xs font-semibold uppercase tracking-wide text-brand-600">Step {index + 1}</span>
+      <h2 className="text-lg font-semibold">{STEPS[index]}</h2>
+      <p className="text-sm text-slate-500">{blurbs[index]}</p>
+    </div>
   );
 }
 
@@ -257,74 +354,29 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function ScenarioHeader({ profile, onStartOver }: { profile: SiteProfile; onStartOver: () => void }) {
+function Empty({ children }: { children: React.ReactNode }) {
+  return <p className="text-sm text-slate-500">{children}</p>;
+}
+
+function ScenarioHeader({ profile }: { profile: SiteProfile }) {
   const c = profile.classification;
   const b = profile.business_intent;
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge>{profile.scenario}</Badge>
-            <span className="text-sm font-medium text-brand-700">{profile.deliverable}</span>
-          </div>
-          <h2 className="mt-2 text-xl font-semibold">{profile.headline}</h2>
-          <p className="mt-2 max-w-3xl text-sm text-slate-600">{profile.narrative}</p>
-        </div>
-        <button onClick={onStartOver} className="shrink-0 rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">
-          Start over
-        </button>
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-700">
+          {profile.scenario}
+        </span>
+        <span className="text-sm font-medium text-brand-700">{profile.deliverable}</span>
       </div>
-      <div className="mt-4 flex flex-wrap gap-4 text-sm text-slate-600">
-        <Stat label="Business model" value={`${b.model} (${b.decided_by})`} />
-        <Stat label="Site class" value={`${c.site_class} · ${c.page_count} pages`} />
-        <Stat label="Structure" value={`${Math.round(c.structure_score * 100)}%`} />
-        <Stat label="Journey gaps" value={profile.journey.gaps.join(", ") || "none"} />
+      <h3 className="mt-2 font-semibold">{profile.headline}</h3>
+      <p className="mt-1 text-sm text-slate-600">{profile.narrative}</p>
+      <div className="mt-3 flex flex-wrap gap-4 text-sm text-slate-600">
+        <span>Model: <b>{b.model}</b> ({b.decided_by})</span>
+        <span>Class: <b>{c.site_class}</b> · {c.page_count}p</span>
+        <span>Structure: <b>{Math.round(c.structure_score * 100)}%</b></span>
+        <span>Gaps: {profile.journey.gaps.join(", ") || "none"}</span>
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <span className="block text-xs uppercase tracking-wide text-slate-400">{label}</span>
-      <span className="font-medium text-slate-700">{value}</span>
-    </div>
-  );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-700">{children}</span>;
-}
-
-function Tabs({
-  tab,
-  setTab,
-  showBlueprint,
-  showDeliverables,
-}: {
-  tab: Tab;
-  setTab: (t: Tab) => void;
-  showBlueprint: boolean;
-  showDeliverables: boolean;
-}) {
-  const tabs: { id: Tab; label: string; show: boolean }[] = [
-    { id: "strategy", label: "Strategy & Action Plan", show: true },
-    { id: "blueprint", label: "Ideal Sitemap", show: showBlueprint },
-    { id: "deliverables", label: "Deliverables", show: showDeliverables },
-  ];
-  return (
-    <div className="mt-6 flex gap-1 border-b border-slate-200">
-      {tabs.filter((t) => t.show).map((t) => (
-        <button
-          key={t.id}
-          onClick={() => setTab(t.id)}
-          className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium ${tab === t.id ? "border-brand-600 text-brand-700" : "border-transparent text-slate-500 hover:text-slate-700"}`}
-        >
-          {t.label}
-        </button>
-      ))}
     </div>
   );
 }
@@ -333,7 +385,7 @@ function StrategyPanel({ profile }: { profile: SiteProfile }) {
   return (
     <div className="space-y-3">
       {profile.actions.map((a) => (
-        <div key={a.priority} className="flex gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div key={a.priority} className="flex gap-4 rounded-lg border border-slate-200 p-4">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-50 text-sm font-bold text-brand-700">
             {a.priority}
           </div>
@@ -341,12 +393,12 @@ function StrategyPanel({ profile }: { profile: SiteProfile }) {
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium">{a.title}</span>
               <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{a.category}</span>
-              <span className={`rounded px-2 py-0.5 text-xs ${EFFORT_COLOR[a.effort] ?? "bg-slate-100 text-slate-600"}`}>{a.effort}</span>
+              <span className={`rounded px-2 py-0.5 text-xs ${EFFORT_COLOR[a.effort] ?? "bg-slate-100 text-slate-600"}`}>
+                {a.effort}
+              </span>
             </div>
             <p className="mt-1 text-sm text-slate-600">{a.detail}</p>
-            {a.related_slugs.length > 0 && (
-              <p className="mt-1 text-xs text-slate-400">{a.related_slugs.join(", ")}</p>
-            )}
+            {a.related_slugs.length > 0 && <p className="mt-1 text-xs text-slate-400">{a.related_slugs.join(", ")}</p>}
           </div>
         </div>
       ))}
@@ -354,32 +406,37 @@ function StrategyPanel({ profile }: { profile: SiteProfile }) {
   );
 }
 
-function BlueprintPanel({ sitemap }: { sitemap: SitemapNode[] }) {
+function BlueprintPanel({ sitemap, topic }: { sitemap: SitemapNode[]; topic: string }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-      <table className="w-full text-sm">
-        <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
-          <tr>
-            <th className="px-4 py-2">Page</th>
-            <th className="px-4 py-2">Type / intent</th>
-            <th className="px-4 py-2">Cluster</th>
-            <th className="px-4 py-2">Priority</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {[...sitemap].sort((a, b) => b.priority - a.priority).map((n) => (
-            <tr key={n.slug}>
-              <td className="px-4 py-2">
-                <span className="font-medium">{n.title}</span>
-                <span className="ml-2 text-slate-400">{n.slug}</span>
-              </td>
-              <td className="px-4 py-2 text-slate-600">{n.page_type} / {n.intent}</td>
-              <td className="px-4 py-2 text-slate-600">{n.cluster ?? "—"}</td>
-              <td className="px-4 py-2 text-slate-600">{n.priority.toFixed(2)}</td>
+    <div>
+      <p className="mb-3 text-sm text-slate-500">
+        {sitemap.length} ideal pages for <b>{topic}</b>:
+      </p>
+      <div className="overflow-hidden rounded-lg border border-slate-200">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+            <tr>
+              <th className="px-4 py-2">Page</th>
+              <th className="px-4 py-2">Type / intent</th>
+              <th className="px-4 py-2">Cluster</th>
+              <th className="px-4 py-2">Priority</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {[...sitemap].sort((a, b) => b.priority - a.priority).map((n) => (
+              <tr key={n.slug}>
+                <td className="px-4 py-2">
+                  <span className="font-medium">{n.title}</span>
+                  <span className="ml-2 text-slate-400">{n.slug}</span>
+                </td>
+                <td className="px-4 py-2 text-slate-600">{n.page_type} / {n.intent}</td>
+                <td className="px-4 py-2 text-slate-600">{n.cluster ?? "—"}</td>
+                <td className="px-4 py-2 text-slate-600">{n.priority.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -388,44 +445,44 @@ function DeliverablesPanel({
   deliverables,
   loading,
   onGenerate,
+  onDownloadZip,
 }: {
   deliverables: DeliverablesResponse | null;
   loading: boolean;
   onGenerate: () => void;
+  onDownloadZip: () => void;
 }) {
-  function download(asset: BundleAsset) {
-    const blob = new Blob([asset.content], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = asset.path.replace(/\//g, "_");
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-
   if (!deliverables) {
     return (
-      <div className="rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center">
-        <p className="text-slate-600">Generate a developer-ready bundle: sitemap.xml, navigation, content briefs, per-page specs (with JSON-LD), and an internal-linking + schema plan.</p>
-        <button onClick={onGenerate} disabled={loading} className="mt-4 rounded-lg bg-brand-600 px-5 py-2.5 font-medium text-white hover:bg-brand-700 disabled:opacity-50">
+      <div className="rounded-lg border border-dashed border-slate-300 p-8 text-center">
+        <p className="text-slate-600">
+          Generate a developer-ready bundle: sitemap.xml, navigation, content briefs, per-page specs (with
+          JSON-LD), and internal-linking + schema plans.
+        </p>
+        <button onClick={onGenerate} disabled={loading} className="btn-primary mt-4">
           {loading ? "Building bundle…" : "Generate deliverables"}
         </button>
       </div>
     );
   }
   return (
-    <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-100 px-4 py-3 text-sm text-slate-500">
-        {deliverables.manifest.asset_count} files in <span className="font-medium text-slate-700">{deliverables.manifest.bundle}</span>
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-sm text-slate-500">
+          {deliverables.manifest.asset_count} files in <b>{deliverables.manifest.bundle}</b>
+        </span>
+        <button onClick={onDownloadZip} className="btn-primary">
+          Download all (.zip)
+        </button>
       </div>
-      <ul className="divide-y divide-slate-100">
+      <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
         {deliverables.assets.map((a) => (
           <li key={a.path} className="flex items-center justify-between px-4 py-2.5 text-sm">
             <span>
               <span className="font-medium">{a.path}</span>
               <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{a.kind}</span>
             </span>
-            <button onClick={() => download(a)} className="rounded border border-slate-300 px-3 py-1 text-xs text-brand-700 hover:bg-brand-50">
+            <button onClick={() => downloadAsset(a)} className="rounded border border-slate-300 px-3 py-1 text-xs text-brand-700 hover:bg-brand-50">
               Download
             </button>
           </li>
@@ -433,4 +490,17 @@ function DeliverablesPanel({
       </ul>
     </div>
   );
+}
+
+function downloadAsset(asset: BundleAsset) {
+  triggerDownload(new Blob([asset.content], { type: "text/plain;charset=utf-8" }), asset.path.replace(/\//g, "_"));
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }

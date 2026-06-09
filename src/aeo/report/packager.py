@@ -85,6 +85,20 @@ class AssetBundle:
         written.append(manifest_path)
         return written
 
+    def to_zip_bytes(self) -> bytes:
+        """The whole bundle as a single in-memory ``.zip`` (every asset + manifest.json).
+        Pure — no filesystem. Powers the API's one-click 'Download all' and any caller that
+        wants the bundle as one artifact."""
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for asset in self.assets:
+                zf.writestr(asset.path, asset.content)
+            zf.writestr("manifest.json", json.dumps(self.manifest(), indent=2))
+        return buf.getvalue()
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
