@@ -14,6 +14,7 @@ CLI, site report) depend only on these.
 
 from __future__ import annotations
 
+from .brief import BriefPlan, plan_from_brief
 from .business_intent import BusinessIntent, BusinessModel, detect_business_model
 from .classification import (
     Classification,
@@ -30,6 +31,7 @@ from .signals import PageView, to_page_views
 from .site_profile import SiteProfile, build_site_profile
 
 __all__ = [
+    "BriefPlan",
     "BusinessIntent",
     "BusinessModel",
     "Classification",
@@ -51,6 +53,7 @@ __all__ = [
     "detect_archetypes",
     "detect_business_model",
     "load_intelligence_cfg",
+    "plan_from_brief",
     "route_scenario",
     "to_page_views",
 ]

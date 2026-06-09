@@ -133,8 +133,13 @@ def _load_framework_raw(domain: str | None) -> dict[str, Any]:
 def load_framework(domain: str | None = None) -> Framework:
     """Load the reference framework. With ``domain`` set and a per-domain override
     present, that override is used; otherwise the shared ``framework.yaml``."""
-    raw = _load_framework_raw(domain)
+    return build_framework(_load_framework_raw(domain))
 
+
+def build_framework(raw: dict[str, Any]) -> Framework:
+    """Parse a raw framework mapping (from YAML or ``framework_bootstrap``) into a typed
+    :class:`Framework`. Shared by :func:`load_framework` (file-backed) and the SP-2 brief
+    path (in-memory), so a brief-tailored framework needs no file write to be usable."""
     required_entities = [str(e) for e in (raw.get("required_entities") or [])]
     allowed = set(required_entities)
     journey_stages = [str(s) for s in (raw.get("journey_stages") or ["awareness", "consideration", "decision"])]

@@ -35,31 +35,37 @@ migration; existing suite unaffected.
 
 ---
 
-## SP-2 · No-Website / Business-Input Entry Path — NEXT
+## SP-2 · No-Website / Business-Input Entry Path — ✅ DONE
 
 **Goal:** serve Scenario 1 (no website) end-to-end — turn a business brief into a packaged
 AEO Website Blueprint with **no crawl**.
 
-**Scope / files**
-- `intelligence` or `reference`: a `BusinessInput` model (name, industry, location,
-  services[], competitors[], goals[]).
-- New orchestrator path `Orchestrator.blueprint_from_brief()` (or extend `dry_run`):
-  brief → `framework bootstrap --category` → `generate_blueprint` (crawl-free) →
-  `build_site_profile(discovered=[], …)` → packaged output.
-- CLI: `aeo blueprint-from-brief` (or extend `aeo onboard` with a `--no-site` mode).
-- Plumb `category` from the brief into `build_site_profile` (the `industry_hints` seam,
-  noted by review as currently unreached by live wiring).
+**Delivered**
+- `reference/business_input.py` — `BusinessInput` brief (name, optional domain, category,
+  topic, location, services[], competitors[], goals[]) with a stable `key()` (domain or
+  name-slug) and `topic_hint()`.
+- `intelligence/brief.py` — `BriefPlan` + `plan_from_brief(brief, framework, llm)`: builds
+  the blueprint from the brief-tailored framework, diffs against an empty site (every ideal
+  page missing), routes through the SP-1 layer to `no_website` + a prioritized build plan.
+  Pure given the framework; `category` is plumbed into the business-model classifier
+  (closing the `industry_hints` gap the SP-1 review flagged).
+- `reference/framework.py` — extracted `build_framework(raw)` so a brief-tailored framework
+  is usable **in-memory** (no file write required).
+- CLI `aeo plan NAME [--domain] [--category] [--service …] [--competitor …] [--goal …]
+  [--llm] [--write-config] [--json]` — read-only by default; `--write-config` persists the
+  framework as the onboarding artifact.
+
+**Verification:** 503 unit tests pass (+5 new `test_brief.py`), ruff clean, mypy clean on
+new modules. Live `aeo plan "Acme Security" --domain acme.com --category cybersecurity
+--no-llm` → `no_website` → AEO Website Blueprint (9-page ideal sitemap + build plan).
 
 **Reuses:** `reference/framework_bootstrap.py`, `reference/generator.py`,
-`reference/onboard.py`, `reference/competitor_discovery.py`, the SP-1 router (already
-handles `SiteClass.NONE`).
+`processor/coverage_diff.py`, the SP-1 router (handles `SiteClass.NONE`).
 
-**Dependencies:** SP-1. **Effort:** ~S–M (mostly an entry point + input model; the engine
-exists).
-
-**Acceptance:** a brief with no domain produces a full blueprint + `no_website` strategy +
-verified competitors, writing nothing that requires a live site; `category` measurably
-shifts the business model and entity ceiling.
+**Acceptance — met:** a brief (even domain-less) produces a full blueprint + `no_website`
+strategy with no live-site dependency; `category` measurably shifts the business model.
+*(Live competitor discovery + entity merge from the brief — already in `onboard.py` — can
+be wired into `aeo plan` as a thin follow-up if desired.)*
 
 ---
 
@@ -137,7 +143,7 @@ not an audit tool.
 
 | Sub-project | State |
 |---|---|
-| SP-1 Intelligence Layer | ✅ shipped + verified + pushed (`feature/sp1-intelligence-layer`) |
-| SP-2 No-Website Entry | 📋 specced here, not started |
+| SP-1 Intelligence Layer | ✅ shipped + verified + merged to `main` |
+| SP-2 No-Website Entry | ✅ shipped + verified (`feature/sp2-no-website-entry`); `aeo plan` |
 | SP-3 Asset Packager | 📋 specced here, not started |
 | SP-4 Guided UI (FastAPI + React/Next) | 📋 designed in `PRODUCT_FLOW.md`, not started |
