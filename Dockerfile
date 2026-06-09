@@ -30,7 +30,9 @@ RUN apt-get update \
 # or tests don't bust the pip cache.
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install . \
+# Install with the [api] extra so the same image serves `aeo serve` (FastAPI/uvicorn)
+# alongside `aeo run` / `aeo worker` / `aeo migrate`.
+RUN pip install ".[api]" \
     && python -m playwright install --with-deps chromium \
     && chmod -R a+rX "$PLAYWRIGHT_BROWSERS_PATH"
 
