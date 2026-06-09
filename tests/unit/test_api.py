@@ -65,8 +65,10 @@ def test_plan_requires_name() -> None:
 
 
 def test_audit_job_lifecycle_with_fake_runner(monkeypatch) -> None:
-    # Inject a fake audit runner so no DB/crawl is needed; TestClient runs the
-    # BackgroundTask to completion before returning the POST response.
+    # Inject a fake audit runner so no DB/crawl is needed. The audit runs on a worker
+    # thread (so it can't block the API loop), so poll until it reaches a terminal state.
+    import time
+
     from aeo.api import jobs as jobs_mod
 
     async def fake_runner(domain: str, name: str):
@@ -78,7 +80,12 @@ def test_audit_job_lifecycle_with_fake_runner(monkeypatch) -> None:
     job_id = r.json()["job_id"]
     assert job_id
 
-    body = client.get(f"/api/audit/{job_id}").json()
+    body: dict = {}
+    for _ in range(100):
+        body = client.get(f"/api/audit/{job_id}").json()
+        if body["status"] in ("succeeded", "failed"):
+            break
+        time.sleep(0.02)
     assert body["status"] == "succeeded"
     assert body["result"]["run"]["run_id"] == 7
 

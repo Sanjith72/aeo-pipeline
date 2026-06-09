@@ -13,6 +13,8 @@ so the job lifecycle is unit-tested with a fake runner — no DB, no network.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -102,6 +104,21 @@ async def execute_audit(
     except Exception as exc:  # the job records the failure; the endpoint never 500s
         log.warning("audit_job_failed", job_id=job_id, error=str(exc))
         registry.update(job_id, status=JOB_FAILED, progress="failed", error=str(exc))
+
+
+def spawn_audit(job_id: str, *, domain: str, name: str) -> threading.Thread:
+    """Run an audit on a dedicated daemon thread (with its own event loop) so a long
+    crawl/score/analyze never blocks the API's event loop — keeping ``/api/audit/{id}``
+    polling and the rest of the server responsive while it runs. Reads the module-level
+    ``default_audit_runner`` at call time so it stays monkeypatchable in tests."""
+    runner = default_audit_runner
+
+    def _run() -> None:
+        asyncio.run(execute_audit(JOBS, job_id, domain=domain, name=name, runner=runner))
+
+    thread = threading.Thread(target=_run, name=f"audit-{job_id}", daemon=True)
+    thread.start()
+    return thread
 
 
 async def default_audit_runner(domain: str, name: str) -> dict[str, Any]:

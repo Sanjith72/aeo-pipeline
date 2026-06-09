@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from ..intelligence.brief import plan_from_brief
@@ -31,7 +31,7 @@ from ..reference.framework_bootstrap import bootstrap_framework, framework_file_
 from ..reference.generator import generate_blueprint
 from ..report.packager import build_asset_bundle
 from . import jobs as jobs_mod
-from .jobs import JOBS, execute_audit
+from .jobs import JOBS
 
 
 def current_api_key() -> str | None:
@@ -231,21 +231,15 @@ def site_report(run_id: int) -> dict[str, Any]:
 
 
 @app.post("/api/audit")
-async def start_audit(req: AuditRequest, background: BackgroundTasks) -> dict[str, Any]:
-    """Start a deep audit (full crawl → score → analyze → site report) as a background job.
-    Returns a job id to poll via ``GET /api/audit/{job_id}``. Needs a live DB + network."""
+def start_audit(req: AuditRequest) -> dict[str, Any]:
+    """Start a deep audit (full crawl → score → analyze → site report) on a dedicated
+    worker thread, so it never blocks the API event loop. Returns a job id to poll via
+    ``GET /api/audit/{job_id}``. Needs a live DB + network."""
     domain = req.domain.strip()
     if not domain:
         raise HTTPException(status_code=422, detail="domain is required")
     job = JOBS.create("audit")
-    background.add_task(
-        execute_audit,
-        JOBS,
-        job.id,
-        domain=domain,
-        name=(req.name or domain).strip(),
-        runner=jobs_mod.default_audit_runner,
-    )
+    jobs_mod.spawn_audit(job.id, domain=domain, name=(req.name or domain).strip())
     return {"job_id": job.id, "status": job.status}
 
 
