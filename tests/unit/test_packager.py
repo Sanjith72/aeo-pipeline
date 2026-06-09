@@ -1,0 +1,97 @@
+"""SP-3 Implementation Asset Packager — bundle assembly + materialization."""
+
+from __future__ import annotations
+
+import json
+from xml.etree import ElementTree as ET
+
+from aeo.intelligence.brief import plan_from_brief
+from aeo.reference.blueprint import Blueprint, CoverageCluster, CoverageMap, SitemapNode
+from aeo.reference.business_input import BusinessInput
+from aeo.reference.framework import load_framework
+from aeo.report.packager import AssetBundle, build_asset_bundle
+
+
+def _blueprint() -> Blueprint:
+    return Blueprint(
+        topic="CTEM",
+        version=2,
+        sitemap=[
+            SitemapNode(slug="/resources", title="Resources", page_type="pillar",
+                        intent="informational", journey_stage="awareness", cluster="core",
+                        seed_questions=["What is CTEM?"], required_entities=["CTEM"], priority=0.9),
+            SitemapNode(slug="/what-is-ctem", title="What is CTEM", page_type="blog",
+                        intent="informational", journey_stage="awareness", cluster="core", priority=0.7),
+            SitemapNode(slug="/contact", title="Contact", page_type="contact",
+                        intent="commercial", journey_stage="decision", priority=0.4),
+        ],
+        coverage=CoverageMap(
+            required_entities=["CTEM", "CVSS"],
+            clusters=[CoverageCluster(name="core", pillar_slug="/resources",
+                                      supporting_slugs=["/what-is-ctem"], min_pages=3)],
+        ),
+    ).with_hash()
+
+
+def test_bundle_has_all_core_assets() -> None:
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="acme.com", draft_limit=3)
+    kinds = {a.kind for a in bundle.assets}
+    assert {"readme", "sitemap", "nav", "content_briefs", "linking", "schema", "page_spec"} <= kinds
+    paths = {a.path for a in bundle.assets}
+    assert "sitemap.xml" in paths
+    assert any(p.startswith("pages/") for p in paths)
+
+
+def test_sitemap_is_valid_xml_with_absolute_urls() -> None:
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="https://acme.com", draft_limit=0)
+    sitemap = next(a for a in bundle.assets if a.kind == "sitemap")
+    root = ET.fromstring(sitemap.content)  # parses → valid XML
+    locs = [el.text for el in root.iter() if el.tag.endswith("loc")]
+    assert "https://acme.com/resources" in locs
+    assert "https://acme.com/contact" in locs
+
+
+def test_page_specs_are_bounded_and_carry_jsonld() -> None:
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="acme.com", draft_limit=2)
+    specs = [a for a in bundle.assets if a.kind == "page_spec"]
+    assert len(specs) == 2  # draft_limit honored
+    assert all("JSON-LD" in s.content for s in specs)
+    assert all("```json" in s.content for s in specs)
+
+
+def test_strategy_asset_only_when_profile_given() -> None:
+    bp = _blueprint()
+    assert not any(a.kind == "strategy" for a in build_asset_bundle(blueprint=bp, draft_limit=0).assets)
+    profile = {"domain": "acme.com", "scenario": "small_site", "deliverable": "Gap Analysis & Build Plan",
+               "narrative": "…", "business_intent": {"model": "saas", "decided_by": "deterministic"},
+               "classification": {"site_class": "small", "page_count": 3},
+               "journey": {"gaps": ["conversion"]}, "actions": [{"priority": 1, "category": "content",
+               "title": "x", "effort": "low"}]}
+    assert any(a.kind == "strategy" for a in build_asset_bundle(blueprint=bp, profile=profile, draft_limit=0).assets)
+
+
+def test_write_materializes_files(tmp_path) -> None:
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="acme.com", draft_limit=2)
+    written = bundle.write(tmp_path)
+    assert len(written) == len(bundle.assets) + 1  # every asset + manifest.json
+    assert (tmp_path / "sitemap.xml").exists()
+    assert (tmp_path / "content-briefs.md").exists()
+    assert (tmp_path / "manifest.json").exists()
+    assert list((tmp_path / "pages").glob("*.md"))
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["asset_count"] == len(bundle.assets)
+
+
+def test_bundle_from_brief_plan_no_website(tmp_path) -> None:
+    # End-to-end with SP-2: a no-website brief → blueprint → bundle.
+    framework = load_framework()
+    plan = plan_from_brief(BusinessInput(name="Acme", domain="acme.com"), framework=framework)
+    bundle = build_asset_bundle(blueprint=plan.blueprint, coverage=plan.coverage,
+                                profile=plan.profile.to_dict(), origin="acme.com", draft_limit=3)
+    assert isinstance(bundle, AssetBundle)
+    assert any(a.kind == "strategy" for a in bundle.assets)  # profile present
+    # every blueprint page appears in the sitemap
+    sitemap = next(a for a in bundle.assets if a.kind == "sitemap")
+    assert sitemap.content.count("<loc>") == len(plan.blueprint.sitemap)
+    bundle.write(tmp_path)
+    assert (tmp_path / "README.md").exists()

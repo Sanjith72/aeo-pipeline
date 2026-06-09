@@ -11,6 +11,7 @@ delegates. Commands:
     aeo discover DOMAIN         discover + rank a site's URLs (no crawl, no DB)
     aeo profile  DOMAIN         classify site + AEO strategy/action plan (no crawl-score, no DB)
     aeo plan     NAME           AEO blueprint + build plan from a brief — NO website required
+    aeo deliverables -r RUN_ID  developer-ready asset bundle (sitemap.xml, page specs, briefs)
     aeo run    URLS… -t NAME    crawl → extract → score (the full pipeline)
     aeo crawl  URLS… -t NAME    crawl → extract only (score later)
     aeo score  -r RUN_ID        score a run's extracted-but-unscored pages
@@ -343,6 +344,7 @@ def plan(
     goals: list[str] = typer.Option(None, "--goal", help="A business goal (repeatable)"),
     use_llm: bool = typer.Option(False, "--llm/--no-llm", help="Use the LLM for framework + blueprint synthesis"),
     write_config: bool = typer.Option(False, "--write-config", help="Persist the generated framework to config/domains/"),
+    bundle: Path | None = typer.Option(None, "--bundle", help="Write a developer-ready asset bundle to this directory"),
     as_json: bool = typer.Option(False, "--json", help="Emit the full plan as JSON"),
 ) -> None:
     """Generate an AEO Website Blueprint + strategy from a business brief — NO website required.
@@ -389,6 +391,16 @@ def plan(
 
     result = plan_from_brief(brief, framework=framework, llm=llm)
 
+    if bundle is not None:
+        from .report.packager import build_asset_bundle
+
+        ab = build_asset_bundle(
+            blueprint=result.blueprint, coverage=result.coverage,
+            profile=result.profile.to_dict(), origin=brief.domain or key, llm=llm,
+        )
+        written = ab.write(bundle)
+        typer.echo(f"wrote {len(written)} file(s) to {bundle}  (bundle: {ab.name})")
+
     if as_json:
         _print(result.to_dict())
         return
@@ -411,6 +423,49 @@ def plan(
     for a in prof["actions"]:
         typer.echo(f"    {a['priority']:>2}. [{a['category']:13}] {a['title']}  ({a['effort']})")
     typer.echo("next: --write-config to persist the framework as the onboarding artifact, or --json for the full plan.")
+
+
+@app.command()
+def deliverables(
+    run_id: int = typer.Option(..., "--run-id", "-r", help="Scored/audited run to package"),
+    out: Path = typer.Option(..., "--out", "-o", help="Output directory for the asset bundle"),
+    use_llm: bool = typer.Option(False, "--llm/--no-llm", help="Use the LLM for per-page spec prose"),
+    draft_limit: int = typer.Option(10, "--draft-limit", help="How many per-page spec sheets to generate"),
+) -> None:
+    """Build a developer-ready implementation bundle from a run's blueprint + coverage diff.
+
+    Writes sitemap.xml, navigation, content briefs, an internal-linking plan, schema/entity
+    recommendations, and a per-page spec sheet (H1 + sections + FAQ + JSON-LD) for the top
+    pages — to --out. Reuses the run's pinned blueprint, coverage diff, and SP-1 strategy.
+    """
+    _bootstrap()
+    from .nlp.llm import get_client
+    from .processor.coverage_diff import CoverageDiffResult
+    from .report.packager import build_asset_bundle
+    from .storage.repos import blueprints as blueprints_repo
+    from .storage.repos import coverage as coverage_repo
+
+    cov_row = coverage_repo.get(run_id)
+    if not cov_row or not cov_row.get("blueprint_id"):
+        typer.secho(f"no coverage diff / blueprint for run {run_id} — run an audit first", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    stored = blueprints_repo.get(cov_row["blueprint_id"])
+    if stored is None:
+        typer.secho(f"blueprint {cov_row['blueprint_id']} not found", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    detail = cov_row.get("detail") or {}
+    coverage = CoverageDiffResult.from_detail(detail)
+    profile = detail.get("site_profile")
+    llm = get_client() if use_llm else None
+    ab = build_asset_bundle(
+        blueprint=stored.blueprint, coverage=coverage, profile=profile,
+        origin=(profile or {}).get("domain"), llm=llm, draft_limit=draft_limit,
+    )
+    written = ab.write(out)
+    typer.echo(f"wrote {len(written)} file(s) to {out}  (bundle: {ab.name})")
+    for p in written[:12]:
+        typer.echo(f"  {p}")
 
 
 @app.command()
