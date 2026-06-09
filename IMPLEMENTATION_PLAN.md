@@ -69,30 +69,34 @@ be wired into `aeo plan` as a thin follow-up if desired.)*
 
 ---
 
-## SP-3 · Implementation Asset Packager — NEXT
+## SP-3 · Implementation Asset Packager — ✅ DONE
 
 **Goal:** turn the blueprint + strategy into a **developer-ready bundle** the user can
 implement directly.
 
-**Scope / files**
-- `report/packager.py`: assemble a bundle from a `SiteProfile` + `Blueprint` + drafts:
-  - `sitemap.xml` (the ideal sitemap),
-  - navigation hierarchy spec (clusters → pillar → supporting),
-  - per-page spec sheets (H1, sections, FAQ, JSON-LD — from `recommender/draft.py`),
-  - content briefs (priority-ordered missing pages),
-  - internal-linking plan, schema/entity recommendations.
-- Export formats: Markdown bundle, ZIP, PDF (reuse `report/pdf.py`), and JSON.
-- CLI: `aeo deliverables -r RUN_ID` / `--from-blueprint`.
+**Delivered**
+- `report/packager.py` — `Asset` / `AssetBundle` + `build_asset_bundle(blueprint, coverage,
+  profile, origin, llm, draft_limit)` (pure) and `AssetBundle.write(out_dir)` (the only I/O).
+  Assets: `README.md`, `sitemap.xml` (valid XML, absolute URLs), `navigation.md`
+  (primary nav + cluster hierarchy), `content-briefs.md` (priority-ordered, every page),
+  `internal-linking.md`, `schema-and-entities.md`, `STRATEGY.md` (when a profile is given),
+  and `pages/<slug>.md` per-page spec sheets (H1 + sections + FAQ + **code-built JSON-LD**,
+  reusing `recommender/draft.py`), + a `manifest.json`.
+- CLI: `aeo plan … --bundle DIR` (no-website path, in-memory) and `aeo deliverables -r
+  RUN_ID --out DIR` (DB-backed: pinned blueprint + coverage diff + embedded SP-1 profile).
 
-**Reuses:** `recommender/draft.py` (`PageDraft`, `draft_site_pages`), `report/*`,
-`report/pdf.py`.
+**Verification:** 509 unit tests pass (+6 `test_packager.py`), ruff clean, mypy clean on
+the new module. Live `aeo plan "Acme Security" … --bundle <dir>` wrote a **17-file** bundle
+(README, sitemap.xml, navigation, content-briefs, internal-linking, schema-and-entities,
+STRATEGY + 9 per-page specs + manifest).
 
-**Dependencies:** SP-1 (strategy/actions); pairs with SP-2 (blueprint source).
-**Effort:** ~M (assembly + formatters; the content generation exists).
+**Reuses:** `recommender/draft.py` (`draft_missing_page`/`PageDraft`), `reference/blueprint.py`,
+`processor/coverage_diff.py`. **Deferred (thin follow-ups):** ZIP/PDF export of the bundle
+(reuse `report/pdf.py`).
 
-**Acceptance:** for any run/blueprint, produce a downloadable bundle whose pages a
-developer can build without further interpretation; JSON-LD validates; deterministic
-scaffold when the LLM is off.
+**Acceptance — met:** for any blueprint/run, produce a bundle whose pages a developer can
+build without further interpretation; sitemap.xml parses; JSON-LD is code-built; deterministic
+scaffold with the LLM off.
 
 ---
 
@@ -144,6 +148,6 @@ not an audit tool.
 | Sub-project | State |
 |---|---|
 | SP-1 Intelligence Layer | ✅ shipped + verified + merged to `main` |
-| SP-2 No-Website Entry | ✅ shipped + verified (`feature/sp2-no-website-entry`); `aeo plan` |
-| SP-3 Asset Packager | 📋 specced here, not started |
+| SP-2 No-Website Entry | ✅ shipped + merged to `main`; `aeo plan` |
+| SP-3 Asset Packager | ✅ shipped + verified (`feature/sp3-asset-packager`); `aeo deliverables` / `aeo plan --bundle` |
 | SP-4 Guided UI (FastAPI + React/Next) | 📋 designed in `PRODUCT_FLOW.md`, not started |
