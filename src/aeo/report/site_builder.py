@@ -92,6 +92,7 @@ def build_site_report(
     llm: Any = None,
     origin: str | None = None,
     draft_limit: int = 0,
+    site_profile: dict[str, Any] | None = None,
 ) -> SiteReport:
     """Assemble the site-level AEO report from the blueprint, coverage diff, and
     per-page summaries.
@@ -100,7 +101,11 @@ def build_site_report(
     (H1 + headers + body prose + JSON-LD) — LLM-authored when ``llm`` is enabled, a
     deterministic scaffold otherwise. ``origin`` (the site's base URL/domain) is used to
     build absolute URLs in the drafted JSON-LD. Defaults keep the builder a pure
-    transform (no drafting) for tests and lightweight callers."""
+    transform (no drafting) for tests and lightweight callers.
+
+    ``site_profile`` (the intelligence layer's :meth:`SiteProfile.to_dict`) adds the
+    consultant-facing ``strategy`` section: scenario, business model, journey gaps, and
+    the prioritized action plan — the "here's what to do" half of the deliverable."""
     rollup = _page_rollup(pages)
     briefs = new_page_briefs(coverage)
     if draft_limit > 0 and briefs:
@@ -134,12 +139,20 @@ def build_site_report(
         },
         "page_rollup": rollup,
     }
+    if site_profile:
+        sections["strategy"] = site_profile
 
+    strat = ""
+    if site_profile:
+        strat = (
+            f" Scenario: {site_profile.get('scenario')} → {site_profile.get('deliverable')}; "
+            f"business model {(site_profile.get('business_intent') or {}).get('model')}."
+        )
     summary = (
         f"{blueprint.topic}: blueprint v{blueprint.version} — site covers "
         f"{coverage.matched_count}/{coverage.total_nodes} ideal pages ({coverage.coverage_pct}%). "
         f"{len(coverage.missing)} missing page(s), {len(thin)} thin cluster(s). "
-        f"{rollup['pages']} page(s) analyzed, avg {rollup['avg_score_pct']}%."
+        f"{rollup['pages']} page(s) analyzed, avg {rollup['avg_score_pct']}%.{strat}"
     )
 
     return SiteReport(
@@ -163,12 +176,37 @@ def render_site_report(report: SiteReport | dict[str, Any]) -> str:
     o = sections.get("overview", {}) or {}
     cov = sections.get("coverage_gaps", {}) or {}
     roll = sections.get("page_rollup", {}) or {}
+    strategy = sections.get("strategy", {}) or {}
 
     lines = [
         rule,
         f"SITE AEO REPORT  -  {o.get('topic', '?')} (blueprint v{o.get('blueprint_version', '?')})",
         rule,
         summary,
+    ]
+
+    if strategy:
+        cls = strategy.get("classification", {}) or {}
+        biz = strategy.get("business_intent", {}) or {}
+        jr = strategy.get("journey", {}) or {}
+        struct_pct = round(float(cls.get("structure_score", 0)) * 100)
+        lines += [
+            "",
+            "STRATEGY",
+            f"  Scenario      : {strategy.get('scenario', '?')}  ->  {strategy.get('deliverable', '?')}",
+            f"  Business model: {biz.get('model', '?')}  (site: {cls.get('site_class', '?')}, "
+            f"{cls.get('page_count', '?')} pages, structure {struct_pct}%)",
+            f"  {strategy.get('headline', '')}",
+            f"  Journey gaps  : {', '.join(jr.get('gaps', [])) or 'none'}",
+            f"  Missing pages : {', '.join(cls.get('missing_archetypes', [])) or 'none'}",
+        ]
+        actions = strategy.get("actions", []) or []
+        if actions:
+            lines.append("  Action plan   :")
+            for a in actions[:12]:
+                lines.append(f"    {a.get('priority')}. [{a.get('category')}] {a.get('title')}")
+
+    lines += [
         "",
         "COVERAGE",
         f"  Ideal pages   : {o.get('ideal_pages', '?')}",

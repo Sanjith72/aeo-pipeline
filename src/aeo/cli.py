@@ -9,6 +9,7 @@ delegates. Commands:
     aeo onboard NAME DOMAIN     name + domain in -> framework + entities.yaml + competitors out
     aeo audit  DOMAIN -t NAME   discover → prioritize → crawl → extract → score
     aeo discover DOMAIN         discover + rank a site's URLs (no crawl, no DB)
+    aeo profile  DOMAIN         classify site + AEO strategy/action plan (no crawl-score, no DB)
     aeo run    URLS… -t NAME    crawl → extract → score (the full pipeline)
     aeo crawl  URLS… -t NAME    crawl → extract only (score later)
     aeo score  -r RUN_ID        score a run's extracted-but-unscored pages
@@ -261,6 +262,72 @@ def discover(
     for s in rows:
         mark = "*" if s.selected else " "
         typer.echo(f"{mark} {s.rank:>3}. {s.final_score:>8.2f}  {s.page_type:9} {s.url}")
+
+
+@app.command()
+def profile(
+    domain: str = typer.Argument(..., help="Site domain or URL to profile"),
+    max_urls: int | None = typer.Option(None, "--max-urls", help="Cap discovery before ranking"),
+    use_llm: bool = typer.Option(
+        False, "--llm/--no-llm", help="Use the LLM for the business-model tiebreak + blueprint synthesis"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the raw SiteProfile JSON"),
+) -> None:
+    """Classify a site and print its AEO STRATEGY — the consultant's answer.
+
+    Site tier (none/single/small/…/enterprise), business model, journey-stage gaps,
+    the routed scenario, and a prioritized action plan. Read-only: discovers + ranks the
+    site and builds the profile in memory, writing NOTHING to the DB (like `aeo discover`).
+    """
+    _bootstrap()
+    from .crawl.discovery import discover as discover_site
+    from .crawl.prioritize import PageInput, load_prioritization_cfg, prioritize
+    from .intelligence import build_site_profile
+    from .nlp.llm import get_client
+    from .pipeline.reference_arch import discovered_pages
+    from .processor.coverage_diff import coverage_diff
+    from .reference import load_reference
+    from .reference.competitor_patterns import CompetitorPatterns
+    from .reference.domain_config import load_domain_config
+    from .reference.framework import load_framework
+    from .reference.generator import generate_blueprint
+
+    cfg = load_prioritization_cfg()
+    dc = load_domain_config(domain)
+    result = asyncio.run(discover_site(domain, max_urls=max_urls))
+    scored = prioritize([PageInput(d.url, d.internal_links) for d in result.urls], cfg)
+
+    # Deterministic in-memory blueprint + coverage (no DB), so the journey engine has
+    # missing-node fillers and the scenario router has a coverage signal.
+    llm = get_client() if use_llm else None
+    framework = load_framework(domain)
+    topic = (dc.topic if dc else None) or framework.topic
+    blueprint = generate_blueprint(
+        topic=topic, framework=framework, patterns=CompetitorPatterns(), llm=llm
+    )
+    reference = load_reference()
+    cov = coverage_diff(blueprint, discovered_pages(scored, reference))
+    prof = build_site_profile(domain=domain, discovered=scored, coverage=cov, topic=topic, llm=llm)
+
+    if as_json:
+        _print(prof.to_dict())
+        return
+
+    d = prof.to_dict()
+    cls, biz, jr = d["classification"], d["business_intent"], d["journey"]
+    struct_pct = round(float(cls["structure_score"]) * 100)
+    typer.echo(f"AEO PROFILE  {domain}   (discovered {len(scored)} pages via {result.source})")
+    typer.echo(f"  Scenario      : {d['scenario']}  ->  {d['deliverable']}")
+    typer.echo(f"  Site class    : {cls['site_class']}  ({cls['page_count']} pages, structure {struct_pct}%)")
+    typer.echo(f"  Business model: {biz['model']}  (confidence {biz['confidence']}, {biz['decided_by']})")
+    typer.echo(f"  {d['headline']}")
+    typer.echo(f"  Present pages : {', '.join(cls['present_archetypes']) or 'none'}")
+    typer.echo(f"  Missing pages : {', '.join(cls['missing_archetypes']) or 'none'}")
+    typer.echo(f"  Journey gaps  : {', '.join(jr['gaps']) or 'none'}")
+    typer.echo(f"  Coverage      : {cov.coverage_pct}%  ({len(cov.missing)} missing ideal pages)")
+    typer.echo("  ACTION PLAN:")
+    for a in d["actions"]:
+        typer.echo(f"    {a['priority']:>2}. [{a['category']:13}] {a['title']}  ({a['effort']})")
 
 
 @app.command()
