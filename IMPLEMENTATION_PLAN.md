@@ -151,8 +151,13 @@ a "Deep audit" option (Website-Info radios: plan / quick / deep) that starts the
 an `AuditProgress` panel, and loads the resulting site report's strategy. Verified: 523 tests (+6, runner
 faked — no DB/crawl) + `npm run build` clean.
 
-**Deferred (v4):** auth (API tokens / sign-in), and moving the deep audit off `BackgroundTasks` onto the
-DB-backed `pipeline/worker.py` queue for multi-worker scale.
+**v4 delivered:** **API-key auth**. `settings.ApiCfg.auth_key` (`AEO__API__AUTH_KEY`); a global
+`require_api_key` dependency gates every `/api/*` route except `/api/health` (and non-`/api/` paths like
+`/docs`) when a key is set, else open for dev. Frontend sends `X-API-Key` from `NEXT_PUBLIC_API_KEY`.
+Verified: 525 tests (+2: open-mode + enforced 401/200, health stays open) + `npm run build` clean.
+
+**Deferred (v5):** move the deep audit off `BackgroundTasks` onto the DB-backed `pipeline/worker.py` queue
+for multi-worker scale, and richer sign-in (OAuth) if this becomes customer-facing.
 
 ---
 

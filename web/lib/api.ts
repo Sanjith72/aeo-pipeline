@@ -11,13 +11,20 @@ import type {
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+
+function headers(extra?: Record<string, string>): Record<string, string> {
+  const h: Record<string, string> = { ...extra };
+  if (API_KEY) h["X-API-Key"] = API_KEY;
+  return h;
+}
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
   } catch {
@@ -33,7 +40,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 export const api = {
   base: BASE,
   async health(): Promise<{ status: string; db: string }> {
-    const res = await fetch(`${BASE}/api/health`);
+    const res = await fetch(`${BASE}/api/health`, { headers: headers() });
     return (await res.json()) as { status: string; db: string };
   },
   plan(req: BriefRequest): Promise<BriefPlan> {
@@ -47,7 +54,7 @@ export const api = {
     try {
       res = await fetch(`${BASE}/api/deliverables.zip`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: headers({ "Content-Type": "application/json" }),
         body: JSON.stringify(req),
       });
     } catch {
@@ -66,12 +73,12 @@ export const api = {
     return postJson<{ job_id: string; status: string }>("/api/audit", req);
   },
   async auditStatus(jobId: string): Promise<AuditJob> {
-    const res = await fetch(`${BASE}/api/audit/${jobId}`);
+    const res = await fetch(`${BASE}/api/audit/${jobId}`, { headers: headers() });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as AuditJob;
   },
   async siteReport(runId: number): Promise<SiteReportResponse> {
-    const res = await fetch(`${BASE}/api/site-report/${runId}`);
+    const res = await fetch(`${BASE}/api/site-report/${runId}`, { headers: headers() });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as SiteReportResponse;
   },

@@ -11,13 +11,16 @@ Live/DB endpoints:
   GET  /api/site-report/{run} persisted site report incl. the SP-1 strategy section (needs DB)
 
 Every handler delegates to an existing ``aeo`` function — no business logic here.
+
+Auth: when ``AEO__API__AUTH_KEY`` is set, all ``/api/*`` routes except ``/api/health``
+require a matching ``X-API-Key`` header (see :func:`require_api_key`). Unset = open (dev).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from ..intelligence.brief import plan_from_brief
@@ -30,7 +33,29 @@ from ..report.packager import build_asset_bundle
 from . import jobs as jobs_mod
 from .jobs import JOBS, execute_audit
 
-app = FastAPI(title="AEO Pipeline API", version="0.2.0")
+
+def current_api_key() -> str | None:
+    """The configured API auth key (AEO__API__AUTH_KEY), or None for open/dev mode."""
+    from ..settings import get_settings
+
+    return get_settings().api.auth_key
+
+
+def require_api_key(request: Request) -> None:
+    """Global guard: when an auth key is configured, every ``/api/*`` route except
+    ``/api/health`` requires a matching ``X-API-Key`` header. No key configured → open
+    (dev). Non-``/api/`` paths (``/docs``, ``/openapi.json``) are never gated."""
+    key = current_api_key()
+    if not key:
+        return
+    path = request.url.path
+    if not path.startswith("/api/") or path == "/api/health":
+        return
+    if request.headers.get("x-api-key") != key:
+        raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
+
+
+app = FastAPI(title="AEO Pipeline API", version="0.2.0", dependencies=[Depends(require_api_key)])
 
 
 # ── request models ────────────────────────────────────────────────────────────

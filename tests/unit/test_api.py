@@ -87,6 +87,26 @@ def test_audit_status_404() -> None:
     assert client.get("/api/audit/does-not-exist").status_code == 404
 
 
+def test_auth_open_when_no_key_configured() -> None:
+    # default test env has no AEO__API__AUTH_KEY → endpoints are open (no header)
+    assert client.post("/api/plan", json={"name": "Acme", "domain": "acme.com"}).status_code == 200
+
+
+def test_auth_enforced_when_key_configured(monkeypatch) -> None:
+    from aeo.settings import get_settings
+
+    # set the key on the live (cached) settings the guard reads; monkeypatch restores it
+    monkeypatch.setattr(get_settings().api, "auth_key", "s3cret")
+    # missing / wrong key → 401
+    assert client.post("/api/plan", json={"name": "Acme", "domain": "acme.com"}).status_code == 401
+    assert client.post("/api/plan", json={"name": "Acme"}, headers={"X-API-Key": "nope"}).status_code == 401
+    # correct key → 200
+    ok = client.post("/api/plan", json={"name": "Acme", "domain": "acme.com"}, headers={"X-API-Key": "s3cret"})
+    assert ok.status_code == 200
+    # health stays open even with a key configured
+    assert client.get("/api/health").status_code == 200
+
+
 def test_audit_requires_domain() -> None:
     assert client.post("/api/audit", json={"domain": "  "}).status_code == 422
 
