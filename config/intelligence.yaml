@@ -1,0 +1,42 @@
+# Intelligence-layer configuration (SP-1).
+#
+# Loaded by aeo.intelligence.config.load_intelligence_cfg() over code defaults — so
+# every section here is OPTIONAL and overrides the matching default section. Delete
+# this file and the engines still run on their built-in defaults (mirrors how
+# prioritization.yaml layers over crawl/prioritize defaults).
+#
+# Tunables:
+#   classification.thresholds      — page-count tier boundaries (inclusive upper bounds)
+#   classification.archetypes      — essential page archetypes (page_types + slug_tokens)
+#   classification.expected_archetypes — archetypes expected PER business model (structure_score denom)
+#   business_model.signals         — per-model weighted slug signals (token: weight)
+#   business_model.llm_tiebreak_margin — relative gap under which the LLM breaks a tie
+#   business_model.industry_hints  — onboarding industry/topic keywords -> model boost
+#   journey.stage_signals          — 5-stage funnel mapping (page_types + slug_tokens)
+#   scenario.map                   — site_class -> scenario
+#   scenario.deliverables          — scenario -> named deliverable
+
+classification:
+  thresholds:
+    single_page: 1     # <=1 page  -> single_page
+    small: 10          # 2..10     -> small
+    medium: 50         # 11..50    -> medium
+    large: 200         # 51..200   -> large ; >200 -> enterprise
+
+scenario:
+  map:
+    none: no_website
+    single_page: single_page
+    small: small_site
+    medium: growing_site
+    large: mature_site
+    enterprise: mature_site
+  deliverables:
+    no_website: AEO Website Blueprint
+    single_page: Restructuring Roadmap
+    small_site: Gap Analysis & Build Plan
+    growing_site: Gap Analysis & Authority Plan
+    mature_site: Consolidation & Authority Plan
+
+business_model:
+  llm_tiebreak_margin: 0.15

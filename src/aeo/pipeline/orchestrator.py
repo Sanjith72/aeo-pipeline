@@ -157,7 +157,8 @@ class Orchestrator:
             stored_bp = generate_and_pin_blueprint(run.id, domain=domain, llm=self._llm)
             if stored_bp is not None:
                 compute_and_persist_coverage(
-                    run.id, stored_bp, scored, target_id=target.id, reference=load_reference()
+                    run.id, stored_bp, scored, target_id=target.id,
+                    reference=load_reference(), domain=domain, llm=self._llm,
                 )
         except Exception as exc:
             log.warning("reference_architecture_skipped", run_key=run.run_key, error=str(exc))
@@ -382,6 +383,19 @@ class Orchestrator:
         reference = load_reference()
         cov = coverage_diff(blueprint, discovered_pages(scored, reference))
 
+        # SP-1 intelligence layer: classify the site, infer the business model, find
+        # journey gaps, and route to a scenario + prioritized strategy — all in memory.
+        from ..intelligence import build_site_profile
+
+        try:
+            profile = build_site_profile(
+                domain=domain, discovered=scored, coverage=cov,
+                topic=topic, llm=(self._llm if use_llm else None),
+            )
+        except Exception as exc:  # best-effort, mirrors the persisted path's isolation
+            log.warning("site_profile_skipped", domain=domain, error=str(exc))
+            profile = None
+
         # Sample the new content-drafting on the top missing pages (deterministic
         # scaffold by default; full prose when --llm). Bounded so the preview stays fast.
         from ..validation.draft_check import validate_page_draft
@@ -418,7 +432,10 @@ class Orchestrator:
 
         log.info(
             "dry_run_complete", domain=domain, discovered=len(scored), selected=len(selected),
-            topic=topic, engine_target=engine_target, coverage_pct=cov.coverage_pct, scored_pages=len(page_scores),
+            topic=topic, engine_target=engine_target, coverage_pct=cov.coverage_pct,
+            scored_pages=len(page_scores),
+            scenario=profile.strategy.scenario.value if profile else None,
+            business_model=profile.business_intent.model.value if profile else None,
         )
         return {
             "mode": "dry-run",
@@ -428,6 +445,7 @@ class Orchestrator:
             "selected": len(selected),
             "topic": topic,
             "engine_target": engine_target,
+            "profile": profile.to_dict() if profile else None,
             "blueprint": {
                 "version": blueprint.version,
                 "generator": blueprint.generator,
@@ -468,7 +486,9 @@ class Orchestrator:
         if stored is None:
             return None
 
-        coverage = CoverageDiffResult.from_detail(cov_row.get("detail") or {})
+        detail = cov_row.get("detail") or {}
+        coverage = CoverageDiffResult.from_detail(detail)
+        site_profile = detail.get("site_profile")  # SP-1 strategy, embedded at coverage time
         pages = []
         for rep in reports_repo.for_run(run_id):
             overview = (rep.get("sections") or {}).get("overview", {}) or {}
@@ -488,6 +508,7 @@ class Orchestrator:
             blueprint=stored.blueprint, coverage=coverage, pages=pages,
             run_id=run_id, target_id=target.id, blueprint_id=stored.id,
             llm=self._llm, origin=domain, draft_limit=draft_limit,
+            site_profile=site_profile,
         )
         return site_reports_repo.put(site)
 

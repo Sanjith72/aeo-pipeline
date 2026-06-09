@@ -116,11 +116,43 @@ def compute_and_persist_coverage(
     *,
     target_id: int | None,
     reference: Reference | None = None,
+    domain: str | None = None,
+    topic: str | None = None,
+    llm: LLMClient | None = None,
+    with_profile: bool = True,
 ) -> CoverageDiffResult:
-    """Diff the discovered sitemap against the pinned blueprint and persist it."""
+    """Diff the discovered sitemap against the pinned blueprint and persist it.
+
+    When ``with_profile`` (default), the SP-1 intelligence layer builds a
+    :class:`SiteProfile` (site classification, business model, journey gaps, scenario +
+    prioritized strategy) over the same discovered inventory and embeds it in the
+    coverage ``detail`` JSONB under ``"site_profile"`` — so the site report can surface
+    the consultant-facing strategy with no new table. Best-effort: a profile failure is
+    logged and skipped, never aborting the coverage write."""
     reference = reference or load_reference()
     discovered = discovered_pages(scored, reference)
     result = coverage_diff(stored.blueprint, discovered)
+    detail = result.to_detail()
+
+    if with_profile:
+        try:
+            from ..intelligence import build_site_profile
+
+            profile = build_site_profile(
+                domain=domain or stored.blueprint.topic,
+                discovered=scored,
+                coverage=result,
+                topic=topic or stored.blueprint.topic,
+                llm=llm,
+            )
+            detail["site_profile"] = profile.to_dict()
+            log.info(
+                "site_profile_built", run_id=run_id, scenario=profile.strategy.scenario.value,
+                model=profile.business_intent.model.value, site_class=profile.classification.site_class.value,
+            )
+        except Exception as exc:  # never let the brain break the coverage write
+            log.warning("site_profile_skipped", run_id=run_id, error=str(exc))
+
     coverage_repo.put(
         run_id,
         blueprint_id=stored.id,
@@ -128,7 +160,7 @@ def compute_and_persist_coverage(
         coverage_pct=result.coverage_pct,
         missing_count=len(result.missing),
         thin_count=len(result.thin_clusters),
-        detail=result.to_detail(),
+        detail=detail,
     )
     log.info(
         "coverage_diff_persisted", run_id=run_id, coverage_pct=result.coverage_pct,
