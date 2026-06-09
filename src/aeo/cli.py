@@ -10,6 +10,7 @@ delegates. Commands:
     aeo audit  DOMAIN -t NAME   discover → prioritize → crawl → extract → score
     aeo discover DOMAIN         discover + rank a site's URLs (no crawl, no DB)
     aeo profile  DOMAIN         classify site + AEO strategy/action plan (no crawl-score, no DB)
+    aeo plan     NAME           AEO blueprint + build plan from a brief — NO website required
     aeo run    URLS… -t NAME    crawl → extract → score (the full pipeline)
     aeo crawl  URLS… -t NAME    crawl → extract only (score later)
     aeo score  -r RUN_ID        score a run's extracted-but-unscored pages
@@ -328,6 +329,88 @@ def profile(
     typer.echo("  ACTION PLAN:")
     for a in d["actions"]:
         typer.echo(f"    {a['priority']:>2}. [{a['category']:13}] {a['title']}  ({a['effort']})")
+
+
+@app.command()
+def plan(
+    name: str = typer.Argument(..., help="Business name, e.g. 'Acme Security'"),
+    domain: str | None = typer.Option(None, "--domain", "-d", help="Planned domain (optional for a not-yet-built site)"),
+    category: str | None = typer.Option(None, "--category", help="Industry vertical for the Taxonomic Ceiling, e.g. 'healthcare'"),
+    topic: str | None = typer.Option(None, "--topic", help="Topic hint (default: derived from the name)"),
+    location: str | None = typer.Option(None, "--location", help="Business location (optional)"),
+    services: list[str] = typer.Option(None, "--service", help="A service offered (repeatable)"),
+    competitors: list[str] = typer.Option(None, "--competitor", help="A competitor domain (repeatable)"),
+    goals: list[str] = typer.Option(None, "--goal", help="A business goal (repeatable)"),
+    use_llm: bool = typer.Option(False, "--llm/--no-llm", help="Use the LLM for framework + blueprint synthesis"),
+    write_config: bool = typer.Option(False, "--write-config", help="Persist the generated framework to config/domains/"),
+    as_json: bool = typer.Option(False, "--json", help="Emit the full plan as JSON"),
+) -> None:
+    """Generate an AEO Website Blueprint + strategy from a business brief — NO website required.
+
+    Scenario 1: "I want to rank in AI search" with no site yet. Builds the ideal-site
+    framework + blueprint from the brief (deterministic; --llm tailors it), treats the
+    site as empty so every ideal page is a build target, and routes to the no_website
+    strategy + a prioritized build plan. Read-only by default; --write-config persists the
+    generated framework to config/domains/ as the onboarding artifact.
+    """
+    _bootstrap()
+    from .intelligence.brief import plan_from_brief
+    from .nlp.llm import get_client
+    from .reference.business_input import BusinessInput
+    from .reference.framework import build_framework, load_framework
+    from .reference.framework_bootstrap import (
+        bootstrap_framework,
+        framework_file_path,
+        write_framework,
+    )
+
+    brief = BusinessInput(
+        name=name, domain=domain, category=category, topic=topic, location=location,
+        services=list(services or []), competitors=list(competitors or []), goals=list(goals or []),
+    )
+    key = brief.key()
+    llm = get_client() if use_llm else None
+
+    # Build the brief-tailored framework. In-memory by default (a side-effect-free
+    # preview); --write-config persists it like `aeo framework bootstrap`/`aeo onboard`.
+    fw_path = framework_file_path(key)
+    if fw_path.exists():
+        framework = load_framework(key)
+        fw_source = "existing"
+    else:
+        data = bootstrap_framework(key, llm=llm, topic=brief.topic_hint(), category=category)
+        if write_config:
+            write_framework(key, data)
+            framework = load_framework(key)
+            fw_source = f"written:{data.get('_generated_by', 'generic-skeleton')}"
+        else:
+            framework = build_framework(data)
+            fw_source = str(data.get("_generated_by", "generic-skeleton"))
+
+    result = plan_from_brief(brief, framework=framework, llm=llm)
+
+    if as_json:
+        _print(result.to_dict())
+        return
+
+    d = result.to_dict()
+    prof, bp = d["profile"], d["blueprint"]
+    typer.echo(f"AEO PLAN  {brief.name}  (key={key}, framework={fw_source})")
+    typer.echo(f"  Scenario      : {prof['scenario']}  ->  {prof['deliverable']}")
+    typer.echo(f"  {prof['headline']}")
+    typer.echo(f"  Business model: {prof['business_intent']['model']}  ({prof['business_intent']['decided_by']})")
+    typer.echo(
+        f"  Ideal site    : {bp['ideal_pages']} pages on topic '{bp['topic']}'  "
+        f"(coverage {d['coverage']['pct']}% — greenfield)"
+    )
+    typer.echo("  IDEAL SITEMAP (build these):")
+    for n in bp["sitemap"]:
+        cl = f"  [{n['cluster']}]" if n.get("cluster") else ""
+        typer.echo(f"    {n['priority']:>4.2f}  [{n['page_type']}/{n['intent']}] {n['slug']:32} {n['title']}{cl}")
+    typer.echo("  ACTION PLAN:")
+    for a in prof["actions"]:
+        typer.echo(f"    {a['priority']:>2}. [{a['category']:13}] {a['title']}  ({a['effort']})")
+    typer.echo("next: --write-config to persist the framework as the onboarding artifact, or --json for the full plan.")
 
 
 @app.command()
