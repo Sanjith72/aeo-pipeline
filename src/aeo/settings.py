@@ -160,6 +160,13 @@ class ObsCfg(BaseModel):
     otel_service_name: str = "aeo"
 
 
+class ApiCfg(BaseModel):
+    # HTTP API (SP-4) auth. When AEO__API__AUTH_KEY is set, every /api/* route except
+    # /api/health requires a matching X-API-Key header. Unset (default) = open mode for
+    # local dev; set it in any deployment that exposes the API.
+    auth_key: str | None = None
+
+
 class ReferenceArchitectureCfg(BaseModel):
     # v4 Reference Architecture Generator: the versioned, per-topic ideal-site
     # blueprint. Generated on a slow cadence and pinned per run so the measuring
@@ -208,6 +215,7 @@ class Settings(BaseSettings):
     scoring: ScoringCfg = ScoringCfg()
     reference_architecture: ReferenceArchitectureCfg = ReferenceArchitectureCfg()
     obs: ObsCfg = ObsCfg()
+    api: ApiCfg = ApiCfg()
 
     log_level: str = "INFO"
     log_format: str = "console"
