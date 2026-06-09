@@ -4,4 +4,84 @@
 
 :root {
   color-scheme: light;
+  --grid-line: rgba(11, 15, 26, 0.05);
+  --grid-line-strong: rgba(11, 15, 26, 0.08);
+}
+
+@layer base {
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-display tracking-tight text-ink;
+  }
+  /* One consistent, visible focus treatment across the whole app. */
+  :focus-visible {
+    outline: 2px solid theme("colors.accent.DEFAULT");
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
+
+@layer components {
+  /* The "measurement" voice — micro labels, step numbers, metadata readouts. */
+  .label-mono {
+    @apply font-mono text-[11px] uppercase text-ink-300;
+    letter-spacing: 0.18em;
+  }
+
+  .card {
+    @apply rounded-xl2 border border-ink/[0.08] bg-paper-100 shadow-card;
+  }
+
+  .field-label {
+    @apply mb-1.5 block font-mono text-[11px] uppercase tracking-[0.14em] text-ink-500;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-ink/15 bg-paper-100 px-3.5 py-2.5 text-sm text-ink
+      transition placeholder:text-ink-300 focus:border-accent focus:ring-4 focus:ring-accent/10;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium
+      transition-all duration-200 ease-out;
+  }
+  /* Premium black primary (Linear/Vercel register), accent reserved for signal. */
+  .btn-primary {
+    @apply btn bg-ink text-paper-100 shadow-card hover:-translate-y-0.5 hover:shadow-lift
+      active:translate-y-0 disabled:translate-y-0 disabled:opacity-40 disabled:shadow-card;
+  }
+  .btn-accent {
+    @apply btn bg-accent text-white hover:-translate-y-0.5 hover:bg-accent-600 hover:shadow-lift active:translate-y-0;
+  }
+  .btn-ghost {
+    @apply btn border border-ink/15 bg-transparent text-ink-500 hover:border-ink/35 hover:text-ink
+      disabled:opacity-40 disabled:hover:border-ink/15 disabled:hover:text-ink-500;
+  }
+
+  /* The memorable anchor: a faint engineering-blueprint grid. */
+  .blueprint-grid {
+    background-image:
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 30px 30px;
+    background-position: center;
+  }
+  .blueprint-grid-fade {
+    -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, #000 40%, transparent 100%);
+    mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, #000 40%, transparent 100%);
+  }
+}
+
+/* Respect users who prefer less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
