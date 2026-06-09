@@ -47,19 +47,28 @@ def _words(path: str) -> set[str]:
 
 
 def token_hit(path: str, token: str) -> bool:
-    """Does a signal token match a path?
+    """Does a signal token match a path? Three forms:
 
-    A *phrase* token (one containing ``-`` or ``/``) matches as a substring of the
-    full path; a *single-word* token matches a whole word only — so ``shop`` does
-    not fire on ``/workshop`` and ``law`` does not fire on ``/lawnmower``. Mirrors
-    the word-boundary discipline in ``reference.taxonomic_ceiling.resolve_ceiling``.
+    * a *prefix/stem* token ending in ``*`` (e.g. ``industr*``) matches any word that
+      starts with the stem — so ``/industry``, ``/industries``, ``/industrial`` all fire;
+    * a *phrase* token (one containing ``-`` or ``/``) matches as a substring;
+    * a *single-word* token matches a whole word only — so ``shop`` does not fire on
+      ``/workshop`` and ``law`` does not fire on ``/lawnmower``.
+
+    ``_`` and ``-`` are treated as equivalent separators, so ``/case_studies`` matches a
+    ``case-stud`` phrase token exactly as ``/case-studies`` does. Mirrors the
+    word-boundary discipline in ``reference.taxonomic_ceiling.resolve_ceiling``.
     """
     t = token.strip().lower()
     if not t:
         return False
+    norm = path.lower().replace("_", "-")
+    if t.endswith("*"):
+        stem = t[:-1]
+        return bool(stem) and any(w.startswith(stem) for w in _words(norm))
     if "-" in t or "/" in t:
-        return t in path.lower()
-    return t in _words(path)
+        return t in norm
+    return t in _words(norm)
 
 
 def fired_tokens(paths: list[str], tokens: Iterable[str]) -> list[str]:

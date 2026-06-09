@@ -38,6 +38,10 @@ class BusinessModel(StrEnum):
 
 
 _INDUSTRY_BOOST = 2.0  # fixed nudge per business model whose industry keywords match
+# Valid model labels — a user-tuned intelligence.yaml may carry a typo'd key
+# (e.g. "e_commerce"); we ignore any signal/hint key that isn't a real BusinessModel
+# rather than letting it crash the final BusinessModel(winner) construction.
+_VALID_MODELS: frozenset[str] = frozenset(m.value for m in BusinessModel)
 
 
 @dataclass(slots=True)
@@ -63,6 +67,8 @@ def _score_models(
     scores: dict[str, float] = {}
     evidence: dict[str, list[str]] = {}
     for model, sig in cfg.model_signals.items():
+        if model not in _VALID_MODELS:  # ignore a typo'd YAML key, don't crash later
+            continue
         tokens: dict[str, Any] = sig.get("slug_tokens", {}) or {}
         ev: list[str] = []
         score = 0.0
@@ -97,6 +103,8 @@ def _apply_industry_hints(
     if not hint_text:
         return
     for model, keywords in cfg.industry_hints.items():
+        if model not in _VALID_MODELS:  # ignore a typo'd YAML key
+            continue
         if any(kw.lower() in hint_text for kw in keywords):
             scores[model] = scores.get(model, 0.0) + _INDUSTRY_BOOST
             evidence.setdefault(model, []).append(f"industry:{hint_text.strip()}")

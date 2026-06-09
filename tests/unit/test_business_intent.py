@@ -101,3 +101,22 @@ def test_disabled_llm_never_engages_tiebreak() -> None:
     llm = _FakeLLM({"model": "saas"}, enabled=False)
     intent = detect_business_model(pages, site_class=SiteClass.SMALL, llm=llm)
     assert intent.decided_by == "deterministic"
+
+
+def test_invalid_yaml_model_key_never_crashes() -> None:
+    # A user-tuned intelligence.yaml could carry a typo'd model key; it must be
+    # ignored (never reach BusinessModel(winner) and raise ValueError).
+    import dataclasses
+
+    from aeo.intelligence.config import load_intelligence_cfg
+
+    base = load_intelligence_cfg()
+    bad = dataclasses.replace(
+        base,
+        model_signals={**base.model_signals, "e_commerce": {"slug_tokens": {"shop": 99}}},
+        industry_hints={**base.industry_hints, "bogus_model": ["widgets"]},
+    )
+    intent = detect_business_model(
+        _pages("/shop"), site_class=SiteClass.SMALL, topic="widgets", cfg=bad
+    )
+    assert intent.model in set(BusinessModel)  # a real model, no ValueError

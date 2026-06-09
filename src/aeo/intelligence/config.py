@@ -26,7 +26,7 @@ _DEFAULT_ARCHETYPES: dict[str, dict[str, list[str]]] = {
     "about":        {"page_types": ["about"],             "slug_tokens": ["about", "about-us", "team", "company", "who-we-are"]},
     "contact":      {"page_types": ["contact"],           "slug_tokens": ["contact", "contact-us", "get-in-touch"]},
     "services":     {"page_types": ["solution", "product"], "slug_tokens": ["service", "services", "solution", "solutions", "what-we-do"]},
-    "industries":   {"page_types": [],                    "slug_tokens": ["industr", "sector", "sectors", "vertical", "industries"]},
+    "industries":   {"page_types": [],                    "slug_tokens": ["industr*", "sector*", "vertical", "industries"]},
     "faq":          {"page_types": [],                    "slug_tokens": ["faq", "faqs", "questions", "help-center"]},
     "resources":    {"page_types": ["blog", "pillar"],    "slug_tokens": ["resource", "resources", "guide", "guides", "learn", "knowledge"]},
     "case_studies": {"page_types": [],                    "slug_tokens": ["case-stud", "case-study", "customer", "customers", "success-stor", "our-work"]},

@@ -387,10 +387,14 @@ class Orchestrator:
         # journey gaps, and route to a scenario + prioritized strategy — all in memory.
         from ..intelligence import build_site_profile
 
-        profile = build_site_profile(
-            domain=domain, discovered=scored, coverage=cov,
-            topic=topic, llm=(self._llm if use_llm else None),
-        )
+        try:
+            profile = build_site_profile(
+                domain=domain, discovered=scored, coverage=cov,
+                topic=topic, llm=(self._llm if use_llm else None),
+            )
+        except Exception as exc:  # best-effort, mirrors the persisted path's isolation
+            log.warning("site_profile_skipped", domain=domain, error=str(exc))
+            profile = None
 
         # Sample the new content-drafting on the top missing pages (deterministic
         # scaffold by default; full prose when --llm). Bounded so the preview stays fast.
@@ -429,8 +433,9 @@ class Orchestrator:
         log.info(
             "dry_run_complete", domain=domain, discovered=len(scored), selected=len(selected),
             topic=topic, engine_target=engine_target, coverage_pct=cov.coverage_pct,
-            scored_pages=len(page_scores), scenario=profile.strategy.scenario.value,
-            business_model=profile.business_intent.model.value,
+            scored_pages=len(page_scores),
+            scenario=profile.strategy.scenario.value if profile else None,
+            business_model=profile.business_intent.model.value if profile else None,
         )
         return {
             "mode": "dry-run",
@@ -440,7 +445,7 @@ class Orchestrator:
             "selected": len(selected),
             "topic": topic,
             "engine_target": engine_target,
-            "profile": profile.to_dict(),
+            "profile": profile.to_dict() if profile else None,
             "blueprint": {
                 "version": blueprint.version,
                 "generator": blueprint.generator,

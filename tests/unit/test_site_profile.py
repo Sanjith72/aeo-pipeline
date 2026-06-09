@@ -58,6 +58,19 @@ def test_deterministic_without_llm() -> None:
     assert a.to_dict() == b.to_dict()
 
 
+def test_build_does_not_mutate_cached_cfg() -> None:
+    # The lru_cached IntelligenceCfg must be read-only: a build (incl. industry hints
+    # + a tie) must not write back into it.
+    import copy
+
+    from aeo.intelligence.config import load_intelligence_cfg
+
+    cfg = load_intelligence_cfg()
+    snapshot = copy.deepcopy(cfg)
+    build_site_profile(domain="acme.com", discovered=_saas_site(), topic="saas software platform")
+    assert cfg == snapshot
+
+
 def test_empty_discovery_routes_no_website() -> None:
     prof = build_site_profile(domain="newco.com", discovered=[])
     assert prof.classification.site_class is SiteClass.NONE

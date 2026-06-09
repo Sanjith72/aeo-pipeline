@@ -60,6 +60,20 @@ def test_token_hit_is_word_bounded_not_naive_substring() -> None:
     assert token_hit("/workshop", "shop") is False
     assert token_hit("/shop", "shop") is True
     assert token_hit("/case-studies/acme", "case-stud") is True  # phrase = substring
+    # phrase tokens match underscore paths too (_ treated as -)
+    assert token_hit("/case_studies/acme", "case-stud") is True
+    # prefix/stem tokens (trailing '*') match any word starting with the stem
+    assert token_hit("/industry/finance", "industr*") is True
+    assert token_hit("/industries/finance", "industr*") is True
+    assert token_hit("/industrial/iot", "industr*") is True
+    assert token_hit("/about", "industr*") is False
+
+
+def test_industries_archetype_detects_singular_industry_path() -> None:
+    # Regression: the 'industr' stem token used to be dead (whole-word match never
+    # fired); a singular /industry/<vertical> path must now count as the archetype.
+    assert detect_archetypes([page_view("https://x.com/industry/finance", "default")])["industries"] is True
+    assert detect_archetypes([page_view("https://x.com/case_studies/acme", "default")])["case_studies"] is True
 
 
 def test_structure_score_relative_to_business_model() -> None:
