@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 from ..intelligence.brief import plan_from_brief
@@ -27,6 +27,8 @@ from ..reference.framework import Framework, build_framework, load_framework
 from ..reference.framework_bootstrap import bootstrap_framework, framework_file_path
 from ..reference.generator import generate_blueprint
 from ..report.packager import build_asset_bundle
+from . import jobs as jobs_mod
+from .jobs import JOBS, execute_audit
 
 app = FastAPI(title="AEO Pipeline API", version="0.2.0")
 
@@ -61,6 +63,11 @@ class ProfileRequest(BaseModel):
     domain: str
     max_urls: int | None = None
     use_llm: bool = False
+
+
+class AuditRequest(BaseModel):
+    domain: str
+    name: str | None = None
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -196,3 +203,30 @@ def site_report(run_id: int) -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail=f"no site report for run {run_id}")
     return dict(row)
+
+
+@app.post("/api/audit")
+async def start_audit(req: AuditRequest, background: BackgroundTasks) -> dict[str, Any]:
+    """Start a deep audit (full crawl → score → analyze → site report) as a background job.
+    Returns a job id to poll via ``GET /api/audit/{job_id}``. Needs a live DB + network."""
+    domain = req.domain.strip()
+    if not domain:
+        raise HTTPException(status_code=422, detail="domain is required")
+    job = JOBS.create("audit")
+    background.add_task(
+        execute_audit,
+        JOBS,
+        job.id,
+        domain=domain,
+        name=(req.name or domain).strip(),
+        runner=jobs_mod.default_audit_runner,
+    )
+    return {"job_id": job.id, "status": job.status}
+
+
+@app.get("/api/audit/{job_id}")
+def audit_status(job_id: str) -> dict[str, Any]:
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no job {job_id}")
+    return job.to_dict()

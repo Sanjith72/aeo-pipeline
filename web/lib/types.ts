@@ -90,6 +90,21 @@ export interface ProfileResponse {
   source: string;
 }
 
+export interface AuditJob {
+  job_id: string;
+  kind: string;
+  status: "queued" | "running" | "succeeded" | "failed" | string;
+  progress: string;
+  result: { run?: { run_id?: number }; analysis?: Record<string, number>; site_report_id?: number } | null;
+  error: string | null;
+}
+
+export interface SiteReportResponse {
+  run_id: number;
+  summary: string;
+  sections: { strategy?: SiteProfile } & Record<string, unknown>;
+}
+
 export interface BriefRequest {
   name: string;
   domain?: string;

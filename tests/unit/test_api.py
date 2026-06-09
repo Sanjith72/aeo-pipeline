@@ -64,6 +64,33 @@ def test_plan_requires_name() -> None:
     assert r.status_code == 422
 
 
+def test_audit_job_lifecycle_with_fake_runner(monkeypatch) -> None:
+    # Inject a fake audit runner so no DB/crawl is needed; TestClient runs the
+    # BackgroundTask to completion before returning the POST response.
+    from aeo.api import jobs as jobs_mod
+
+    async def fake_runner(domain: str, name: str):
+        return {"run": {"run_id": 7}, "domain": domain, "name": name}
+
+    monkeypatch.setattr(jobs_mod, "default_audit_runner", fake_runner)
+    r = client.post("/api/audit", json={"domain": "acme.com", "name": "Acme"})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    assert job_id
+
+    body = client.get(f"/api/audit/{job_id}").json()
+    assert body["status"] == "succeeded"
+    assert body["result"]["run"]["run_id"] == 7
+
+
+def test_audit_status_404() -> None:
+    assert client.get("/api/audit/does-not-exist").status_code == 404
+
+
+def test_audit_requires_domain() -> None:
+    assert client.post("/api/audit", json={"domain": "  "}).status_code == 422
+
+
 def test_site_report_404_for_unknown_run() -> None:
     # No DB row (and a down DB) → a clean 404/5xx, never an unhandled crash in the client.
     try:

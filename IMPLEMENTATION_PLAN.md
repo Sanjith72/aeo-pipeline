@@ -144,8 +144,15 @@ and an analysis gate; **bundle-as-zip** download — backend `AssetBundle.to_zip
 `POST /api/deliverables.zip` (517 tests, +2) and a "Download all (.zip)" button. Both verified
 (pytest + `npm run build` clean).
 
-**Deferred (v3):** the async `/api/audit` full-crawl progress UI (existing-site deep audit with a job +
-status polling) and auth.
+**v3 delivered:** the async **deep-audit** flow. Backend — `api/jobs.py` (in-process `JobRegistry` +
+`execute_audit` with an **injectable runner**; `default_audit_runner` registers the target and runs the
+v4 `audit_cycle`) + `POST /api/audit` (BackgroundTask) / `GET /api/audit/{job_id}` polling. Frontend —
+a "Deep audit" option (Website-Info radios: plan / quick / deep) that starts the job, polls status, shows
+an `AuditProgress` panel, and loads the resulting site report's strategy. Verified: 523 tests (+6, runner
+faked — no DB/crawl) + `npm run build` clean.
+
+**Deferred (v4):** auth (API tokens / sign-in), and moving the deep audit off `BackgroundTasks` onto the
+DB-backed `pipeline/worker.py` queue for multi-worker scale.
 
 ---
 

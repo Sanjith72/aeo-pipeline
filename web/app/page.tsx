@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api } from "@/lib/api";
 import type {
+  AuditJob,
   BriefPlan,
   BriefRequest,
   BundleAsset,
@@ -56,7 +57,7 @@ export default function Page() {
   const [servicesText, setServicesText] = useState("");
   const [goals, setGoals] = useState<string[]>([]);
   const [hasSite, setHasSite] = useState(false);
-  const [analyzeLive, setAnalyzeLive] = useState(false);
+  const [liveDepth, setLiveDepth] = useState<"none" | "quick" | "deep">("none");
   const [domain, setDomain] = useState("");
   const [competitorsText, setCompetitorsText] = useState("");
   const [challenges, setChallenges] = useState("");
@@ -69,10 +70,13 @@ export default function Page() {
   const [profileResult, setProfileResult] = useState<ProfileResponse | null>(null);
   const [deliverables, setDeliverables] = useState<DeliverablesResponse | null>(null);
   const [delivLoading, setDelivLoading] = useState(false);
+  const [auditJob, setAuditJob] = useState<AuditJob | null>(null);
+  const [deepProfile, setDeepProfile] = useState<SiteProfile | null>(null);
 
-  const liveMode = hasSite && analyzeLive && domain.trim().length > 0;
-  const profile: SiteProfile | null = plan?.profile ?? profileResult?.profile ?? null;
-  const analyzed = profile !== null;
+  const quickMode = hasSite && liveDepth === "quick" && domain.trim().length > 0;
+  const deepMode = hasSite && liveDepth === "deep" && domain.trim().length > 0;
+  const profile: SiteProfile | null = plan?.profile ?? profileResult?.profile ?? deepProfile;
+  const analyzed = profile !== null || auditJob?.status === "succeeded";
 
   function briefFromForm(): BriefRequest {
     return {
@@ -96,9 +100,13 @@ export default function Page() {
     setPlan(null);
     setProfileResult(null);
     setDeliverables(null);
+    setAuditJob(null);
+    setDeepProfile(null);
     setLoading(true);
     try {
-      if (liveMode) {
+      if (deepMode) {
+        await runDeepAudit();
+      } else if (quickMode) {
         setProfileResult(await api.profile({ domain: domain.trim(), use_llm: useLlm }));
       } else {
         if (!name.trim()) throw new Error("Enter a business name (step 1).");
@@ -108,6 +116,32 @@ export default function Page() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function runDeepAudit() {
+    const { job_id } = await api.startAudit({ domain: domain.trim(), name: name.trim() || domain.trim() });
+    let job = await api.auditStatus(job_id);
+    setAuditJob(job);
+    let tries = 0;
+    while ((job.status === "queued" || job.status === "running") && tries < 150) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      job = await api.auditStatus(job_id);
+      setAuditJob(job);
+      tries += 1;
+    }
+    if (job.status === "failed") {
+      setError(job.error || "audit failed");
+      return;
+    }
+    const runId = job.result?.run?.run_id;
+    if (typeof runId === "number") {
+      try {
+        const rep = await api.siteReport(runId);
+        if (rep.sections?.strategy) setDeepProfile(rep.sections.strategy);
+      } catch {
+        /* the site-report fetch is best-effort — the audit summary still shows */
+      }
     }
   }
 
@@ -134,7 +168,7 @@ export default function Page() {
   }
 
   const canNext = (() => {
-    if (step === 0) return name.trim().length > 0 || liveMode;
+    if (step === 0) return name.trim().length > 0 || quickMode || deepMode;
     if (step === 5) return analyzed; // must analyze before advancing
     return true;
   })();
@@ -201,10 +235,21 @@ export default function Page() {
                   <input className="inp" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="acme.com" />
                 </Field>
                 {hasSite && (
-                  <label className="flex items-center gap-2 text-sm text-slate-600">
-                    <input type="checkbox" checked={analyzeLive} onChange={(e) => setAnalyzeLive(e.target.checked)} />
-                    Crawl &amp; analyze my live site (else we plan the ideal site from the brief)
-                  </label>
+                  <fieldset className="space-y-2 text-sm text-slate-600">
+                    <legend className="mb-1 font-medium text-slate-700">How should we analyze it?</legend>
+                    <label className="flex items-center gap-2">
+                      <input type="radio" name="depth" checked={liveDepth === "none"} onChange={() => setLiveDepth("none")} />
+                      Plan the ideal site from the brief (no crawl)
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="radio" name="depth" checked={liveDepth === "quick"} onChange={() => setLiveDepth("quick")} />
+                      Quick analysis of my live site (fast, no DB)
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="radio" name="depth" checked={liveDepth === "deep"} onChange={() => setLiveDepth("deep")} />
+                      Deep audit — full crawl + score (needs backend DB)
+                    </label>
+                  </fieldset>
                 )}
               </div>
             )}
@@ -224,18 +269,25 @@ export default function Page() {
             {step === 5 && (
               <div>
                 <p className="mb-4 text-sm text-slate-600">
-                  {liveMode
-                    ? `Crawl & classify ${domain.trim()} and route it to a strategy.`
-                    : "Generate the ideal-site blueprint and strategy from your brief."}
+                  {deepMode
+                    ? `Deep audit of ${domain.trim()}: crawl, score, analyze, and build the site report.`
+                    : quickMode
+                      ? `Quickly classify ${domain.trim()} and route it to a strategy.`
+                      : "Generate the ideal-site blueprint and strategy from your brief."}
                 </p>
                 <label className="mb-4 flex items-center gap-2 text-sm text-slate-600">
                   <input type="checkbox" checked={useLlm} onChange={(e) => setUseLlm(e.target.checked)} />
                   Use the LLM to tailor prose (slower; deterministic scaffold otherwise)
                 </label>
                 <button onClick={runAnalysis} disabled={loading} className="btn-primary">
-                  {loading ? "Analyzing…" : analyzed ? "Re-run analysis" : "Run analysis"}
+                  {loading ? (deepMode ? "Auditing…" : "Analyzing…") : analyzed ? "Re-run analysis" : "Run analysis"}
                 </button>
-                {analyzed && profile && (
+                {auditJob && (
+                  <div className="mt-5">
+                    <AuditProgress job={auditJob} />
+                  </div>
+                )}
+                {profile && (
                   <div className="mt-5">
                     <ScenarioHeader profile={profile} />
                   </div>
@@ -356,6 +408,31 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <p className="text-sm text-slate-500">{children}</p>;
+}
+
+function AuditProgress({ job }: { job: AuditJob }) {
+  const tone =
+    job.status === "succeeded"
+      ? "border-green-200 bg-green-50 text-green-800"
+      : job.status === "failed"
+        ? "border-rose-200 bg-rose-50 text-rose-800"
+        : "border-amber-200 bg-amber-50 text-amber-800";
+  const runId = job.result?.run?.run_id;
+  return (
+    <div className={`rounded-lg border p-4 text-sm ${tone}`}>
+      <div className="flex items-center gap-2">
+        <span className="font-semibold uppercase tracking-wide">{job.status}</span>
+        <span>{job.progress}</span>
+      </div>
+      {job.status === "succeeded" && (
+        <p className="mt-1">
+          Run #{runId ?? "?"} complete
+          {job.result?.site_report_id ? ` · site report #${job.result.site_report_id}` : ""}.
+        </p>
+      )}
+      {job.error && <p className="mt-1">{job.error}</p>}
+    </div>
+  );
 }
 
 function ScenarioHeader({ profile }: { profile: SiteProfile }) {
