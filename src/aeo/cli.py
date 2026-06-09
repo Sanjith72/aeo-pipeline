@@ -12,6 +12,7 @@ delegates. Commands:
     aeo profile  DOMAIN         classify site + AEO strategy/action plan (no crawl-score, no DB)
     aeo plan     NAME           AEO blueprint + build plan from a brief — NO website required
     aeo deliverables -r RUN_ID  developer-ready asset bundle (sitemap.xml, page specs, briefs)
+    aeo serve                   run the HTTP API (FastAPI) the guided UI calls  [api extra]
     aeo run    URLS… -t NAME    crawl → extract → score (the full pipeline)
     aeo crawl  URLS… -t NAME    crawl → extract only (score later)
     aeo score  -r RUN_ID        score a run's extracted-but-unscored pages
@@ -466,6 +467,26 @@ def deliverables(
     typer.echo(f"wrote {len(written)} file(s) to {out}  (bundle: {ab.name})")
     for p in written[:12]:
         typer.echo(f"  {p}")
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind host"),
+    port: int = typer.Option(8000, "--port", help="Bind port"),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev)"),
+) -> None:
+    """Run the HTTP API (FastAPI) — the SP-4 backend the guided UI calls.
+
+    Requires the optional [api] extra:  pip install -e ".[api]".  Interactive docs at /docs.
+    """
+    _bootstrap()
+    try:
+        import uvicorn
+    except ImportError as exc:
+        typer.secho('the API needs the optional [api] extra:  pip install -e ".[api]"', fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"AEO API on http://{host}:{port}  (interactive docs at /docs)")
+    uvicorn.run("aeo.api.app:app", host=host, port=port, reload=reload)
 
 
 @app.command()

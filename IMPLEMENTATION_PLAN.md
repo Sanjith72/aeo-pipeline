@@ -100,27 +100,39 @@ scaffold with the LLM off.
 
 ---
 
-## SP-4 · Guided UI Application — LATER
+## SP-4a · HTTP API (FastAPI) — ✅ DONE
 
-**Goal:** the 9-step consultant wizard (see [`PRODUCT_FLOW.md`](PRODUCT_FLOW.md)).
+**Goal:** the integration seam the guided UI calls — a thin FastAPI layer over the `aeo`
+package (no business logic in the API).
 
-**Scope / files**
-- `api/` — a **FastAPI** service wrapping the `aeo` package (endpoints in
-  `PRODUCT_FLOW.md` §3); long crawls dispatched to the existing `pipeline/worker.py`
-  queue with a job-status endpoint.
-- `web/` — a **React/Next** frontend: the 9-step wizard rendering `SiteProfile` /
-  blueprint / plan JSON.
-- Packaging: `pip install -e ".[api]"` extra (fastapi, uvicorn); the frontend is a
-  separate `web/` workspace.
+**Delivered**
+- `src/aeo/api/app.py` — endpoints from `PRODUCT_FLOW.md` §3, each delegating to an existing
+  function: `GET /api/health`, `POST /api/plan` (brief → blueprint + no_website strategy,
+  SP-2), `POST /api/blueprint`, `POST /api/deliverables` (inline asset bundle, SP-3),
+  `POST /api/profile` (live site, reuses `Orchestrator.dry_run`), `GET /api/site-report/{run}`.
+- CLI `aeo serve --host --port [--reload]`; `[api]` optional extra (fastapi, uvicorn) in pyproject.
 
-**Reuses:** every SP-1–3 capability via function calls; no business logic in the API layer.
+**Verification:** 515 unit tests pass (+6 `test_api.py` via `TestClient`, `importorskip`-guarded),
+ruff clean, mypy clean on the API module. Health never 500s without a DB; `/plan` & `/deliverables`
+are deterministic with `use_llm=false` (no DB/network).
 
-**Dependencies:** SP-1, SP-2, SP-3. **Effort:** ~L (new API + frontend stack; its own
-brainstorm + visual mockups before build).
+**Reuses:** `intelligence/brief.py`, `reference/generator.py`, `report/packager.py`,
+`pipeline/orchestrator.py` (dry_run). **Dependencies:** SP-1, SP-2, SP-3.
+
+## SP-4b · Guided UI (React/Next) — NEXT
+
+**Goal:** the 9-step consultant wizard (see [`PRODUCT_FLOW.md`](PRODUCT_FLOW.md)) calling the
+SP-4a API.
+
+**Scope / files:** a `web/` React/Next workspace — the 9 wizard steps rendering `SiteProfile` /
+blueprint / plan / bundle JSON from the API; download of bundle assets; progress UI for the
+async `/api/audit` path.
+
+**Dependencies:** SP-4a (the API is live). **Effort:** ~L (separate frontend stack). **Gets its
+own brainstorm + visual mockups before build** (UI layout, component library, auth).
 
 **Acceptance:** a user completes Steps 1–9 and downloads a blueprint + implementation plan;
-"no website" and "single page" inputs never dead-end; the experience reads as a consultant,
-not an audit tool.
+"no website" and "single page" inputs never dead-end; reads as a consultant, not an audit tool.
 
 ---
 
@@ -149,5 +161,6 @@ not an audit tool.
 |---|---|
 | SP-1 Intelligence Layer | ✅ shipped + verified + merged to `main` |
 | SP-2 No-Website Entry | ✅ shipped + merged to `main`; `aeo plan` |
-| SP-3 Asset Packager | ✅ shipped + verified (`feature/sp3-asset-packager`); `aeo deliverables` / `aeo plan --bundle` |
-| SP-4 Guided UI (FastAPI + React/Next) | 📋 designed in `PRODUCT_FLOW.md`, not started |
+| SP-3 Asset Packager | ✅ shipped + merged to `main`; `aeo deliverables` / `aeo plan --bundle` |
+| SP-4a HTTP API (FastAPI) | ✅ shipped + verified (`feature/sp4-api`); `aeo serve` |
+| SP-4b Guided UI (React/Next) | 📋 designed in `PRODUCT_FLOW.md`, not started (calls SP-4a) |

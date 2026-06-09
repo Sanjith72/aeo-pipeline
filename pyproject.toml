@@ -37,6 +37,11 @@ otel = [
 ]
 # Optional PDF export of the AEO reports (aeo report --pdf / aeo site-report --pdf).
 pdf = ["reportlab>=4.0.0"]
+# Optional HTTP API (SP-4): the FastAPI backend the guided UI calls. `aeo serve`.
+api = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
