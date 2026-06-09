@@ -119,20 +119,27 @@ are deterministic with `use_llm=false` (no DB/network).
 **Reuses:** `intelligence/brief.py`, `reference/generator.py`, `report/packager.py`,
 `pipeline/orchestrator.py` (dry_run). **Dependencies:** SP-1, SP-2, SP-3.
 
-## SP-4b · Guided UI (React/Next) — NEXT
+## SP-4b · Guided UI (Next.js) — ✅ DONE (v1)
 
-**Goal:** the 9-step consultant wizard (see [`PRODUCT_FLOW.md`](PRODUCT_FLOW.md)) calling the
-SP-4a API.
+**Goal:** the consultant wizard (see [`PRODUCT_FLOW.md`](PRODUCT_FLOW.md)) over the SP-4a API.
 
-**Scope / files:** a `web/` React/Next workspace — the 9 wizard steps rendering `SiteProfile` /
-blueprint / plan / bundle JSON from the API; download of bundle assets; progress UI for the
-async `/api/audit` path.
+**Delivered** — `web/` workspace: Next.js 15 (App Router) + TypeScript + Tailwind.
+- `lib/types.ts` + `lib/api.ts` — typed client mirroring the SP-4a contract (no business logic).
+- `app/page.tsx` — the wizard (client component): a brief form with two modes —
+  **Plan a new site** (`POST /api/plan` → ScenarioHeader + Strategy/Action-plan + Ideal-Sitemap
+  tabs + **Deliverables** tab that calls `POST /api/deliverables` and downloads each asset) and
+  **Analyze an existing site** (`POST /api/profile` → strategy/action plan). Errors and
+  loading states handled; reads as a consultant (leads with scenario/headline/narrative).
+- Configs (Next/TS/Tailwind/PostCSS), `.env.example` (`NEXT_PUBLIC_API_BASE`), README with run steps.
 
-**Dependencies:** SP-4a (the API is live). **Effort:** ~L (separate frontend stack). **Gets its
-own brainstorm + visual mockups before build** (UI layout, component library, auth).
+**Verification:** `npm install` + `npm run build` succeed — **compiled + type-checked clean** on
+Next 15.5.19 (TS strict). UX itself needs a browser (not verifiable in CI here); the typed
+contract + production build are the gate.
 
-**Acceptance:** a user completes Steps 1–9 and downloads a blueprint + implementation plan;
-"no website" and "single page" inputs never dead-end; reads as a consultant, not an audit tool.
+**Reuses:** the entire SP-1–4a stack via REST. **Run:** `aeo serve` (backend) + `npm run dev` (web).
+
+**Deferred (v2):** the full 9-distinct-step wizard chrome (stepper for Goals/Competitors/Challenges
+as separate screens), the async `/api/audit` progress UI, bundle-as-zip download, and auth.
 
 ---
 
@@ -162,5 +169,5 @@ own brainstorm + visual mockups before build** (UI layout, component library, au
 | SP-1 Intelligence Layer | ✅ shipped + verified + merged to `main` |
 | SP-2 No-Website Entry | ✅ shipped + merged to `main`; `aeo plan` |
 | SP-3 Asset Packager | ✅ shipped + merged to `main`; `aeo deliverables` / `aeo plan --bundle` |
-| SP-4a HTTP API (FastAPI) | ✅ shipped + verified (`feature/sp4-api`); `aeo serve` |
-| SP-4b Guided UI (React/Next) | 📋 designed in `PRODUCT_FLOW.md`, not started (calls SP-4a) |
+| SP-4a HTTP API (FastAPI) | ✅ shipped + merged to `main`; `aeo serve` |
+| SP-4b Guided UI (Next.js) | ✅ shipped v1 (`feature/sp4b-web`); `web/` — build clean |
