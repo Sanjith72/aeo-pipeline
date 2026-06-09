@@ -40,6 +40,23 @@ export const api = {
   deliverables(req: BriefRequest & { draft_limit?: number }): Promise<DeliverablesResponse> {
     return postJson<DeliverablesResponse>("/api/deliverables", req);
   },
+  async deliverablesZip(req: BriefRequest & { draft_limit?: number }): Promise<Blob> {
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}/api/deliverables.zip`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req),
+      });
+    } catch {
+      throw new Error(`Cannot reach the API at ${BASE}. Is it running?  (aeo serve)`);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`API ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`);
+    }
+    return res.blob();
+  },
   profile(req: { domain: string; use_llm?: boolean; max_urls?: number }): Promise<ProfileResponse> {
     return postJson<ProfileResponse>("/api/profile", req);
   },

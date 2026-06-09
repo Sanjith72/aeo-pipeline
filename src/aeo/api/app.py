@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 from ..intelligence.brief import plan_from_brief
@@ -149,6 +149,26 @@ def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
         "manifest": bundle.manifest(),
         "assets": [{"path": a.path, "kind": a.kind, "content": a.content} for a in bundle.assets],
     }
+
+
+@app.post("/api/deliverables.zip")
+def deliverables_zip(req: DeliverablesRequest) -> Response:
+    """The same developer-ready bundle as ``/api/deliverables``, returned as a single
+    downloadable ``.zip`` (one-click 'Download all')."""
+    brief = _brief(req)
+    framework, llm = _framework_and_llm(brief, req.use_llm)
+    plan_result = plan_from_brief(brief, framework=framework, llm=llm)
+    bundle = build_asset_bundle(
+        blueprint=plan_result.blueprint, coverage=plan_result.coverage,
+        profile=plan_result.profile.to_dict(), origin=brief.domain or brief.key(),
+        llm=llm, draft_limit=req.draft_limit,
+    )
+    filename = f"{brief.key()}-aeo-bundle.zip"
+    return Response(
+        content=bundle.to_zip_bytes(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/api/profile")

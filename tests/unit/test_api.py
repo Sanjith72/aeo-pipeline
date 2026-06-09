@@ -51,6 +51,14 @@ def test_deliverables_returns_inline_bundle() -> None:
     assert sum(1 for a in body["assets"] if a["kind"] == "page_spec") == 3
 
 
+def test_deliverables_zip_returns_a_zip() -> None:
+    r = client.post("/api/deliverables.zip", json={"name": "Acme", "domain": "acme.com", "draft_limit": 2})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    assert "attachment" in r.headers.get("content-disposition", "")
+    assert r.content[:2] == b"PK"  # zip magic bytes
+
+
 def test_plan_requires_name() -> None:
     r = client.post("/api/plan", json={})  # 'name' is required
     assert r.status_code == 422

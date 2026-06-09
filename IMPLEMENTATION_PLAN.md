@@ -138,8 +138,14 @@ contract + production build are the gate.
 
 **Reuses:** the entire SP-1–4a stack via REST. **Run:** `aeo serve` (backend) + `npm run dev` (web).
 
-**Deferred (v2):** the full 9-distinct-step wizard chrome (stepper for Goals/Competitors/Challenges
-as separate screens), the async `/api/audit` progress UI, bundle-as-zip download, and auth.
+**v2 delivered:** the full **9-step wizard** (Business Info → Goals → Website Info → Competitors →
+Challenges → Analysis → Blueprint → Implementation Plan → Deliverables) with a stepper, per-step nav,
+and an analysis gate; **bundle-as-zip** download — backend `AssetBundle.to_zip_bytes()` +
+`POST /api/deliverables.zip` (517 tests, +2) and a "Download all (.zip)" button. Both verified
+(pytest + `npm run build` clean).
+
+**Deferred (v3):** the async `/api/audit` full-crawl progress UI (existing-site deep audit with a job +
+status polling) and auth.
 
 ---
 
