@@ -2,10 +2,12 @@
 // no business logic lives here. Base URL from NEXT_PUBLIC_API_BASE.
 
 import type {
+  AuditJob,
   BriefPlan,
   BriefRequest,
   DeliverablesResponse,
   ProfileResponse,
+  SiteReportResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -59,5 +61,18 @@ export const api = {
   },
   profile(req: { domain: string; use_llm?: boolean; max_urls?: number }): Promise<ProfileResponse> {
     return postJson<ProfileResponse>("/api/profile", req);
+  },
+  startAudit(req: { domain: string; name?: string }): Promise<{ job_id: string; status: string }> {
+    return postJson<{ job_id: string; status: string }>("/api/audit", req);
+  },
+  async auditStatus(jobId: string): Promise<AuditJob> {
+    const res = await fetch(`${BASE}/api/audit/${jobId}`);
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as AuditJob;
+  },
+  async siteReport(runId: number): Promise<SiteReportResponse> {
+    const res = await fetch(`${BASE}/api/site-report/${runId}`);
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as SiteReportResponse;
   },
 };
