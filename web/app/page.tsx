@@ -61,7 +61,7 @@ export default function Page() {
   const [domain, setDomain] = useState("");
   const [competitorsText, setCompetitorsText] = useState("");
   const [challenges, setChallenges] = useState("");
-  const [useLlm, setUseLlm] = useState(false);
+  const [useLlm, setUseLlm] = useState(true);
 
   // results
   const [loading, setLoading] = useState(false);

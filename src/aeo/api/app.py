@@ -70,7 +70,7 @@ class BriefRequest(BaseModel):
     services: list[str] = []
     competitors: list[str] = []
     goals: list[str] = []
-    use_llm: bool = False
+    use_llm: bool = True
 
 
 class DeliverablesRequest(BriefRequest):
@@ -81,13 +81,13 @@ class BlueprintRequest(BaseModel):
     topic: str | None = None
     domain: str | None = None
     category: str | None = None
-    use_llm: bool = False
+    use_llm: bool = True
 
 
 class ProfileRequest(BaseModel):
     domain: str
     max_urls: int | None = None
-    use_llm: bool = False
+    use_llm: bool = True
 
 
 class AuditRequest(BaseModel):
