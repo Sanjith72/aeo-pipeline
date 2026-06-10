@@ -27,6 +27,33 @@ export function useScrolled(threshold = 12): boolean {
   return scrolled;
 }
 
+/** 0..1 page scroll progress — drives the hairline progress bar under the navbar.
+ *  Same passive + rAF pattern as useScrolled. */
+export function useScrollProgress(): number {
+  const [progress, setProgress] = useState(0);
+  useEffect(() => {
+    let ticking = false;
+    function onScroll() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        const el = document.documentElement;
+        const max = el.scrollHeight - el.clientHeight;
+        setProgress(max > 0 ? Math.min(1, el.scrollTop / max) : 0);
+        ticking = false;
+      });
+    }
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, []);
+  return progress;
+}
+
 /** Counts 0 → target once after `delay` ms (eased), then stays put. Renders the
  *  final value immediately for users who prefer reduced motion. */
 export function useCountUp(target: number, { duration = 900, delay = 350 } = {}): number {

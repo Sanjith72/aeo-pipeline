@@ -10,24 +10,27 @@ const config: Config = {
         mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       colors: {
-        // Near-monochrome ink on warm paper — an editorial, premium base.
-        ink: { DEFAULT: "#0b0f1a", 700: "#202938", 500: "#46505f", 300: "#7b8595", 100: "#dfe2e7" },
-        paper: { DEFAULT: "#f6f5f2", 100: "#fffffe", 200: "#eceae4", 300: "#dedbd2" },
-        // One confident signal — used sparingly (links, active, accents).
-        accent: { DEFAULT: "#2b4cf0", 600: "#1f39c7", 50: "#eef1fe" },
+        // Dark theme: luminous ink on deep-navy night paper — the blueprint glows.
+        // Token ROLES are unchanged (ink = text, paper = surfaces), so every
+        // existing class keeps working; only the values inverted.
+        ink: { DEFAULT: "#eef1f7", 700: "#c8cfdd", 500: "#98a2b8", 300: "#5d6781", 100: "#2a3349" },
+        paper: { DEFAULT: "#0a0e17", 100: "#111727", 200: "#0d1120", 300: "#1a2236" },
+        // One confident signal — brightened for dark backgrounds; 600 is the
+        // HOVER step, so on dark it goes lighter, not darker.
+        accent: { DEFAULT: "#5b78ff", 600: "#7d93ff", 50: "#19234a" },
       },
       boxShadow: {
-        card: "0 1px 2px rgba(11,15,26,0.04), 0 10px 28px -16px rgba(11,15,26,0.14)",
-        lift: "0 2px 6px rgba(11,15,26,0.06), 0 22px 48px -20px rgba(11,15,26,0.26)",
-        // accent halo for primary CTAs — depth without darkness
-        glow: "0 1px 2px rgba(11,15,26,0.06), 0 12px 36px -10px rgba(43,76,240,0.5)",
+        card: "0 1px 2px rgba(0,0,0,0.5), 0 10px 28px -16px rgba(0,0,0,0.65)",
+        lift: "0 2px 8px rgba(0,0,0,0.5), 0 24px 56px -20px rgba(0,0,0,0.75)",
+        // accent halo for primary CTAs — on dark it reads as light, not shadow
+        glow: "0 1px 2px rgba(0,0,0,0.4), 0 10px 36px -8px rgba(91,120,255,0.55)",
       },
       borderRadius: { xl2: "1.25rem" },
       letterSpacing: { measure: "0.18em" },
       keyframes: {
         "fade-up": {
-          "0%": { opacity: "0", transform: "translateY(14px)" },
-          "100%": { opacity: "1", transform: "translateY(0)" },
+          "0%": { opacity: "0", transform: "translateY(18px)", filter: "blur(6px)" },
+          "100%": { opacity: "1", transform: "translateY(0)", filter: "blur(0)" },
         },
         "grid-in": { "0%": { opacity: "0" }, "100%": { opacity: "1" } },
         "scale-in": {

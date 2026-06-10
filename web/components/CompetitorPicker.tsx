@@ -199,7 +199,7 @@ export function CompetitorPicker({
         )}
 
         {suggest.status === "error" && (
-          <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
             We couldn't load recommendations right now. Try refresh, or add competitors below.
           </p>
         )}

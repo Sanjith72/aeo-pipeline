@@ -18,9 +18,9 @@ import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanize
 import { ArrowRight, Check } from "./ui/icons";
 
 const EFFORT_PILL: Record<string, string> = {
-  low: "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/20",
-  medium: "bg-amber-50 text-amber-700 ring-1 ring-amber-600/20",
-  high: "bg-rose-50 text-rose-700 ring-1 ring-rose-600/20",
+  low: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
+  medium: "bg-amber-500/10 text-amber-200 ring-1 ring-amber-500/30",
+  high: "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30",
 };
 
 type TabId = "overview" | "blueprint" | "actions" | "kit";
@@ -165,7 +165,7 @@ function OverviewPanel({ profile, auditJob }: { profile: SiteProfile; auditJob: 
                 key={s.stage}
                 className={`step-in inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] capitalize ${
                   s.covered
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
                     : "border-ink/10 bg-paper-200/70 text-ink-300"
                 }`}
                 style={{ animationDelay: `${i * 60}ms` }}
@@ -217,7 +217,7 @@ function ActionsPanel({ profile }: { profile: SiteProfile }) {
             className="step-in group flex gap-4 rounded-xl border border-ink/[0.08] bg-paper-100 p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-ink/[0.16] hover:shadow-card"
             style={{ animationDelay: `${Math.min(i, 8) * 60}ms` }}
           >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink font-mono text-xs text-paper-100 transition-colors duration-200 group-hover:bg-accent">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink font-mono text-xs text-paper-100 transition-colors duration-200 group-hover:bg-accent group-hover:text-white">
               {String(a.priority).padStart(2, "0")}
             </div>
             <div className="flex-1">
@@ -395,7 +395,7 @@ function PlanChecklistView({ checklist, storageKey }: { checklist: PlanChecklist
       </div>
 
       {pct === 100 && (
-        <p className="step-in mt-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        <p className="step-in mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
           That's everything — your business is set up to be the one AI recommends. 🎉
         </p>
       )}

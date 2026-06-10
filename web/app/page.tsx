@@ -565,7 +565,7 @@ export default function Page() {
 
 function ErrorNote({ message }: { message: string }) {
   return (
-    <div className="step-in mb-6 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+    <div className="step-in mb-6 flex items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
       <span aria-hidden className="mt-0.5">⚠</span>
       <span>
         <span className="font-medium">We hit a snag.</span> {message}
@@ -709,7 +709,7 @@ function ReviewSummary({
 
 function AuditProgress({ job }: { job: AuditJob }) {
   return (
-    <div className="step-in rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+    <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
       <div className="flex items-center gap-2.5">
         <span className="relative flex h-2.5 w-2.5">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />

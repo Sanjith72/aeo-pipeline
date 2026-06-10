@@ -4,19 +4,26 @@
 // outcome language: what the owner gets, never how the pipeline works.
 
 import { Reveal } from "./ui/Reveal";
-import { useCountUp, useScrolled } from "./ui/hooks";
-import { ArrowRight, Check, Sparkle } from "./ui/icons";
+import { useCountUp, useScrolled, useScrollProgress } from "./ui/hooks";
+import { ArrowRight, Sparkle } from "./ui/icons";
 
 export function TopBar() {
   // The bar starts transparent over the hero grid, then morphs into a frosted,
-  // shadowed surface as content scrolls beneath it.
+  // shadowed surface as content scrolls beneath it. The hairline along its lower
+  // edge tracks reading progress through the page.
   const scrolled = useScrolled();
+  const progress = useScrollProgress();
   return (
     <header
       className={`sticky top-0 z-40 border-b transition-all duration-300 ${
         scrolled ? "border-ink/[0.08] bg-paper-100/85 shadow-card backdrop-blur-md" : "border-transparent bg-paper/70 backdrop-blur-sm"
       }`}
     >
+      <span
+        aria-hidden
+        className="absolute inset-x-0 bottom-0 h-[2px] origin-left bg-gradient-to-r from-accent to-accent-600"
+        style={{ transform: `scaleX(${progress})` }}
+      />
       <div
         className={`mx-auto flex max-w-6xl items-center justify-between px-5 transition-[padding] duration-300 ${
           scrolled ? "py-2.5" : "py-3.5"
@@ -53,25 +60,20 @@ export function Hero() {
   return (
     <section className="relative overflow-hidden border-b border-ink/[0.06]">
       <div className="blueprint-grid blueprint-grid-fade absolute inset-0" aria-hidden />
-      {/* layered atmosphere: two drifting accent washes behind the grid */}
+      {/* aurora: glow fields drifting behind the grid — the dark theme's pulse */}
       <div
-        className="pointer-events-none absolute -top-24 right-[-10%] h-96 w-96 animate-float-y-slow rounded-full bg-accent/[0.07] blur-3xl"
+        className="aurora pointer-events-none absolute -top-32 right-[-12%] h-[34rem] w-[34rem] rounded-full bg-accent/[0.16] blur-3xl"
         aria-hidden
       />
       <div
-        className="pointer-events-none absolute -bottom-32 left-[-8%] h-72 w-72 animate-float-y rounded-full bg-accent/[0.05] blur-3xl"
+        className="aurora pointer-events-none absolute -bottom-40 left-[-10%] h-96 w-96 rounded-full bg-accent/[0.1] blur-3xl"
         aria-hidden
+        style={{ animationDuration: "26s", animationDelay: "-9s" }}
       />
 
-      {/* floating proof chips — the layered depth element (decorative, desktop only) */}
-      <div className="pointer-events-none absolute right-[6%] top-24 hidden select-none lg:block" aria-hidden>
-        <div className="glass animate-float-y-slow flex items-center gap-2 rounded-xl px-3.5 py-2.5 shadow-card" style={{ animationDelay: "0.8s" }}>
-          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-white">
-            <Check width={11} height={11} />
-          </span>
-          <span className="text-[13px] font-medium text-ink">Recommended by ChatGPT</span>
-        </div>
-        <div className="glass animate-float-y ml-12 mt-5 flex items-center gap-2 rounded-xl px-3.5 py-2.5 shadow-card" style={{ animationDelay: "2.2s" }}>
+      {/* floating glass chip — layered depth (decorative, desktop only) */}
+      <div className="pointer-events-none absolute right-[7%] top-28 hidden select-none lg:block" aria-hidden>
+        <div className="glass animate-float-y-slow flex items-center gap-2 rounded-xl px-3.5 py-2.5 shadow-card">
           <Sparkle className="text-accent" />
           <span className="text-[13px] font-medium text-ink">The answer customers see first</span>
         </div>
