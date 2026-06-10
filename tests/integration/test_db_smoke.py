@@ -63,11 +63,15 @@ def test_page_priorities_round_trip(db):
 def test_blueprint_versioning_round_trip(db):
     """v4: save_versioned reuses on identical inputs and bumps on change, and
     pin_run records the version on the run."""
+    import uuid
+
     from aeo.reference.generator import generate_blueprint
     from aeo.storage.repos import blueprints as blueprints_repo
     from aeo.storage.repos import runs as runs_repo
 
-    bp = generate_blueprint(topic="PEV-smoke", llm=None)
+    # unique topic per run — leftover rows from earlier runs must not flip `reused`
+    topic = f"PEV-smoke-{uuid.uuid4().hex[:8]}"
+    bp = generate_blueprint(topic=topic, llm=None)
     first = blueprints_repo.save_versioned(bp)
     again = blueprints_repo.save_versioned(bp)  # identical inputs → reuse
     assert again.reused is True
@@ -84,7 +88,7 @@ def test_blueprint_versioning_round_trip(db):
     run = runs_repo.start(label="db-smoke-bp")
     try:
         blueprints_repo.pin_run(run.id, bumped.id)
-        assert blueprints_repo.latest("PEV-smoke").blueprint.version == bumped.blueprint.version
+        assert blueprints_repo.latest(topic).blueprint.version == bumped.blueprint.version
     finally:
         runs_repo.finish(run.id, status="succeeded")
 
@@ -125,14 +129,18 @@ def test_coverage_and_feedback_round_trip(db):
 def _smoke_page(url: str, content_hash: str, run_id: int):
     from aeo.storage.models import FetchedPage
     from aeo.storage.repos import pages as pages_repo
+    from aeo.storage.repos import targets as targets_repo
 
+    # crawled_pages.chk_single_owner demands exactly one owner — register a reusable
+    # smoke client (idempotent upsert) instead of writing an ownerless row.
+    client = targets_repo.upsert("DB Smoke Client", "db-smoke-client.example")
     return pages_repo.upsert(
         FetchedPage(
             url=url, url_normalized=url, success=True, http_status=200,
             fetch_duration_ms=1, html="<html></html>", markdown="", title="t",
             meta_description="", error=None, content_hash=content_hash,
         ),
-        run_id=run_id, client_id=None, competitor_id=None,
+        run_id=run_id, client_id=client.id, competitor_id=None,
     )
 
 
@@ -149,10 +157,15 @@ def test_recent_observations_correlates_score_to_citation_run(db):
     try:
         page = _smoke_page("https://securin.io/feedback-corr", "hashfbcorr", run_a.id)
 
+        # The classic 8 rubric columns are NOT NULL — a real score always carries them
+        # (only the two v3 additions are nullable), so the fixture must too.
+        _CRITERIA = ["schema_markup", "qa_blocks", "stats_in_html", "entity_consistency",
+                     "heading_structure", "content_depth", "citation_signals", "load_speed"]
+
         def _score(run_id: int, tier: int) -> PageScore:
             return PageScore(
                 page_id=page.id, run_id=run_id,
-                criteria={"stats_in_html": CriterionScore(name="stats_in_html", value=tier)},
+                criteria={name: CriterionScore(name=name, value=tier) for name in _CRITERIA},
                 total=tier, max_possible=50, priority_tier="medium",
             )
 
@@ -172,6 +185,32 @@ def test_recent_observations_correlates_score_to_citation_run(db):
     finally:
         runs_repo.finish(run_a.id, status="succeeded")
         runs_repo.finish(run_b.id, status="succeeded")
+
+
+def test_target_upsert_reuses_row_when_same_domain_under_new_name(db):
+    """Regression: re-auditing the same domain under a different label raised
+    ``clients_domain_key`` (the upsert was idempotent on name only). The domain owns
+    identity — the second upsert must reuse the row and refresh the label."""
+    from aeo.storage.db import transaction
+    from aeo.storage.repos import targets as targets_repo
+
+    host = "upsert-smoke.example"
+    try:
+        first = targets_repo.upsert("Upsert Smoke A", host)
+        second = targets_repo.upsert("Upsert Smoke B", f"https://www.{host}/")  # same host, new label
+        assert second.id == first.id
+        assert second.domain == host
+        assert second.name == "Upsert Smoke B"  # label refreshed
+
+        # rename-collision guard: a third row owns the label → reuse keeps the old name
+        other = targets_repo.upsert("Upsert Smoke C", "upsert-smoke-other.example")
+        kept = targets_repo.upsert("Upsert Smoke C", host)  # name taken by `other`
+        assert kept.id == first.id
+        assert kept.name == "Upsert Smoke B"  # unchanged, no unique-name violation
+        assert other.id != first.id
+    finally:
+        with transaction() as conn, conn.cursor() as cur:  # leave no smoke rows behind
+            cur.execute("DELETE FROM clients WHERE domain IN (%s, %s)", (host, "upsert-smoke-other.example"))
 
 
 def test_recent_observations_keeps_unscored_cited_page(db):
