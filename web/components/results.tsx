@@ -4,12 +4,13 @@
 // extra wizard steps. Every label that comes back from the API gets translated into
 // owner language here (effort levels, scenario names, journey stages).
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   AuditJob,
   BriefPlan,
   BundleAsset,
   DeliverablesResponse,
+  PlanChecklist,
   SiteProfile,
   SitemapNode,
 } from "@/lib/types";
@@ -32,6 +33,7 @@ export function ResultsView({
   deliverables,
   delivLoading,
   aiPersonalization,
+  builderMode,
   onGenerateDeliverables,
   onDownloadZip,
   onEdit,
@@ -43,6 +45,7 @@ export function ResultsView({
   deliverables: DeliverablesResponse | null;
   delivLoading: boolean;
   aiPersonalization: boolean;
+  builderMode: string;
   onGenerateDeliverables: () => void;
   onDownloadZip: () => void;
   onEdit: () => void;
@@ -105,6 +108,7 @@ export function ResultsView({
             deliverables={deliverables}
             loading={delivLoading}
             slowMode={aiPersonalization}
+            storageKey={`aeo-plan:${businessName.toLowerCase()}:${builderMode}`}
             onGenerate={onGenerateDeliverables}
             onDownloadZip={onDownloadZip}
           />
@@ -311,16 +315,106 @@ const KIND_LABEL: Record<string, string> = {
   strategy: "action plan",
 };
 
+function PlanChecklistView({ checklist, storageKey }: { checklist: PlanChecklist; storageKey: string }) {
+  const [done, setDone] = useState<Set<string>>(new Set());
+
+  // localStorage only after mount — never during render (prerender has no storage)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      setDone(raw ? new Set(JSON.parse(raw) as string[]) : new Set());
+    } catch {
+      /* private mode / blocked storage — checklist still works, just won't persist */
+    }
+  }, [storageKey]);
+
+  function toggle(id: string) {
+    setDone((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      try {
+        localStorage.setItem(storageKey, JSON.stringify([...next]));
+      } catch {
+        /* same: persistence is best-effort */
+      }
+      return next;
+    });
+  }
+
+  const allIds = checklist.weeks.flatMap((w) => w.tasks.map((t) => t.id));
+  const doneCount = allIds.filter((id) => done.has(id)).length;
+  const pct = allIds.length ? Math.round((doneCount / allIds.length) * 100) : 0;
+
+  return (
+    <div className="card mb-6 p-5 sm:p-6">
+      <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-base font-semibold">Your 30-day plan</h3>
+        <span className="font-mono text-xs text-ink-500">
+          {doneCount} / {allIds.length} done
+        </span>
+      </div>
+      <div className="mb-5 h-1.5 overflow-hidden rounded-full bg-ink/[0.07]" role="progressbar"
+        aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Plan progress">
+        <div
+          className="h-full rounded-full bg-accent transition-[width] duration-500 ease-out"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      <div className="grid gap-5 md:grid-cols-2">
+        {checklist.weeks.map((week) => (
+          <div key={week.title}>
+            <div className="mb-2">
+              <span className="label-mono">{week.title}</span>
+              <span className="ml-2 text-xs text-ink-500">{week.blurb}</span>
+            </div>
+            <ul className="space-y-1">
+              {week.tasks.map((t) => {
+                const on = done.has(t.id);
+                return (
+                  <li key={t.id}>
+                    <label className="flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-ink/[0.03]">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                        checked={on}
+                        onChange={() => toggle(t.id)}
+                      />
+                      <span className="min-w-0 text-sm">
+                        <span className={on ? "text-ink-300 line-through" : "text-ink"}>{t.label}</span>
+                        {t.detail && <span className="block truncate text-xs text-ink-300">{t.detail}</span>}
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
+      </div>
+
+      {pct === 100 && (
+        <p className="step-in mt-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          That's everything — your business is set up to be the one AI recommends. 🎉
+        </p>
+      )}
+    </div>
+  );
+}
+
 function LaunchKitPanel({
   deliverables,
   loading,
   slowMode,
+  storageKey,
   onGenerate,
   onDownloadZip,
 }: {
   deliverables: DeliverablesResponse | null;
   loading: boolean;
   slowMode: boolean;
+  storageKey: string;
   onGenerate: () => void;
   onDownloadZip: () => void;
 }) {
@@ -356,6 +450,9 @@ function LaunchKitPanel({
   }
   return (
     <div>
+      {deliverables.checklist && deliverables.checklist.total > 0 && (
+        <PlanChecklistView checklist={deliverables.checklist} storageKey={storageKey} />
+      )}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <span className="text-sm text-ink-500">
           <span className="font-mono text-ink">{deliverables.manifest.asset_count}</span> files, ready to share

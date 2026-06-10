@@ -78,8 +78,26 @@ export interface BundleAsset {
   content: string;
 }
 
+export interface ChecklistTask {
+  id: string;
+  label: string;
+  detail?: string;
+}
+
+export interface ChecklistWeek {
+  title: string;
+  blurb: string;
+  tasks: ChecklistTask[];
+}
+
+export interface PlanChecklist {
+  weeks: ChecklistWeek[];
+  total: number;
+}
+
 export interface DeliverablesResponse {
   manifest: { bundle: string; asset_count: number; assets: { path: string; kind: string }[] };
+  checklist?: PlanChecklist;
   assets: BundleAsset[];
 }
 

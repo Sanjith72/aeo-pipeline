@@ -29,7 +29,7 @@ from ..reference.competitor_patterns import CompetitorPatterns
 from ..reference.framework import Framework, build_framework, load_framework
 from ..reference.framework_bootstrap import bootstrap_framework, framework_file_path
 from ..reference.generator import generate_blueprint
-from ..report.packager import build_asset_bundle
+from ..report.packager import build_asset_bundle, checklist_for
 from . import jobs as jobs_mod
 from .jobs import JOBS
 
@@ -220,6 +220,10 @@ def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
     )
     return {
         "manifest": bundle.manifest(),
+        "checklist": checklist_for(
+            blueprint=plan_result.blueprint, coverage=plan_result.coverage,
+            builder_mode=req.builder_mode,
+        ),
         "assets": [{"path": a.path, "kind": a.kind, "content": a.content} for a in bundle.assets],
     }
 

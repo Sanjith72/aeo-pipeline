@@ -222,6 +222,7 @@ export default function Page() {
               deliverables={deliverables}
               delivLoading={delivLoading}
               aiPersonalization={useLlm}
+              builderMode={builderMode}
               onGenerateDeliverables={generateDeliverables}
               onDownloadZip={downloadZip}
               onEdit={() => setView("wizard")}

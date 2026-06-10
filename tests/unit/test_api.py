@@ -182,6 +182,12 @@ def test_deliverables_builder_mode_shapes_the_kit() -> None:
     assert any(p.startswith("prompts/") for p in ai_paths)
     assert any(p.startswith("for-your-developer/") for p in ai_paths)
 
+    # the structured 30-day plan rides along for the interactive checklist UI
+    checklist = ai.json()["checklist"]
+    assert checklist["total"] > 0
+    assert any(t["id"].startswith("page:") for w in checklist["weeks"] for t in w["tasks"])
+    assert any(t["id"] == "vis:gbp" for w in checklist["weeks"] for t in w["tasks"])
+
     assert client.post("/api/deliverables", json={**req, "builder_mode": "nope"}).status_code == 422
 
 

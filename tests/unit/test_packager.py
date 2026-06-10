@@ -11,7 +11,7 @@ from aeo.intelligence.brief import plan_from_brief
 from aeo.reference.blueprint import Blueprint, CoverageCluster, CoverageMap, SitemapNode
 from aeo.reference.business_input import BusinessInput
 from aeo.reference.framework import load_framework
-from aeo.report.packager import AssetBundle, build_asset_bundle
+from aeo.report.packager import AssetBundle, build_asset_bundle, build_checklist
 
 
 def _blueprint() -> Blueprint:
@@ -183,6 +183,27 @@ def test_get_found_now_uses_category_directories() -> None:
     assert "Google Business Profile" in found.content
     assert "Zocdoc" in found.content  # healthcare directory matched from the category
     assert "Boston, US" in found.content
+
+
+def test_checklist_weeks_mirror_start_here() -> None:
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="acme.com", draft_limit=0,
+                                builder_mode="diy", business=_BUSINESS)
+    nodes = [n for n in _blueprint().sitemap]
+    checklist = build_checklist(sorted(nodes, key=lambda n: (-n.priority, n.slug)), "diy")
+    assert checklist["total"] == 3 + 4  # 3 pages (one week) + 4 visibility tasks
+    week1 = checklist["weeks"][0]
+    assert week1["tasks"][0]["id"] == "page:/resources"  # priority order, stable ids
+    final = checklist["weeks"][-1]
+    assert {t["id"] for t in final["tasks"]} == {"vis:gbp", "vis:listings", "vis:reviews", "vis:readthrough"}
+    # every page task appears in START-HERE too (same source data)
+    start = next(a for a in bundle.assets if a.path == "START-HERE.md")
+    assert "Resources" in start.content
+
+
+def test_checklist_dev_mode_has_no_visibility_week() -> None:
+    nodes = sorted(_blueprint().sitemap, key=lambda n: (-n.priority, n.slug))
+    checklist = build_checklist(nodes, "dev")
+    assert all(not t["id"].startswith("vis:") for w in checklist["weeks"] for t in w["tasks"])
 
 
 def test_owner_mode_zip_contains_nested_paths() -> None:

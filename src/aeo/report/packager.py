@@ -586,6 +586,51 @@ def _get_found_now_md(business: dict[str, Any] | None) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def checklist_for(
+    *, blueprint: Blueprint, coverage: CoverageDiffResult | None, builder_mode: str
+) -> dict[str, Any]:
+    """:func:`build_checklist` over the same to-build nodes the bundle uses."""
+    return build_checklist(_target_nodes(blueprint, coverage), builder_mode)
+
+
+def build_checklist(nodes: list[Any], builder_mode: str) -> dict[str, Any]:
+    """The kit's plan as structured data — the same weeks as ``START-HERE.md``, so the
+    UI can render an interactive checklist instead of asking owners to open files.
+    Task ids are stable (page slug / fixed visibility ids) so client-side progress
+    survives kit regeneration."""
+    weeks: list[dict[str, Any]] = []
+    for i, week in enumerate(_chunk_weeks(nodes), start=1):
+        weeks.append({
+            "title": f"Week {i}",
+            "blurb": "Build these first" if i == 1 else "Build these next",
+            "tasks": [
+                {
+                    "id": f"page:{_node_attr(n, 'slug', '')}",
+                    "label": f"Create the “{_node_attr(n, 'title', '')}” page",
+                    "detail": f"web address ending {_node_attr(n, 'slug', '')}",
+                }
+                for n in week
+            ],
+        })
+    if builder_mode != "dev":
+        weeks.append({
+            "title": "Final week",
+            "blurb": "Get found everywhere else — no website needed",
+            "tasks": [
+                {"id": "vis:gbp", "label": "Claim your Google Business Profile",
+                 "detail": "step 1 in get-found-now.md"},
+                {"id": "vis:listings", "label": "Claim the other free listings",
+                 "detail": "Bing, Apple, Yelp, Facebook — step 2 in get-found-now.md"},
+                {"id": "vis:reviews", "label": "Ask three happy customers for a Google review",
+                 "detail": "the ready-made ask script is in get-found-now.md"},
+                {"id": "vis:readthrough", "label": "Read every new page once on your phone",
+                 "detail": "typos, broken links, missing contact info"},
+            ],
+        })
+    total = sum(len(w["tasks"]) for w in weeks)
+    return {"weeks": weeks, "total": total}
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 
