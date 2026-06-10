@@ -162,11 +162,17 @@ export default function Page() {
     }
   }
 
+  // Zip the assets the browser already holds — never re-generate on the server
+  // (each LLM-personalized build can take ~10 minutes on a local model).
   async function downloadZip() {
+    if (!deliverables) return;
     setError(null);
     try {
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      for (const asset of deliverables.assets) zip.file(asset.path, asset.content);
       triggerDownload(
-        await api.deliverablesZip({ ...briefFromForm(), draft_limit: 10 }),
+        await zip.generateAsync({ type: "blob" }),
         `${name.trim() || "aeo"}-launch-kit.zip`,
       );
     } catch (err) {
@@ -211,6 +217,7 @@ export default function Page() {
               auditJob={auditJob}
               deliverables={deliverables}
               delivLoading={delivLoading}
+              aiPersonalization={useLlm}
               onGenerateDeliverables={generateDeliverables}
               onDownloadZip={downloadZip}
               onEdit={() => setView("wizard")}

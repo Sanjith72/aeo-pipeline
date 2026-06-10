@@ -31,6 +31,7 @@ export function ResultsView({
   auditJob,
   deliverables,
   delivLoading,
+  aiPersonalization,
   onGenerateDeliverables,
   onDownloadZip,
   onEdit,
@@ -41,6 +42,7 @@ export function ResultsView({
   auditJob: AuditJob | null;
   deliverables: DeliverablesResponse | null;
   delivLoading: boolean;
+  aiPersonalization: boolean;
   onGenerateDeliverables: () => void;
   onDownloadZip: () => void;
   onEdit: () => void;
@@ -102,6 +104,7 @@ export function ResultsView({
           <LaunchKitPanel
             deliverables={deliverables}
             loading={delivLoading}
+            slowMode={aiPersonalization}
             onGenerate={onGenerateDeliverables}
             onDownloadZip={onDownloadZip}
           />
@@ -303,11 +306,13 @@ const KIND_LABEL: Record<string, string> = {
 function LaunchKitPanel({
   deliverables,
   loading,
+  slowMode,
   onGenerate,
   onDownloadZip,
 }: {
   deliverables: DeliverablesResponse | null;
   loading: boolean;
+  slowMode: boolean;
   onGenerate: () => void;
   onDownloadZip: () => void;
 }) {
@@ -324,7 +329,7 @@ function LaunchKitPanel({
           {loading ? (
             <>
               <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-              Preparing your kit…
+              {slowMode ? "Writing your kit with AI — this takes a while…" : "Preparing your kit…"}
             </>
           ) : (
             <>
@@ -333,6 +338,11 @@ function LaunchKitPanel({
             </>
           )}
         </button>
+        <p className="mx-auto mt-3 max-w-sm text-xs text-ink-300">
+          {slowMode
+            ? "AI personalization is on, so every page outline is custom-written — expect several minutes. Want it instantly? Turn off \"Personalize the wording with AI\" under Your plan and rebuild."
+            : "Takes a few seconds."}
+        </p>
       </div>
     );
   }

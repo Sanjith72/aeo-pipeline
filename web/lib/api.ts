@@ -50,23 +50,9 @@ export const api = {
   deliverables(req: BriefRequest & { draft_limit?: number }): Promise<DeliverablesResponse> {
     return postJson<DeliverablesResponse>("/api/deliverables", req);
   },
-  async deliverablesZip(req: BriefRequest & { draft_limit?: number }): Promise<Blob> {
-    let res: Response;
-    try {
-      res = await fetch(`${BASE}/api/deliverables.zip`, {
-        method: "POST",
-        headers: headers({ "Content-Type": "application/json" }),
-        body: JSON.stringify(req),
-      });
-    } catch {
-      throw new Error(`Cannot reach the API at ${BASE}. Is it running?  (aeo serve)`);
-    }
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`API ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`);
-    }
-    return res.blob();
-  },
+  // NOTE: the server also offers POST /api/deliverables.zip, but the UI zips the
+  // already-fetched assets client-side instead — the endpoint re-generates the whole
+  // bundle (minutes of LLM work) for bytes the browser already has.
   profile(req: { domain: string; use_llm?: boolean; max_urls?: number }): Promise<ProfileResponse> {
     return postJson<ProfileResponse>("/api/profile", req);
   },
