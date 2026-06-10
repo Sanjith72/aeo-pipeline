@@ -169,6 +169,22 @@ def test_competitor_suggest_requires_name() -> None:
     assert client.post("/api/competitors/suggest", json={"name": "  "}).status_code == 422
 
 
+def test_deliverables_builder_mode_shapes_the_kit() -> None:
+    req = {"name": "Acme", "domain": "acme.com", "use_llm": False, "draft_limit": 2}
+    dev_paths = {a["path"] for a in client.post("/api/deliverables", json=req).json()["assets"]}
+    assert "README.md" in dev_paths  # default stays the developer bundle
+
+    ai = client.post("/api/deliverables", json={**req, "builder_mode": "ai"})
+    assert ai.status_code == 200
+    ai_paths = {a["path"] for a in ai.json()["assets"]}
+    assert "START-HERE.md" in ai_paths
+    assert "get-found-now.md" in ai_paths
+    assert any(p.startswith("prompts/") for p in ai_paths)
+    assert any(p.startswith("for-your-developer/") for p in ai_paths)
+
+    assert client.post("/api/deliverables", json={**req, "builder_mode": "nope"}).status_code == 422
+
+
 def test_cors_allows_the_web_ui_origin() -> None:
     # the SP-4b UI on :3000 is a different origin — without this header every browser
     # fetch fails silently, so it's load-bearing for the whole guided flow

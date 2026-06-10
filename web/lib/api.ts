@@ -47,7 +47,9 @@ export const api = {
   plan(req: BriefRequest): Promise<BriefPlan> {
     return postJson<BriefPlan>("/api/plan", req);
   },
-  deliverables(req: BriefRequest & { draft_limit?: number }): Promise<DeliverablesResponse> {
+  deliverables(
+    req: BriefRequest & { draft_limit?: number; builder_mode?: string },
+  ): Promise<DeliverablesResponse> {
     return postJson<DeliverablesResponse>("/api/deliverables", req);
   },
   // NOTE: the server also offers POST /api/deliverables.zip, but the UI zips the

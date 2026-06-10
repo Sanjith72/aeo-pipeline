@@ -74,6 +74,24 @@ export const GOAL_OPTIONS = [
   { label: "Sell more online", hint: "Help shoppers find and choose your products" },
 ];
 
+// Who's building the website — decides which flavor of launch kit the API packs.
+export const BUILDER_MODES = [
+  {
+    value: "diy",
+    label: "Me, with a website builder",
+    hint: "Paste-ready pages for Wix, Squarespace, WordPress…",
+  },
+  { value: "ai", label: "AI tools", hint: "Copy-paste prompts for ChatGPT or your builder's AI" },
+  {
+    value: "hire",
+    label: "I'll hire someone",
+    hint: "A ready-to-post job brief, plus how to check the work",
+  },
+  { value: "dev", label: "My developer or agency", hint: "Technical files they can build from directly" },
+] as const;
+
+export type BuilderMode = (typeof BUILDER_MODES)[number]["value"];
+
 // Friendly names for the analysis labels the API returns.
 export const EFFORT_LABEL: Record<string, string> = {
   low: "Quick win",

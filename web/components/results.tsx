@@ -293,14 +293,22 @@ function BlueprintPanel({ sitemap, topic }: { sitemap: SitemapNode[]; topic: str
 
 // ── launch kit ────────────────────────────────────────────────────────────────
 
+// Keys mirror Asset.kind in aeo.report.packager.
 const KIND_LABEL: Record<string, string> = {
-  xml: "for search engines",
-  json: "settings file",
-  jsonld: "code snippet",
-  markdown: "content outline",
-  md: "content outline",
-  csv: "spreadsheet",
-  txt: "notes",
+  start_here: "read this first",
+  visibility: "get found checklist",
+  tips: "how-to guide",
+  prompt: "AI prompt",
+  page_draft: "page draft",
+  hire: "for hiring help",
+  readme: "read this first",
+  sitemap: "for search engines",
+  nav: "menu plan",
+  content_briefs: "page-by-page brief",
+  linking: "how pages connect",
+  schema: "technical extras",
+  page_spec: "page blueprint",
+  strategy: "action plan",
 };
 
 function LaunchKitPanel({

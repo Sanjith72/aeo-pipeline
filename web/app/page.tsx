@@ -16,7 +16,8 @@ import type {
   ProfileResponse,
   SiteProfile,
 } from "@/lib/types";
-import { BUSINESS_SIZES, GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
+import { BUILDER_MODES, BUSINESS_SIZES, GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
+import type { BuilderMode } from "@/lib/options";
 import { Footer, Hero, HowItWorks, TopBar, TrustBand } from "@/components/chrome";
 import { ResultsView, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
@@ -56,6 +57,7 @@ export default function Page() {
   const [domain, setDomain] = useState("");
   const [competitors, setCompetitors] = useState<CompetitorPick[]>([]);
   const [useLlm, setUseLlm] = useState(true);
+  const [builderMode, setBuilderMode] = useState<BuilderMode>("diy");
 
   // results
   const [loading, setLoading] = useState(false);
@@ -154,7 +156,9 @@ export default function Page() {
     setDelivLoading(true);
     setError(null);
     try {
-      setDeliverables(await api.deliverables({ ...briefFromForm(), draft_limit: 10 }));
+      setDeliverables(
+        await api.deliverables({ ...briefFromForm(), draft_limit: 10, builder_mode: builderMode }),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -436,6 +440,37 @@ export default function Page() {
                         ]}
                         onJump={setStep}
                       />
+
+                      <div>
+                        <span className="field-label">Who's building your website?</span>
+                        <div className="grid gap-2.5 sm:grid-cols-2" role="radiogroup" aria-label="Who's building your website">
+                          {BUILDER_MODES.map((m, i) => {
+                            const on = builderMode === m.value;
+                            return (
+                              <button
+                                key={m.value}
+                                type="button"
+                                role="radio"
+                                aria-checked={on}
+                                onClick={() => {
+                                  setBuilderMode(m.value);
+                                  if (deliverables) setDeliverables(null); // a new audience needs a new kit
+                                }}
+                                className={`option-card !items-start ${on ? "option-card-on" : "option-card-off"} step-in`}
+                                style={{ animationDelay: `${i * 50}ms` }}
+                              >
+                                <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${on ? "border-accent" : "border-ink/30"}`}>
+                                  {on && <span className="h-2 w-2 animate-pop rounded-full bg-accent" />}
+                                </span>
+                                <span>
+                                  <span className="block font-medium text-ink">{m.label}</span>
+                                  <span className="mt-0.5 block text-xs leading-relaxed text-ink-300">{m.hint}</span>
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
 
                       <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-ink/10 bg-paper-200/50 px-4 py-3.5 text-sm">
                         <input

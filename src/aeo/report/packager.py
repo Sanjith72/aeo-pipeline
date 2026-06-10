@@ -1,25 +1,28 @@
 """
-Implementation Asset Packager (SP-3) — turn a blueprint + strategy into a
-**developer-ready bundle** the user can hand straight to a developer or site builder.
+Implementation Asset Packager (SP-3) — turn a blueprint + strategy into the bundle
+that fits **whoever is building the site** (``builder_mode``):
 
-Where the site report says *what's missing*, this produces *the things to build*:
-
-  * ``README.md``               — bundle overview + how to use it
-  * ``sitemap.xml``             — the ideal sitemap (valid XML, absolute URLs)
-  * ``navigation.md``           — primary nav + topic-cluster hierarchy
-  * ``content-briefs.md``       — priority-ordered briefs for every page to build
-  * ``internal-linking.md``     — pillar↔supporting + cross-cluster linking plan
-  * ``schema-and-entities.md``  — required entities + recommended schema.org types
-  * ``pages/<slug>.md``         — per-page spec sheets (H1, sections, FAQ, JSON-LD)
-  * ``STRATEGY.md``             — the scenario + prioritized action plan (when a profile is given)
+  * ``dev``  (default) — the original developer bundle, unchanged:
+      ``README.md``, ``sitemap.xml``, ``navigation.md``, ``content-briefs.md``,
+      ``internal-linking.md``, ``schema-and-entities.md``, ``pages/<slug>.md`` spec
+      sheets, ``STRATEGY.md`` (when a profile is given).
+  * ``diy``  — owner building it themselves on a site builder: ``START-HERE.md``
+      (30-day plan), paste-ready ``pages/<slug>.md`` drafts, ``platform-tips.md``,
+      ``get-found-now.md``, and the dev bundle tucked under ``for-your-developer/``.
+  * ``ai``   — owner building with ChatGPT / builder AI: ``prompts/<slug>.md``
+      (deterministic — no LLM calls server-side) instead of page drafts.
+  * ``hire`` — owner hiring help: the diy pack plus ``hire-someone/job-post.md``
+      and ``hire-someone/acceptance-checklist.md``.
 
 Deterministic-first: the structural assets are pure transforms of the blueprint /
-coverage diff; the per-page specs reuse :func:`aeo.recommender.draft.draft_missing_page`,
+coverage diff; the per-page drafts reuse :func:`aeo.recommender.draft.draft_missing_page`,
 which emits a grounded scaffold with the LLM off and full prose when enabled. The
 JSON-LD is always built in code (valid regardless of the prose path).
 
 Pure core (:func:`build_asset_bundle` → :class:`AssetBundle`); the only I/O is
 :meth:`AssetBundle.write`, which materializes the bundle to a directory.
+
+Design: docs/superpowers/specs/2026-06-11-owner-mode-launch-kit-design.md
 """
 
 from __future__ import annotations
@@ -269,6 +272,320 @@ def _readme_md(blueprint: Blueprint, nodes: list[Any], origin: str, has_strategy
     return "\n".join(lines).rstrip() + "\n"
 
 
+# ── owner-mode assets (builder_mode diy / ai / hire) ─────────────────────────
+
+_INTENT_JOB: dict[str, str] = {
+    "informational": "answer the questions customers ask before they choose anyone",
+    "commercial": "help a customer decide that this business is the right choice",
+    "transactional": "get a ready-to-buy customer to take action (book, buy, or call)",
+    "navigational": "help customers find, contact, and trust the business",
+}
+
+# Free listings every business should claim, regardless of category.
+_UNIVERSAL_LISTINGS = [
+    ("Google Business Profile", "https://business.google.com", "the single biggest source AI assistants use for local recommendations"),
+    ("Bing Places", "https://www.bingplaces.com", "feeds Microsoft Copilot and Bing"),
+    ("Apple Business Connect", "https://businessconnect.apple.com", "feeds Apple Maps and Siri"),
+    ("Yelp", "https://biz.yelp.com", "widely quoted by AI assistants for local businesses"),
+    ("Facebook page", "https://www.facebook.com/business", "expected by customers; another verified source of your details"),
+]
+
+# Category-keyword → directories AI assistants actually draw on for that space.
+_CATEGORY_DIRECTORIES: list[tuple[tuple[str, ...], list[str]]] = [
+    (("health", "medical", "dental", "clinic"), ["Healthgrades", "Zocdoc", "WebMD Care"]),
+    (("legal", "law"), ["Avvo", "Justia", "FindLaw"]),
+    (("restaurant", "food", "cafe"), ["TripAdvisor", "OpenTable", "Google Maps menus"]),
+    (("real estate", "property"), ["Zillow", "Realtor.com"]),
+    (("saas", "software", "tech"), ["G2", "Capterra", "Product Hunt"]),
+    (("e-commerce", "retail", "shop"), ["Trustpilot", "Google Merchant Center"]),
+    (("fitness", "wellness", "gym"), ["Mindbody", "ClassPass"]),
+    (("automotive", "car"), ["CarGurus", "DealerRater"]),
+    (("home services", "construction", "trades", "plumb", "electric"), ["Angi", "Thumbtack", "Houzz"]),
+    (("hospitality", "travel", "hotel"), ["TripAdvisor", "Booking.com"]),
+    (("marketing", "advertising", "consult"), ["Clutch", "G2"]),
+    (("finance", "insurance", "accounting", "tax"), ["Trustpilot", "Better Business Bureau"]),
+]
+
+
+def _biz(business: dict[str, Any] | None) -> dict[str, Any]:
+    b = business or {}
+    return {
+        "name": str(b.get("name") or "").strip() or "your business",
+        "category": str(b.get("category") or "").strip(),
+        "location": str(b.get("location") or "").strip(),
+        "services": [str(s) for s in (b.get("services") or []) if str(s).strip()],
+    }
+
+
+def _chunk_weeks(nodes: list[Any]) -> list[list[Any]]:
+    """Pages → up to three build weeks (3 / 3 / rest); week 4 is always visibility work."""
+    return [w for w in (nodes[:3], nodes[3:6], nodes[6:10]) if w]
+
+
+def _start_here_md(nodes: list[Any], business: dict[str, Any] | None, mode: str) -> str:
+    biz = _biz(business)
+    page_word = "page" if len(nodes) == 1 else "pages"
+    build_line = {
+        "diy": "Each file in `pages/` is a ready-to-paste draft — open it, create the page in your website builder, paste, and personalize.",
+        "ai": "Each file in `prompts/` is a ready-made AI prompt — paste it into ChatGPT or your website builder's AI and use what it writes.",
+        "hire": "Hand `hire-someone/job-post.md` to a freelancer, or build it yourself with the drafts in `pages/`.",
+    }[mode]
+    lines = [
+        f"# Start here — your website plan for {biz['name']}",
+        "",
+        f"This folder is your complete launch kit: {len(nodes)} {page_word} to create, in the",
+        "order that wins AI recommendations fastest. No technical skills needed.",
+        "",
+        f"**How it works:** {build_line}",
+        "",
+        "## Your 30-day plan",
+        "",
+    ]
+    for week_num, week in enumerate(_chunk_weeks(nodes), start=1):
+        lines.append(f"### Week {week_num} — build these {'first' if week_num == 1 else 'next'}")
+        for n in week:
+            lines.append(f"- **{_node_attr(n, 'title', '')}** (web address ending `{_node_attr(n, 'slug', '')}`)")
+        lines.append("")
+    lines += [
+        "### Final week — get found everywhere else",
+        "- Work through `get-found-now.md` (free listings + reviews — no website needed).",
+        "- Read every new page once on your phone: typos, broken links, missing contact info.",
+        "",
+        "## What's in this folder",
+        "",
+    ]
+    contents = {
+        "diy": [
+            "`pages/` — a ready-to-paste draft for every page",
+            "`platform-tips.md` — where to click in Wix, Squarespace, WordPress & co.",
+        ],
+        "ai": [
+            "`prompts/` — one copy-paste AI prompt per page (start with `prompts/how-to-use.md`)",
+        ],
+        "hire": [
+            "`hire-someone/` — a ready-to-post job brief + a checklist to verify the work",
+            "`pages/` — ready-to-paste drafts (useful to you *and* whoever you hire)",
+            "`platform-tips.md` — where to click in Wix, Squarespace, WordPress & co.",
+        ],
+    }[mode]
+    lines += [f"- {c}" for c in contents]
+    lines += [
+        "- `get-found-now.md` — visibility wins that need no website at all",
+        "- `for-your-developer/` — technical files, in case a developer ever joins the project",
+    ]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _owner_page_md(node: Any, *, topic: str, origin: str, llm: Any) -> Asset:
+    """The diy/hire flavor of a page spec: same draft, owner-first framing, tech demoted."""
+    from ..recommender.draft import draft_missing_page
+
+    draft = draft_missing_page(node, topic=topic, llm=llm, origin=origin)
+    p = draft.to_payload()
+    job = _INTENT_JOB.get(draft.intent, _INTENT_JOB["informational"])
+    jsonld = json.dumps(p["jsonld"], indent=2)
+    body = (
+        f"# {draft.h1 or _node_attr(node, 'title', '')}\n\n"
+        f"**What this page is for:** {job}.\n\n"
+        f"**Create a page called** “{_node_attr(node, 'title', '')}” with a web address ending "
+        f"`{draft.slug}`, then paste the draft below and make it sound like you.\n\n"
+        f"---\n\n{p['body_markdown']}\n\n---\n\n"
+        "## Optional technical extra (skip if unsure)\n\n"
+        "The snippet below helps AI assistants and search engines read this page. "
+        "`platform-tips.md` shows exactly where to paste it on your platform.\n\n"
+        f"```json\n{jsonld}\n```\n"
+    )
+    return Asset(path=f"pages/{_slug_filename(draft.slug)}.md", content=body, kind="page_draft")
+
+
+def _prompt_md(node: Any, business: dict[str, Any] | None, topic: str) -> Asset:
+    """One paste-into-ChatGPT prompt per page. Deterministic — no LLM call here."""
+    biz = _biz(business)
+    who = biz["name"]
+    if biz["category"]:
+        who += f", a {biz['category']} business"
+    if biz["location"]:
+        who += f" in {biz['location']}"
+    title = _node_attr(node, "title", "")
+    job = _INTENT_JOB.get(str(_node_attr(node, "intent", "")), _INTENT_JOB["informational"])
+    questions = [str(q) for q in (_node_attr(node, "seed_questions", []) or [])]
+    entities = [str(e) for e in (_node_attr(node, "required_entities", []) or [])]
+    services = ", ".join(biz["services"])
+
+    prompt_lines = [
+        f"Write the full text for a web page called \"{title}\" for {who}.",
+        f"The page's job: {job}.",
+    ]
+    if services:
+        prompt_lines.append(f"What the business offers: {services}.")
+    if questions:
+        prompt_lines.append("The page must clearly answer these questions (use them as headings or an FAQ):")
+        prompt_lines += [f"- {q}" for q in questions]
+    if entities:
+        prompt_lines.append(f"Mention these naturally where relevant: {', '.join(entities)}.")
+    prompt_lines += [
+        "Write 600 to 900 words. Start with a short, direct answer a reader (or an AI assistant)",
+        "could quote on its own. Use clear section headings, end with a short FAQ, and keep the",
+        "tone friendly and expert — plain language, no buzzwords, no filler.",
+    ]
+    body = (
+        f"# AI prompt — {title}\n\n"
+        f"Copy everything in the box into ChatGPT (or your website builder's AI assistant),\n"
+        f"then paste the result into a new page with a web address ending `{_node_attr(node, 'slug', '')}`.\n\n"
+        "```text\n" + "\n".join(prompt_lines) + "\n```\n\n"
+        "After pasting the result: read it once and fix anything that isn't true for your business —\n"
+        "AI sometimes invents specifics. Your real details always win.\n"
+    )
+    return Asset(path=f"prompts/{_slug_filename(str(_node_attr(node, 'slug', '/')))}.md", content=body, kind="prompt")
+
+
+def _prompts_howto_md(nodes: list[Any]) -> str:
+    return (
+        "# How to use these prompts\n\n"
+        f"There's one prompt file per page — {len(nodes)} in all, already in priority order\n"
+        "(the `START-HERE.md` plan tells you which to do each week).\n\n"
+        "1. Open a prompt file and copy everything inside the box.\n"
+        "2. Paste it into ChatGPT, Claude, or your website builder's AI (Wix AI, Squarespace AI, Framer AI…).\n"
+        "3. Create the page in your builder, paste the AI's text in, and personalize it.\n"
+        "4. Read it once — fix anything that isn't true for your business.\n\n"
+        "Tip: paste two or three of your real customer questions into the prompt too. The more of *you*\n"
+        "in the prompt, the less generic the page.\n"
+    )
+
+
+def _platform_tips_md() -> str:
+    return (
+        "# Where to click on your website platform\n\n"
+        "Two things come up while building from this kit: creating pages, and (optionally)\n"
+        "pasting the technical snippet from the bottom of each page draft.\n\n"
+        "## Wix\n"
+        "- New page: **Site & Mobile App → Pages → Add Page**.\n"
+        "- Snippet: open the page's **SEO settings → Advanced → Structured data**, paste there.\n\n"
+        "## Squarespace\n"
+        "- New page: **Pages → + → Blank Page**.\n"
+        "- Snippet: page **Settings → Advanced → Page Header Code Injection**, paste inside\n"
+        "  `<script type=\"application/ld+json\"> … </script>` tags.\n\n"
+        "## WordPress\n"
+        "- New page: **Pages → Add New**.\n"
+        "- Snippet: easiest with a free plugin like **WPCode** (add a per-page header snippet),\n"
+        "  or an SEO plugin (Yoast / Rank Math) that manages structured data for you.\n\n"
+        "## GoDaddy / other simple builders\n"
+        "- New page: look for **Pages → Add**.\n"
+        "- Snippet: many simple builders don't support custom code — skip it. The page text\n"
+        "  matters far more; add the snippets later if you ever move platforms.\n\n"
+        "Stuck? The snippet is optional everywhere. Publish the pages first.\n"
+    )
+
+
+def _job_post_md(nodes: list[Any], business: dict[str, Any] | None, origin: str) -> str:
+    biz = _biz(business)
+    page_list = "\n".join(
+        f"- {_node_attr(n, 'title', '')} (`{_node_attr(n, 'slug', '')}`)" for n in nodes[:12]
+    )
+    return (
+        "# Job post — copy, tweak, and publish on Upwork / Fiverr / to your web person\n\n"
+        "---\n\n"
+        f"**Title:** Build {len(nodes)} website pages from a complete, ready-made plan\n\n"
+        f"I run {biz['name']}"
+        + (f", a {biz['category']} business" if biz["category"] else "")
+        + (f" in {biz['location']}" if biz["location"] else "")
+        + (f" ({origin})" if origin and "example.com" not in origin else "")
+        + ".\n\n"
+        "I have a complete launch kit (attached): a page list with priorities, a draft for every\n"
+        "page, navigation and linking plans, and ready-made structured-data snippets. **No content\n"
+        "writing or SEO strategy is needed — just build what's specified.**\n\n"
+        "Scope:\n"
+        f"{page_list}\n\n"
+        "For each page: create it at the given address, use the matching draft from `pages/`,\n"
+        "add the JSON-LD snippet from the draft, and follow `for-your-developer/navigation.md`\n"
+        "and `internal-linking.md` for menus and links between pages.\n\n"
+        "Please quote a fixed price and timeline for the full list.\n\n"
+        "---\n\n"
+        "_Tip: attach this whole kit folder (or the .zip) to the job post._\n"
+    )
+
+
+def _acceptance_checklist_md(nodes: list[Any]) -> str:
+    lines = [
+        "# How to check the work (no technical skills needed)",
+        "",
+        "Go through this list before paying the final invoice.",
+        "",
+        "## Every page",
+    ]
+    for n in nodes[:12]:
+        lines.append(f"- [ ] **{_node_attr(n, 'title', '')}** exists at an address ending `{_node_attr(n, 'slug', '')}`")
+    lines += [
+        "",
+        "## Quality checks (pick any 3 pages)",
+        "- [ ] The page text matches the draft (personalized is fine; missing sections are not).",
+        "- [ ] The questions listed in the draft are answered on the page.",
+        "- [ ] The page reads well on your phone.",
+        "",
+        "## Technical checks (still no skills needed)",
+        "- [ ] Paste a page's web address into validator.schema.org — it should find at least one item, with no errors.",
+        "- [ ] Click every menu item — no dead links.",
+        "- [ ] Each page links to at least one related page on your site.",
+        "",
+        "If something fails, point the builder at the exact file in this kit that specifies it.",
+    ]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _get_found_now_md(business: dict[str, Any] | None) -> str:
+    biz = _biz(business)
+    cat = biz["category"].lower()
+    extra = next((dirs for keys, dirs in _CATEGORY_DIRECTORIES if any(k in cat for k in keys)), [])
+    services = ", ".join(biz["services"][:5])
+    lines = [
+        "# Get found now — no website needed",
+        "",
+        "AI assistants don't just read websites: when someone asks for a recommendation, they",
+        "lean heavily on business listings, maps, and reviews. Everything below is free and",
+        "takes an afternoon — for many businesses it moves the needle faster than any web page.",
+        "",
+        "## 1. Claim your Google Business Profile (do this first)",
+        "",
+        f"- Business name: **{biz['name']}** — exactly as customers know it, everywhere.",
+    ]
+    if biz["category"]:
+        lines.append(f"- Category: pick the closest match to *{biz['category']}* (you can add more than one).")
+    if services:
+        lines.append(f"- Services: list each one separately — e.g. {services}.")
+    if biz["location"]:
+        lines.append(f"- Address / service area: {biz['location']} — keep it identical on every site you list on.")
+    lines += [
+        "- Description: open with what you do and for whom in the first sentence — that's the part AI quotes.",
+        "- Add real photos and your opening hours; profiles with both get recommended far more.",
+        "",
+        "## 2. Claim the other free listings",
+        "",
+    ]
+    for name_, url, why in _UNIVERSAL_LISTINGS:
+        lines.append(f"- **{name_}** ({url}) — {why}.")
+    if extra:
+        lines += ["", "### Worth it for your industry", ""]
+        lines += [f"- **{d}**" for d in extra]
+    lines += [
+        "",
+        "## 3. Reviews — the fuel for AI recommendations",
+        "",
+        "Ask every happy customer, the same day, with a direct link to your Google profile:",
+        "",
+        f"> Thanks again for choosing {biz['name']}! If you have 60 seconds, a quick Google review",
+        "> helps people like you find us: [your review link]",
+        "",
+        "- Reply to every review, good or bad — politely and briefly. AI assistants notice responsiveness.",
+        "- Never buy reviews; a steady trickle of real ones beats a suspicious burst.",
+        "",
+        "## One rule across everything",
+        "",
+        "Use the **exact same name, address, and phone number** on every listing. Mismatches make",
+        "AI assistants unsure you're the same business — consistency is credibility.",
+    ]
+    return "\n".join(lines).rstrip() + "\n"
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 
@@ -281,16 +598,21 @@ def build_asset_bundle(
     llm: Any = None,
     draft_limit: int = 10,
     name: str | None = None,
+    builder_mode: str = "dev",
+    business: dict[str, Any] | None = None,
 ) -> AssetBundle:
-    """Assemble a developer-ready asset bundle from a blueprint (+ optional coverage diff
-    and SiteProfile dict). ``draft_limit`` caps the per-page spec sheets (the expensive,
-    LLM-backed step); the rest of the bundle covers every page. Pure — call
-    :meth:`AssetBundle.write` to materialize it."""
+    """Assemble the launch-kit bundle from a blueprint (+ optional coverage diff and
+    SiteProfile dict), shaped for whoever is building (``builder_mode``: dev | diy |
+    ai | hire — see the module docstring). ``business`` ({name, category, location,
+    services}) personalizes the owner-mode assets. ``draft_limit`` caps the per-page
+    drafts/prompts (in dev/diy/hire the drafts are the expensive, LLM-backed step);
+    the rest of the bundle covers every page. Pure — call :meth:`AssetBundle.write`
+    to materialize it."""
     org = _origin(origin or (profile or {}).get("domain"))
     nodes = _target_nodes(blueprint, coverage)
     bundle_name = name or blueprint.topic
 
-    assets: list[Asset] = [
+    dev_assets: list[Asset] = [
         Asset("README.md", _readme_md(blueprint, nodes, org, profile is not None), "readme"),
         Asset("sitemap.xml", _sitemap_xml(blueprint, org), "sitemap"),
         Asset("navigation.md", _navigation_md(blueprint), "nav"),
@@ -299,10 +621,35 @@ def build_asset_bundle(
         Asset("schema-and-entities.md", _schema_entities_md(blueprint), "schema"),
     ]
     if profile is not None:
-        assets.append(Asset("STRATEGY.md", _strategy_md(profile), "strategy"))
+        dev_assets.append(Asset("STRATEGY.md", _strategy_md(profile), "strategy"))
 
-    if draft_limit > 0:
+    if builder_mode == "dev":
+        assets = dev_assets
+        if draft_limit > 0:
+            for node in nodes[:draft_limit]:
+                assets.append(_page_spec_md(node, topic=blueprint.topic, origin=org, llm=llm))
+        return AssetBundle(name=bundle_name, assets=assets)
+
+    # Owner modes (diy / ai / hire): owner files at the root, the dev bundle kept
+    # under for-your-developer/ so a later hire never requires regenerating.
+    assets = [
+        Asset("START-HERE.md", _start_here_md(nodes, business, builder_mode), "start_here"),
+        Asset("get-found-now.md", _get_found_now_md(business), "visibility"),
+    ]
+
+    if builder_mode in ("diy", "hire"):
+        assets.append(Asset("platform-tips.md", _platform_tips_md(), "tips"))
         for node in nodes[:draft_limit]:
-            assets.append(_page_spec_md(node, topic=blueprint.topic, origin=org, llm=llm))
+            assets.append(_owner_page_md(node, topic=blueprint.topic, origin=org, llm=llm))
 
+    if builder_mode == "ai":
+        assets.append(Asset("prompts/how-to-use.md", _prompts_howto_md(nodes[:draft_limit]), "tips"))
+        for node in nodes[:draft_limit]:
+            assets.append(_prompt_md(node, business, blueprint.topic))
+
+    if builder_mode == "hire":
+        assets.append(Asset("hire-someone/job-post.md", _job_post_md(nodes, business, org), "hire"))
+        assets.append(Asset("hire-someone/acceptance-checklist.md", _acceptance_checklist_md(nodes), "hire"))
+
+    assets += [Asset(f"for-your-developer/{a.path}", a.content, a.kind) for a in dev_assets]
     return AssetBundle(name=bundle_name, assets=assets)

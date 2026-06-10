@@ -112,3 +112,83 @@ def test_bundle_from_brief_plan_no_website(tmp_path) -> None:
     assert sitemap.content.count("<loc>") == len(plan.blueprint.sitemap)
     bundle.write(tmp_path)
     assert (tmp_path / "README.md").exists()
+
+
+# ── builder_mode (owner-mode kits) ───────────────────────────────────────────
+
+_BUSINESS = {"name": "Harbor Dental", "category": "Healthcare & Medical",
+             "location": "Boston, US", "services": ["implants", "whitening"]}
+
+
+def test_dev_mode_is_unchanged_by_builder_mode_param() -> None:
+    bp = _blueprint()
+    before = build_asset_bundle(blueprint=bp, origin="acme.com", draft_limit=2)
+    after = build_asset_bundle(blueprint=bp, origin="acme.com", draft_limit=2, builder_mode="dev",
+                               business=_BUSINESS)
+    assert [(a.path, a.kind, a.content) for a in before.assets] == \
+           [(a.path, a.kind, a.content) for a in after.assets]
+
+
+def test_diy_mode_assets() -> None:
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="acme.com", draft_limit=2,
+                                builder_mode="diy", business=_BUSINESS)
+    paths = {a.path for a in bundle.assets}
+    assert {"START-HERE.md", "get-found-now.md", "platform-tips.md"} <= paths
+    assert "README.md" not in paths  # replaced by START-HERE at the root
+    assert "for-your-developer/README.md" in paths
+    assert "for-your-developer/sitemap.xml" in paths
+    drafts = [a for a in bundle.assets if a.kind == "page_draft"]
+    assert len(drafts) == 2  # draft_limit honored
+    assert all("Create a page called" in d.content for d in drafts)
+    assert all("Optional technical extra" in d.content for d in drafts)
+    start = next(a for a in bundle.assets if a.path == "START-HERE.md")
+    assert "Harbor Dental" in start.content
+    assert "Week 1" in start.content
+
+
+def test_ai_mode_prompts_without_llm_calls() -> None:
+    class _ExplodingLLM:  # any draft call would touch .enabled — prove none happens
+        @property
+        def enabled(self):
+            raise AssertionError("ai mode must not call the LLM")
+
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="acme.com", draft_limit=3,
+                                builder_mode="ai", business=_BUSINESS, llm=_ExplodingLLM())
+    prompts = [a for a in bundle.assets if a.kind == "prompt"]
+    assert len(prompts) == 3
+    assert not any(a.kind in ("page_draft", "page_spec") for a in bundle.assets)
+    assert any(a.path == "prompts/how-to-use.md" for a in bundle.assets)
+    resources = next(a for a in prompts if "resources" in a.path)
+    assert "Harbor Dental" in resources.content
+    assert "What is CTEM?" in resources.content  # seed question embedded
+
+
+def test_hire_mode_adds_job_post_and_checklist() -> None:
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="acme.com", draft_limit=1,
+                                builder_mode="hire", business=_BUSINESS)
+    paths = {a.path for a in bundle.assets}
+    assert "hire-someone/job-post.md" in paths
+    assert "hire-someone/acceptance-checklist.md" in paths
+    assert any(a.kind == "page_draft" for a in bundle.assets)  # diy drafts included
+    job = next(a for a in bundle.assets if a.path == "hire-someone/job-post.md")
+    assert "Harbor Dental" in job.content
+    checklist = next(a for a in bundle.assets if a.path == "hire-someone/acceptance-checklist.md")
+    assert "validator.schema.org" in checklist.content
+
+
+def test_get_found_now_uses_category_directories() -> None:
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="acme.com", draft_limit=0,
+                                builder_mode="diy", business=_BUSINESS)
+    found = next(a for a in bundle.assets if a.path == "get-found-now.md")
+    assert "Google Business Profile" in found.content
+    assert "Zocdoc" in found.content  # healthcare directory matched from the category
+    assert "Boston, US" in found.content
+
+
+def test_owner_mode_zip_contains_nested_paths() -> None:
+    bundle = build_asset_bundle(blueprint=_blueprint(), origin="acme.com", draft_limit=1,
+                                builder_mode="hire", business=_BUSINESS)
+    with zipfile.ZipFile(io.BytesIO(bundle.to_zip_bytes())) as zf:
+        names = set(zf.namelist())
+        assert "hire-someone/job-post.md" in names
+        assert "for-your-developer/sitemap.xml" in names

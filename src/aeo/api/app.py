@@ -18,7 +18,7 @@ require a matching ``X-API-Key`` header (see :func:`require_api_key`). Unset = o
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -95,6 +95,9 @@ class BriefRequest(BaseModel):
 
 class DeliverablesRequest(BriefRequest):
     draft_limit: int = 10
+    # Who's building the site — shapes the kit (see report.packager): "dev" keeps the
+    # original developer bundle; diy/ai/hire produce the owner-facing packs.
+    builder_mode: Literal["dev", "diy", "ai", "hire"] = "dev"
 
 
 class BlueprintRequest(BaseModel):
@@ -132,6 +135,14 @@ def _brief(req: BriefRequest) -> BusinessInput:
         name=req.name, domain=req.domain, category=req.category, topic=req.topic,
         location=req.location, services=req.services, competitors=req.competitors, goals=req.goals,
     )
+
+
+def _business_dict(brief: BusinessInput) -> dict[str, Any]:
+    """The owner-facing facts the packager personalizes the kit with."""
+    return {
+        "name": brief.name, "category": brief.category,
+        "location": brief.location, "services": brief.services,
+    }
 
 
 def _framework_and_llm(brief: BusinessInput, use_llm: bool) -> tuple[Framework, Any]:
@@ -205,6 +216,7 @@ def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
         blueprint=plan_result.blueprint, coverage=plan_result.coverage,
         profile=plan_result.profile.to_dict(), origin=brief.domain or brief.key(),
         llm=llm, draft_limit=req.draft_limit,
+        builder_mode=req.builder_mode, business=_business_dict(brief),
     )
     return {
         "manifest": bundle.manifest(),
@@ -223,6 +235,7 @@ def deliverables_zip(req: DeliverablesRequest) -> Response:
         blueprint=plan_result.blueprint, coverage=plan_result.coverage,
         profile=plan_result.profile.to_dict(), origin=brief.domain or brief.key(),
         llm=llm, draft_limit=req.draft_limit,
+        builder_mode=req.builder_mode, business=_business_dict(brief),
     )
     filename = f"{brief.key()}-aeo-bundle.zip"
     return Response(
