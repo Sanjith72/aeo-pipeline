@@ -72,6 +72,96 @@
     -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, #000 40%, transparent 100%);
     mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, #000 40%, transparent 100%);
   }
+
+  /* ── motion system ──────────────────────────────────────────────────────── */
+
+  /* Scroll-triggered reveal (driven by components/ui/Reveal.tsx). Only opacity &
+     transform animate — cheap to composite, no layout work. */
+  .reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition:
+      opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+      transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+    transition-delay: var(--reveal-delay, 0ms);
+  }
+  .reveal.is-visible {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* Wizard step / results-tab content entrance (re-mounted via key). */
+  .step-in {
+    animation: fade-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  /* Hero headline underline draws in after the copy lands. */
+  .hero-underline {
+    transform: scaleX(0);
+    transform-origin: left;
+    animation: underline-grow 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.7s both;
+  }
+
+  /* Dropdown / popover entrance. */
+  .menu-pop {
+    transform-origin: top;
+    @apply animate-scale-in;
+  }
+
+  /* Loading shimmer for suggestion skeletons. */
+  .skeleton {
+    @apply rounded-xl bg-ink/[0.05];
+    background-image: linear-gradient(
+      90deg,
+      rgba(11, 15, 26, 0) 0%,
+      rgba(11, 15, 26, 0.045) 50%,
+      rgba(11, 15, 26, 0) 100%
+    );
+    background-size: 450px 100%;
+    background-repeat: no-repeat;
+    @apply animate-shimmer;
+  }
+
+  /* Selectable option cards (goals, depth, competitors). */
+  .option-card {
+    @apply flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm
+      transition-all duration-200 ease-out;
+  }
+  .option-card-off {
+    @apply border-ink/10 bg-paper-100 text-ink-500 hover:-translate-y-0.5 hover:border-ink/25 hover:shadow-card;
+  }
+  .option-card-on {
+    @apply border-accent bg-accent-50 text-ink shadow-card;
+  }
+
+  /* Small removable chips (selected competitors, summary). */
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-ink/10 bg-paper-100
+      py-1 pl-3 pr-1.5 text-[13px] text-ink transition-colors;
+  }
+
+  /* iOS-style toggle, pure CSS over a real checkbox for a11y. */
+  .toggle {
+    @apply relative h-6 w-10 shrink-0 cursor-pointer appearance-none rounded-full
+      bg-ink/15 transition-colors duration-200;
+  }
+  .toggle::after {
+    content: "";
+    @apply absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-card;
+    transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .toggle:checked {
+    @apply bg-accent;
+  }
+  .toggle:checked::after {
+    transform: translateX(16px);
+  }
+}
+
+@keyframes underline-grow {
+  to {
+    transform: scaleX(1);
+  }
 }
 
 /* Respect users who prefer less motion. */

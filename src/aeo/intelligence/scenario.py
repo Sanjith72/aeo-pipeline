@@ -215,17 +215,16 @@ def _prioritize(actions: list[StrategyAction], scenario: Scenario) -> list[Strat
 def _headline(scenario: Scenario, classification: Classification, intent: BusinessIntent,
               coverage: CoverageDiffResult | None) -> str:
     n = classification.structure.page_count
-    model = intent.model.value.replace("_", " ")
     pct = coverage.coverage_pct if coverage is not None else 0.0
     if scenario is Scenario.NO_WEBSITE:
-        return "No website yet — here is the complete, AEO-ready site to build."
+        return "No website yet — here's the complete site to build, page by page."
     if scenario is Scenario.SINGLE_PAGE:
-        return "Single-page site: the biggest blocker to AI-search discoverability. Here is the expansion plan."
+        return "One page is holding you back — here's how to grow it into a site AI can recommend."
     if scenario is Scenario.SMALL_SITE:
-        return f"{n}-page {model} site — {pct}% of the ideal architecture covered. Here is how to close the gaps."
+        return f"Your {n}-page site has {pct}% of what AI assistants look for — here's how to close the gap."
     if scenario is Scenario.GROWING_SITE:
-        return f"{n}-page {model} site — building topical authority is the next lever ({pct}% covered)."
-    return f"{n}-page {model} site — strong footprint; the wins now are consolidation, internal linking, and authority."
+        return f"Your {n}-page site is growing — becoming the go-to name in your space is the next step ({pct}% there)."
+    return f"Your {n}-page site has a strong footprint — the wins now come from tightening it, not adding more."
 
 
 def _narrative(scenario: Scenario, classification: Classification, intent: BusinessIntent,
@@ -233,8 +232,8 @@ def _narrative(scenario: Scenario, classification: Classification, intent: Busin
     n = classification.structure.page_count
     model = intent.model.value.replace("_", " ")
     struct_pct = round(classification.structure.structure_score * 100)
-    missing_arche = ", ".join(classification.structure.missing_archetypes) or "none"
-    gaps = ", ".join(g.value for g in journey.gaps) or "none"
+    missing_arche = ", ".join(a.replace("_", " ") for a in classification.structure.missing_archetypes)
+    gaps = ", ".join(g.value.replace("_", " ") for g in journey.gaps)
     cov_pct = coverage.coverage_pct if coverage is not None else 0.0
     missing_pages = len(coverage.missing) if coverage is not None else 0
 
@@ -243,28 +242,35 @@ def _narrative(scenario: Scenario, classification: Classification, intent: Busin
         if agency_mode
         else ""
     )
-    body = (
-        f"{lead}This is a {model} business classified as a '{scenario.value}' "
-        f"({n} discovered page(s), {struct_pct}% of the expected page archetypes present, "
-        f"{cov_pct}% of the ideal content architecture covered). "
-        f"Missing structural pages: {missing_arche}. "
-        f"Uncovered journey stages: {gaps}. "
-    )
+    if scenario is Scenario.NO_WEBSITE:
+        body = (
+            f"{lead}You run a {model} business without a website yet — which means AI assistants "
+            "have nothing to point customers to when they ask. "
+        )
+    else:
+        body = (
+            f"{lead}You run a {model} business. We found {n} page(s) on your site today — "
+            f"{struct_pct}% of the core pages customers expect are in place, covering {cov_pct}% "
+            f"of what an ideal site in your space would offer. "
+        )
+    if missing_arche:
+        body += f"Pages worth adding: {missing_arche}. "
+    if gaps:
+        body += f"Where customers lose track of you: {gaps}. "
     if scenario in (Scenario.NO_WEBSITE, Scenario.SINGLE_PAGE):
         body += (
-            "The priority is building the information architecture first — a discoverable site "
-            "needs the core pages before content depth matters. The plan below lays out the full "
-            "sitemap and the order to build it."
+            "First, get the core pages in place — until they exist, nothing else moves the "
+            "needle. The plan below lists every page your site needs and the order to build them."
         )
     elif scenario in (Scenario.SMALL_SITE, Scenario.GROWING_SITE):
         body += (
-            f"The site has a foundation; the priority is closing the {missing_pages} content gap(s) "
-            f"and the journey gaps above, in priority order, to reach topical authority."
+            f"You have a foundation to build on. The fastest path is filling the {missing_pages} "
+            f"missing page(s) above, in the order shown, until you're the obvious answer in your space."
         )
     else:
         body += (
-            "The site is mature; adding pages yields less than consolidating overlap, tightening "
-            "internal links, and deepening the thin clusters. The plan focuses there."
+            "Your site is established — adding more pages now helps less than tidying overlapping "
+            "content, connecting related pages, and deepening the thin spots. That's where this plan focuses."
         )
     return body
 

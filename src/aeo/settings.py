@@ -165,6 +165,9 @@ class ApiCfg(BaseModel):
     # /api/health requires a matching X-API-Key header. Unset (default) = open mode for
     # local dev; set it in any deployment that exposes the API.
     auth_key: str | None = None
+    # Browser origins allowed to call the API (the SP-4b web UI runs on another port,
+    # so every fetch is cross-origin). Comma-separated via AEO__API__CORS_ORIGINS.
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
 
 class ReferenceArchitectureCfg(BaseModel):

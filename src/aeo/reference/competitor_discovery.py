@@ -25,8 +25,8 @@ with zero discovered competitors and the operator adds them by hand.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 import httpx
 
@@ -47,10 +47,14 @@ _DISCOVERY_SYSTEM = (
 )
 
 
-def _discovery_prompt(name: str, domain: str, topic: str | None, count: int) -> str:
+def _discovery_prompt(
+    name: str, domain: str, topic: str | None, location: str | None, count: int
+) -> str:
     topic_clause = f' in the "{topic}" space' if topic else ""
+    location_clause = f" based in or serving {location}" if location else ""
+    company = f"{name} ({domain})" if domain else name
     return (
-        f"Company: {name} ({domain}){topic_clause}\n"
+        f"Company: {company}{topic_clause}{location_clause}\n"
         f"List up to {count} of this company's REAL, direct competitors — companies that "
         "actually exist and compete for the same customers today. Do not include the "
         "company itself.\n"
@@ -130,9 +134,10 @@ def _clean_candidate(raw: object) -> DiscoveredCompetitor | None:
 
 def discover_competitors(
     name: str,
-    domain: str,
+    domain: str = "",
     *,
     topic: str | None = None,
+    location: str | None = None,
     count: int = _DEFAULT_COUNT,
     llm: LLMClient | None = None,
     head_check: HeadCheck | None = None,
@@ -149,7 +154,9 @@ def discover_competitors(
     check = head_check or _default_head_check
 
     try:
-        data = llm.generate_json(_discovery_prompt(name, domain, topic, count), _DISCOVERY_SYSTEM)
+        data = llm.generate_json(
+            _discovery_prompt(name, domain, topic, location, count), _DISCOVERY_SYSTEM
+        )
     except Exception as exc:
         log.warning("competitor_discovery_llm_failed", name=name, domain=domain, error=str(exc))
         return CompetitorDiscoveryResult()

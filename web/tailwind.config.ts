@@ -28,10 +28,25 @@ const config: Config = {
           "100%": { opacity: "1", transform: "translateY(0)" },
         },
         "grid-in": { "0%": { opacity: "0" }, "100%": { opacity: "1" } },
+        "scale-in": {
+          "0%": { opacity: "0", transform: "scale(0.97) translateY(-4px)" },
+          "100%": { opacity: "1", transform: "scale(1) translateY(0)" },
+        },
+        pop: {
+          "0%": { transform: "scale(0.4)", opacity: "0" },
+          "100%": { transform: "scale(1)", opacity: "1" },
+        },
+        shimmer: {
+          "0%": { backgroundPosition: "-450px 0" },
+          "100%": { backgroundPosition: "450px 0" },
+        },
       },
       animation: {
         "fade-up": "fade-up 0.6s cubic-bezier(0.16,1,0.3,1) both",
         "fade-up-slow": "fade-up 0.8s cubic-bezier(0.16,1,0.3,1) both",
+        "scale-in": "scale-in 0.18s cubic-bezier(0.16,1,0.3,1) both",
+        pop: "pop 0.25s cubic-bezier(0.34,1.56,0.64,1) both",
+        shimmer: "shimmer 1.6s linear infinite",
       },
     },
   },

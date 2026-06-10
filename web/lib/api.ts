@@ -5,6 +5,7 @@ import type {
   AuditJob,
   BriefPlan,
   BriefRequest,
+  CompetitorSuggestResponse,
   DeliverablesResponse,
   ProfileResponse,
   SiteReportResponse,
@@ -68,6 +69,15 @@ export const api = {
   },
   profile(req: { domain: string; use_llm?: boolean; max_urls?: number }): Promise<ProfileResponse> {
     return postJson<ProfileResponse>("/api/profile", req);
+  },
+  suggestCompetitors(req: {
+    name: string;
+    domain?: string;
+    category?: string;
+    location?: string;
+    count?: number;
+  }): Promise<CompetitorSuggestResponse> {
+    return postJson<CompetitorSuggestResponse>("/api/competitors/suggest", req);
   },
   startAudit(req: { domain: string; name?: string }): Promise<{ job_id: string; status: string }> {
     return postJson<{ job_id: string; status: string }>("/api/audit", req);

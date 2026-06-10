@@ -125,3 +125,52 @@ def test_site_report_404_for_unknown_run() -> None:
     except Exception:
         pytest.skip("site-report path requires a reachable DB")
     assert r.status_code in {404, 500, 502, 503}
+
+
+class _FakeLLM:
+    enabled = True
+
+    def generate_json(self, prompt: str, system: str | None = None) -> dict:
+        return {
+            "competitors": [
+                {"name": "Rapid7", "domain": "rapid7.com", "aliases": ["R7"]},
+                {"name": "Tenable", "domain": "https://www.tenable.com", "aliases": []},
+                {"name": "Acme", "domain": "acme.com"},  # the company itself — must be dropped
+            ]
+        }
+
+
+def test_competitor_suggest_returns_names(monkeypatch) -> None:
+    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _FakeLLM())
+    r = client.post(
+        "/api/competitors/suggest",
+        json={"name": "Acme", "domain": "acme.com", "category": "cybersecurity", "location": "Boston"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "llm"
+    domains = [c["domain"] for c in body["competitors"]]
+    # verify=False (default) skips live HEAD checks, so both candidates survive,
+    # the messy domain is normalized, and the company itself is excluded.
+    assert domains == ["rapid7.com", "tenable.com"]
+
+
+def test_competitor_suggest_unavailable_without_llm(monkeypatch) -> None:
+    class _Disabled:
+        enabled = False
+
+    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _Disabled())
+    r = client.post("/api/competitors/suggest", json={"name": "Acme"})
+    assert r.status_code == 200
+    assert r.json() == {"competitors": [], "source": "unavailable"}
+
+
+def test_competitor_suggest_requires_name() -> None:
+    assert client.post("/api/competitors/suggest", json={"name": "  "}).status_code == 422
+
+
+def test_cors_allows_the_web_ui_origin() -> None:
+    # the SP-4b UI on :3000 is a different origin — without this header every browser
+    # fetch fails silently, so it's load-bearing for the whole guided flow
+    r = client.get("/api/health", headers={"Origin": "http://localhost:3000"})
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:3000"

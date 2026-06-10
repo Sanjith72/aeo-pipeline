@@ -58,6 +58,26 @@ def require_api_key(request: Request) -> None:
 app = FastAPI(title="AEO Pipeline API", version="0.2.0", dependencies=[Depends(require_api_key)])
 
 
+def _install_cors(application: FastAPI) -> None:
+    """Allow the web UI (a different origin in every deployment shape) to call the API.
+    Origins come from AEO__API__CORS_ORIGINS (comma-separated)."""
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from ..settings import get_settings
+
+    origins = [o.strip() for o in get_settings().api.cors_origins.split(",") if o.strip()]
+    if origins:
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Content-Type", "X-API-Key"],
+        )
+
+
+_install_cors(app)
+
+
 # ── request models ────────────────────────────────────────────────────────────
 
 
@@ -93,6 +113,15 @@ class ProfileRequest(BaseModel):
 class AuditRequest(BaseModel):
     domain: str
     name: str | None = None
+
+
+class CompetitorSuggestRequest(BaseModel):
+    name: str
+    domain: str | None = None
+    category: str | None = None
+    location: str | None = None
+    count: int = 6
+    verify: bool = False  # live domain HEAD-checks are slow; the picker only needs names
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -216,6 +245,36 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
         "coverage": result["coverage"],
         "discovered": result["discovered"],
         "source": result["source"],
+    }
+
+
+@app.post("/api/competitors/suggest")
+def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
+    """Likely competitors for a business brief (name + category + location), so the UI
+    can offer a pick-list instead of demanding URLs. Source is ``llm`` when suggestions
+    were generated, ``unavailable`` when no LLM is configured — the frontend then falls
+    back to manual entry only."""
+    from ..nlp.llm import get_client
+    from ..reference.competitor_discovery import discover_competitors
+
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="name is required")
+    llm = get_client()
+    if not llm.enabled:
+        return {"competitors": [], "source": "unavailable"}
+    result = discover_competitors(
+        name,
+        (req.domain or "").strip(),
+        topic=(req.category or "").strip() or None,
+        location=(req.location or "").strip() or None,
+        count=req.count,
+        llm=llm,
+        head_check=None if req.verify else (lambda _domain: True),
+    )
+    return {
+        "competitors": [{"name": c.name, "domain": c.domain} for c in result.verified],
+        "source": "llm",
     }
 
 

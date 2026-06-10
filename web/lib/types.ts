@@ -105,6 +105,23 @@ export interface SiteReportResponse {
   sections: { strategy?: SiteProfile } & Record<string, unknown>;
 }
 
+export interface CompetitorSuggestion {
+  name: string;
+  domain: string;
+}
+
+export interface CompetitorSuggestResponse {
+  competitors: CompetitorSuggestion[];
+  source: "llm" | "unavailable" | string;
+}
+
+/** A competitor the user picked or typed — names are enough, URLs are optional. */
+export interface CompetitorPick {
+  name: string;
+  domain?: string;
+  source: "suggested" | "manual";
+}
+
 export interface BriefRequest {
   name: string;
   domain?: string;

@@ -10,9 +10,9 @@ const sans = IBM_Plex_Sans({ subsets: ["latin"], variable: "--font-sans", weight
 const mono = IBM_Plex_Mono({ subsets: ["latin"], variable: "--font-mono", weight: ["400", "500"], display: "swap" });
 
 export const metadata: Metadata = {
-  title: "AEO Studio — AI-search blueprints, strategy & implementation",
+  title: "AEO Studio — Be the business AI recommends",
   description:
-    "Turn any business into an AI-search-ready website blueprint, prioritized strategy, and developer-ready implementation plan.",
+    "When customers ask ChatGPT, Perplexity, or Google AI for a recommendation, make sure it's you. Get a personalized, step-by-step plan in minutes.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
