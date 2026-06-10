@@ -17,7 +17,9 @@ x-app: &app
     # Postgres is reachable as `db` on the compose network; password from .env.
     DATABASE_URL: postgresql://aeo:${POSTGRES_PASSWORD:-aeo}@db:5432/aeo
     AEO__CONFIG_DIR: /app/config
-    AEO__LLM__HOST: http://ollama:11434
+    # Default: the bundled `--profile llm` ollama container. Override DOCKER_LLM_HOST
+    # (e.g. http://host.docker.internal:11434) to reuse an Ollama already on the host.
+    AEO__LLM__HOST: ${DOCKER_LLM_HOST:-http://ollama:11434}
   depends_on:
     db:
       condition: service_healthy
@@ -33,7 +35,9 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Host-side publish is for inspection only (api/worker use the compose network).
+      # Override POSTGRES_HOST_PORT when the host already runs Postgres on 5432.
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U aeo -d aeo"]
       interval: 5s
