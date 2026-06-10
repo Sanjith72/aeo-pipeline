@@ -536,8 +536,13 @@ export default function Page() {
                 </span>
                 {step < STEPS.length - 1 ? (
                   <div className="text-right">
-                    <button onClick={() => setStep((s) => s + 1)} disabled={nextBlocker !== null} className="btn-primary">
-                      Next →
+                    <button
+                      onClick={() => setStep((s) => s + 1)}
+                      disabled={nextBlocker !== null}
+                      className="btn-primary group"
+                    >
+                      Next
+                      <span aria-hidden className="transition-transform duration-200 group-hover:translate-x-0.5">→</span>
                     </button>
                     {nextBlocker && <p className="mt-1.5 text-xs text-ink-300">{nextBlocker}</p>}
                   </div>
@@ -582,7 +587,7 @@ function Stepper({ current, onJump }: { current: number; onJump: (i: number) => 
                 onClick={() => onJump(i)}
                 aria-current={active ? "step" : undefined}
                 className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-all duration-200 ${
-                  active ? "bg-ink text-paper-100" : "text-ink-500 hover:bg-ink/[0.04]"
+                  active ? "bg-ink text-paper-100 shadow-card" : "text-ink-500 hover:translate-x-0.5 hover:bg-ink/[0.04]"
                 }`}
               >
                 <span
@@ -627,7 +632,7 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div>
+    <div className="field-group">
       <span className="field-label">
         {label}
         {required && <span className="ml-1 text-accent">*</span>}

@@ -120,7 +120,7 @@ export function Select({
           id={listboxId}
           role="listbox"
           aria-activedescendant={`${listboxId}-${active}`}
-          className="menu-pop absolute z-30 mt-1.5 max-h-64 w-full overflow-auto overscroll-contain rounded-xl border border-ink/10 bg-paper-100 p-1.5 shadow-lift"
+          className="menu-pop glass absolute z-30 mt-1.5 max-h-64 w-full overflow-auto overscroll-contain rounded-xl p-1.5 shadow-lift"
         >
           {options.map((opt, i) => {
             const isSel = opt.value === value;

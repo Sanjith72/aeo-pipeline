@@ -19,6 +19,8 @@ const config: Config = {
       boxShadow: {
         card: "0 1px 2px rgba(11,15,26,0.04), 0 10px 28px -16px rgba(11,15,26,0.14)",
         lift: "0 2px 6px rgba(11,15,26,0.06), 0 22px 48px -20px rgba(11,15,26,0.26)",
+        // accent halo for primary CTAs — depth without darkness
+        glow: "0 1px 2px rgba(11,15,26,0.06), 0 12px 36px -10px rgba(43,76,240,0.5)",
       },
       borderRadius: { xl2: "1.25rem" },
       letterSpacing: { measure: "0.18em" },
@@ -40,6 +42,10 @@ const config: Config = {
           "0%": { backgroundPosition: "-450px 0" },
           "100%": { backgroundPosition: "450px 0" },
         },
+        "float-y": {
+          "0%, 100%": { transform: "translateY(-6px)" },
+          "50%": { transform: "translateY(8px)" },
+        },
       },
       animation: {
         "fade-up": "fade-up 0.6s cubic-bezier(0.16,1,0.3,1) both",
@@ -47,6 +53,8 @@ const config: Config = {
         "scale-in": "scale-in 0.18s cubic-bezier(0.16,1,0.3,1) both",
         pop: "pop 0.25s cubic-bezier(0.34,1.56,0.64,1) both",
         shimmer: "shimmer 1.6s linear infinite",
+        "float-y": "float-y 7s ease-in-out infinite",
+        "float-y-slow": "float-y 11s ease-in-out infinite",
       },
     },
   },

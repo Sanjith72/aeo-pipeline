@@ -357,7 +357,7 @@ function PlanChecklistView({ checklist, storageKey }: { checklist: PlanChecklist
       <div className="mb-5 h-1.5 overflow-hidden rounded-full bg-ink/[0.07]" role="progressbar"
         aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Plan progress">
         <div
-          className="h-full rounded-full bg-accent transition-[width] duration-500 ease-out"
+          className="h-full rounded-full bg-gradient-to-r from-accent to-accent-600 transition-[width] duration-500 ease-out"
           style={{ width: `${pct}%` }}
         />
       </div>
