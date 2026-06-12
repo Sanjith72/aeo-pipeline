@@ -18,7 +18,7 @@ import type {
 } from "@/lib/types";
 import { BUILDER_MODES, BUSINESS_SIZES, GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
 import type { BuilderMode } from "@/lib/options";
-import { Footer, Hero, HowItWorks, TopBar, TrustBand } from "@/components/chrome";
+import { Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/components/chrome";
 import { ResultsView, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { Combobox } from "@/components/ui/Combobox";
@@ -199,7 +199,7 @@ export default function Page() {
 
       <section id="studio" ref={studioRef} className="mx-auto max-w-6xl scroll-mt-20 px-5 py-16 sm:py-20">
         <div className="mb-8 animate-fade-up">
-          <span className="label-mono">Your plan builder</span>
+          <SheetTag no="03">Your plan builder</SheetTag>
           <h2 className="mt-2 text-2xl font-semibold sm:text-3xl">
             {view === "results" ? "Your results" : "Five questions. One clear plan."}
           </h2>
@@ -556,6 +556,7 @@ export default function Page() {
       </section>
 
       <TrustBand />
+      <Faq />
       <Footer />
     </>
   );

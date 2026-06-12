@@ -8,12 +8,16 @@ const config: Config = {
         display: ["var(--font-display)", "ui-sans-serif", "system-ui", "sans-serif"],
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
         mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "monospace"],
+        // The editorial accent — one italic word per section, never body copy.
+        serif: ["var(--font-serif)", "Georgia", "serif"],
       },
       colors: {
         // Dark theme: luminous ink on deep-navy night paper — the blueprint glows.
         // Token ROLES are unchanged (ink = text, paper = surfaces), so every
         // existing class keeps working; only the values inverted.
-        ink: { DEFAULT: "#eef1f7", 700: "#c8cfdd", 500: "#98a2b8", 300: "#5d6781", 100: "#2a3349" },
+        // ink-300 is the dimmest text allowed on any paper shade — keep it ≥4.5:1
+        // (WCAG AA) against paper/paper-100; don't darken it for mood.
+        ink: { DEFAULT: "#eef1f7", 700: "#c8cfdd", 500: "#98a2b8", 300: "#7d88a3", 100: "#2a3349" },
         paper: { DEFAULT: "#0a0e17", 100: "#111727", 200: "#0d1120", 300: "#1a2236" },
         // One confident signal — brightened for dark backgrounds; 600 is the
         // HOVER step, so on dark it goes lighter, not darker.
