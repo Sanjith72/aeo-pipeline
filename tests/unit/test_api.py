@@ -91,7 +91,10 @@ def test_audit_job_lifecycle_with_fake_runner(monkeypatch) -> None:
 
     from aeo.api import jobs as jobs_mod
 
-    async def fake_runner(domain: str, name: str):
+    async def fake_runner(domain: str, name: str, progress=None):
+        if progress is not None:  # drive a couple of stage updates through the job
+            progress("discover", {"discovered": 5})
+            progress("report", {"site_report_id": 1})
         return {"run": {"run_id": 7}, "domain": domain, "name": name}
 
     monkeypatch.setattr(jobs_mod, "default_audit_runner", fake_runner)
@@ -108,6 +111,8 @@ def test_audit_job_lifecycle_with_fake_runner(monkeypatch) -> None:
         time.sleep(0.02)
     assert body["status"] == "succeeded"
     assert body["result"]["run"]["run_id"] == 7
+    # #7: the per-stage progress the runner emitted is polled back on the job
+    assert [s["stage"] for s in body["stages"]] == ["discover", "report"]
 
 
 def test_audit_status_404() -> None:

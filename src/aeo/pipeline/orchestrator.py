@@ -20,9 +20,10 @@ forward, skipping the expensive extract + LLM work.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Any
 
 from ..crawl import fingerprint
 from ..crawl.discovery import discover
@@ -51,6 +52,27 @@ from .stages import ExtractStage, PersistStage, ScoreStage
 log = get_logger(__name__)
 
 _PSI_MAX_CONCURRENCY = 5
+
+# Progressive results (#7): the orchestrator reports a stage boundary to an optional
+# sink — (stage_name, counts) — so a polling/streaming client can render findings as
+# they arrive instead of waiting on one long spinner. Purely additive: the default
+# None sink is a no-op and the pipeline logic is untouched.
+ProgressFn = Callable[[str, dict[str, Any]], None]
+
+# The major stages a run reports, in order. Exposed so a client (and the tests) can
+# assert/scaffold against the contract without guessing stage names.
+RUN_STAGES = ("discover", "blueprint", "coverage", "crawl", "analyze", "report")
+
+
+def _emit(progress: ProgressFn | None, stage: str, **counts: Any) -> None:
+    """Report a stage boundary to an optional progress sink. Best-effort and isolated:
+    a broken sink is logged, never raised — progress reporting must not affect the run."""
+    if progress is None:
+        return
+    try:
+        progress(stage, counts)
+    except Exception:  # a broken sink must never break the pipeline
+        log.warning("progress_emit_failed", stage=stage)
 
 
 @dataclass(slots=True)
@@ -123,6 +145,7 @@ class Orchestrator:
         label: str | None = None,
         do_score: bool = True,
         max_urls: int | None = None,
+        progress: ProgressFn | None = None,
     ) -> RunSummary:
         """Site Discovery → Page Prioritization → crawl+extract(+score) the top-N.
 
@@ -149,6 +172,8 @@ class Orchestrator:
             "site_discovered", run_key=run.run_key, domain=domain,
             source=discovery.source, discovered=len(scored), selected=len(selected),
         )
+        _emit(progress, "discover", discovered=len(scored), selected=len(selected),
+              source=discovery.source)
 
         # v4 Reference Architecture: generate+pin the versioned blueprint and run
         # the site-level Coverage Diff (over the full discovered inventory, not just
@@ -157,18 +182,21 @@ class Orchestrator:
         try:
             stored_bp = generate_and_pin_blueprint(run.id, domain=domain, llm=self._llm)
             if stored_bp is not None:
+                _emit(progress, "blueprint", version=getattr(stored_bp.blueprint, "version", None))
                 compute_and_persist_coverage(
                     run.id, stored_bp, scored, target_id=target.id,
                     reference=load_reference(), domain=domain, llm=self._llm,
                 )
+                _emit(progress, "coverage", nodes=len(getattr(stored_bp.blueprint, "sitemap", []) or []))
         except Exception as exc:
             log.warning("reference_architecture_skipped", run_key=run.run_key, error=str(exc))
 
         if not selected:  # discovery found nothing crawlable — close the run cleanly
             runs_repo.finish(run.id, status="succeeded")
+            _emit(progress, "crawl", total=0, scored=0, unchanged=0, failed=0)
             return RunSummary(run_id=run.id, run_key=run.run_key)
 
-        return await self._run_pages(selected, run=run, target=target, do_score=do_score)
+        return await self._run_pages(selected, run=run, target=target, do_score=do_score, progress=progress)
 
     async def _run_pages(
         self,
@@ -177,6 +205,7 @@ class Orchestrator:
         run,
         target: Target,
         do_score: bool,
+        progress: ProgressFn | None = None,
     ) -> RunSummary:
         """Crawl → extract → (score) every URL into ``run``, isolated per page.
         Shared by ``run_urls`` (explicit list) and ``run_site`` (prioritized top-N)."""
@@ -200,6 +229,8 @@ class Orchestrator:
             status = "succeeded" if summary.failed == 0 else "partial"
             runs_repo.finish(run.id, status=status)
             log.info("run_complete", run_key=run.run_key, **_count_fields(summary))
+            _emit(progress, "crawl", total=summary.total, scored=summary.scored,
+                  unchanged=summary.unchanged, failed=summary.failed)
         except Exception as exc:  # record the failure on the run row
             runs_repo.finish(run.id, status="failed", notes=str(exc))
             log.error("run_failed", run_key=run.run_key, error=str(exc))
@@ -222,7 +253,10 @@ class Orchestrator:
         log.info("score_run_complete", run_id=run_id, scored=scored)
         return scored
 
-    def analyze_run(self, run_id: int, *, persist: bool = True, limit: int = 100_000) -> AnalysisSummary:
+    def analyze_run(
+        self, run_id: int, *, persist: bool = True, limit: int = 100_000,
+        progress: ProgressFn | None = None,
+    ) -> AnalysisSummary:
         """Run the back half of the pipeline (Gap -> Validate -> Independent-Validate
         -> Report) for every scored client page in a run. Each page is isolated by
         the Error Sink, so one failure is recorded and skipped without aborting the
@@ -269,6 +303,9 @@ class Orchestrator:
             summary.failed += int(r["failed"])
 
         log.info("analyze_run_complete", **summary.as_dict())
+        _emit(progress, "analyze", total=summary.total, analyzed=summary.analyzed,
+              improved=summary.improved, could_not_improve=summary.could_not_improve,
+              failed=summary.failed)
         return summary
 
     def _analyze_one(
@@ -313,21 +350,27 @@ class Orchestrator:
         target: Target,
         label: str | None = None,
         max_urls: int | None = None,
+        progress: ProgressFn | None = None,
     ) -> dict:
         """The v4 Weekly Audit Loop entrypoint: Site Discovery → Page Prioritization
         → blueprint (generate+pin) → Coverage Diff → crawl/score (content-hash
         gated, unchanged pages carried forward) → analyze (Gap → Validate →
         Independent-Validate → per-page report) → site-level report. Designed to be
-        invoked weekly by a systemd timer / cron (see ops/)."""
+        invoked weekly by a systemd timer / cron (see ops/).
+
+        ``progress`` (optional) receives a (stage, counts) update at each stage boundary
+        (see ``RUN_STAGES``) so a polling/streaming client can render incrementally."""
         run_summary = await self.run_site(
-            domain, target=target, label=label or f"audit:{domain}", do_score=True, max_urls=max_urls
+            domain, target=target, label=label or f"audit:{domain}", do_score=True,
+            max_urls=max_urls, progress=progress,
         )
-        analysis = self.analyze_run(run_summary.run_id)
+        analysis = self.analyze_run(run_summary.run_id, progress=progress)
         site_report_id = self._build_and_persist_site_report(run_summary.run_id, target, domain=domain)
         log.info(
             "audit_cycle_complete", run_id=run_summary.run_id, domain=domain,
             site_report_id=site_report_id,
         )
+        _emit(progress, "report", site_report_id=site_report_id)
         return {
             "run": run_summary.as_dict(),
             "analysis": analysis.as_dict(),

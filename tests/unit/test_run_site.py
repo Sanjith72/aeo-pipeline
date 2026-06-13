@@ -59,9 +59,10 @@ def wired(monkeypatch):
     def fake_persist(run_id, scored):
         captured["persisted"] = [(s.url, s.rank, s.selected) for s in scored]
 
-    async def fake_run_pages(self, urls, *, run, target, do_score):
+    async def fake_run_pages(self, urls, *, run, target, do_score, progress=None):
         captured["crawled"] = list(urls)
         captured["do_score"] = do_score
+        captured["progress"] = progress
         return RunSummary(run_id=run.id, run_key=run.run_key, total=len(urls), scored=len(urls))
 
     monkeypatch.setattr(orch_mod, "discover", fake_discover)

@@ -29,7 +29,11 @@ def test_execute_audit_success() -> None:
     reg = JobRegistry()
     job = reg.create("audit")
 
-    async def fake_runner(domain: str, name: str) -> dict[str, Any]:
+    async def fake_runner(domain: str, name: str, progress=None) -> dict[str, Any]:
+        # exercise the per-stage progress sink the runner is now handed
+        if progress is not None:
+            progress("discover", {"discovered": 3})
+            progress("crawl", {"total": 3})
         return {"run": {"run_id": 42}, "domain": domain, "name": name}
 
     asyncio.run(execute_audit(reg, job.id, domain="acme.com", name="Acme", runner=fake_runner))
@@ -38,13 +42,16 @@ def test_execute_audit_success() -> None:
     assert done.status == JOB_SUCCEEDED
     assert done.result == {"run": {"run_id": 42}, "domain": "acme.com", "name": "Acme"}
     assert done.error is None
+    # #7: each stage the runner emitted is recorded on the job and visible to the poller
+    assert [s["stage"] for s in done.stages] == ["discover", "crawl"]
+    assert done.to_dict()["stages"][0]["counts"] == {"discovered": 3}
 
 
 def test_execute_audit_captures_failure() -> None:
     reg = JobRegistry()
     job = reg.create("audit")
 
-    async def boom(domain: str, name: str) -> dict[str, Any]:
+    async def boom(domain: str, name: str, progress=None) -> dict[str, Any]:
         raise RuntimeError("crawl exploded")
 
     # never raises — the failure is recorded on the job
