@@ -5,7 +5,6 @@
 #   open http://localhost:3000           # the UI
 #
 # Optional add-ons (off by default):
-#   docker compose --profile llm   up -d ollama   # local LLM  (then: ollama pull phi3)
 #   docker compose --profile worker up -d worker  # crawl-queue drainer (not needed for the UI)
 #   docker compose run --rm app status            # ad-hoc CLI
 
@@ -95,12 +94,11 @@ services:
     <<: *app
     profiles: ["cli"]
 
-  # Optional local LLM. Enable with `--profile llm`; pull a model once:
-  #   docker compose --profile llm exec ollama ollama pull phi3
+  # Local LLM, part of the default stack. Pull a model once:
+  #   docker compose exec ollama ollama pull phi3
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
-    profiles: ["llm"]
     volumes:
       - ollama:/root/.ollama
     ports:
