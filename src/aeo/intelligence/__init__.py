@@ -25,12 +25,23 @@ from .classification import (
     detect_archetypes,
 )
 from .config import IntelligenceCfg, load_intelligence_cfg
+from .intake import (
+    DEAD,
+    RICH,
+    THIN,
+    classify_intake,
+    infer_industry,
+    infer_location,
+)
 from .journey import JourneyCoverage, Stage, StageCoverage, analyze_journey
 from .scenario import Scenario, StrategyAction, StrategyPlan, route_scenario
 from .signals import PageView, to_page_views
 from .site_profile import SiteProfile, build_site_profile
 
 __all__ = [
+    "DEAD",
+    "RICH",
+    "THIN",
     "BriefPlan",
     "BusinessIntent",
     "BusinessModel",
@@ -49,9 +60,12 @@ __all__ = [
     "analyze_journey",
     "build_classification",
     "build_site_profile",
+    "classify_intake",
     "classify_tier",
     "detect_archetypes",
     "detect_business_model",
+    "infer_industry",
+    "infer_location",
     "load_intelligence_cfg",
     "plan_from_brief",
     "route_scenario",

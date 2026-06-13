@@ -100,6 +100,7 @@ def plan_from_brief(
         coverage=coverage,
         topic=topic,
         category=brief.category,
+        location=brief.location,
         llm=llm,
         cfg=cfg,
     )

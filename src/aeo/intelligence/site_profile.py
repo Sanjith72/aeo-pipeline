@@ -18,6 +18,7 @@ from ..processor.coverage_diff import CoverageDiffResult
 from .business_intent import BusinessIntent, detect_business_model
 from .classification import Classification, build_classification, classify_tier
 from .config import IntelligenceCfg, load_intelligence_cfg
+from .intake import infer_industry, infer_location
 from .journey import JourneyCoverage, analyze_journey
 from .scenario import StrategyPlan, route_scenario
 from .signals import to_page_views
@@ -30,6 +31,11 @@ class SiteProfile:
     business_intent: BusinessIntent
     journey: JourneyCoverage
     strategy: StrategyPlan
+    # #2 — industry + location DERIVED from the crawl (the URL-first intake stops
+    # asking for them). Either may be an explicit override; otherwise inferred, and
+    # ``None`` when the site gives no signal (e.g. a SaaS has no location).
+    industry: str | None = None
+    location: str | None = None
 
     def headline(self) -> str:
         return self.strategy.headline
@@ -42,6 +48,8 @@ class SiteProfile:
         b = self.business_intent
         return {
             "domain": self.domain,
+            "industry": self.industry,
+            "location": self.location,
             "scenario": s.scenario.value,
             "deliverable": s.deliverable,
             "headline": s.headline,
@@ -96,6 +104,7 @@ def build_site_profile(
     coverage: CoverageDiffResult | None = None,
     topic: str | None = None,
     category: str | None = None,
+    location: str | None = None,
     llm: LLMClient | None = None,
     cfg: IntelligenceCfg | None = None,
 ) -> SiteProfile:
@@ -104,7 +113,9 @@ def build_site_profile(
 
     ``llm`` is used only as a tiebreak in business-model detection; everything else is
     deterministic. ``topic`` / ``category`` (from the per-domain onboarding config) nudge
-    the business-model classifier."""
+    the business-model classifier. ``category`` / ``location``, when given, are explicit
+    overrides for the derived industry/location (#2); otherwise both are inferred from
+    the crawl so the URL can be the only input."""
     cfg = cfg or load_intelligence_cfg()
     pages = to_page_views(discovered)
 
@@ -120,10 +131,17 @@ def build_site_profile(
         site_class=site_class, intent=intent, journey=journey,
         coverage=coverage, classification=classification, cfg=cfg,
     )
+    # #2 — derive industry/location from the crawl; an explicit value passed in wins.
+    industry = infer_industry(
+        pages, topic=topic, category=category, business_model=intent.model.value, cfg=cfg
+    )
+    resolved_location = location if (location and location.strip()) else infer_location(pages, cfg=cfg)
     return SiteProfile(
         domain=domain,
         classification=classification,
         business_intent=intent,
         journey=journey,
         strategy=strategy,
+        industry=industry,
+        location=resolved_location,
     )

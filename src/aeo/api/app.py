@@ -251,16 +251,43 @@ def deliverables_zip(req: DeliverablesRequest) -> Response:
 
 @app.post("/api/profile")
 async def profile(req: ProfileRequest) -> dict[str, Any]:
-    """Classify a LIVE site and return its SiteProfile (reuses the zero-DB dry-run path)."""
+    """Classify a LIVE site (reuses the zero-DB dry-run path) and BRANCH ON CRAWL QUALITY.
+
+    The URL-first intake (#1/#2/#3) leans on this: a content-rich/thin site returns its
+    SiteProfile with the crawl-derived ``industry`` + ``location`` (so the wizard prefills
+    instead of asking), while a dead/unreachable crawl returns ``route='dead'`` pointing at
+    the no-website brief path (``/api/plan``) — never a 502, so the flow always continues."""
+    from ..intelligence import DEAD, classify_intake
     from ..pipeline import Orchestrator
+    from ..settings import get_settings
 
     result = await Orchestrator().dry_run(req.domain, max_urls=req.max_urls, pages=0, use_llm=req.use_llm)
-    if result.get("profile") is None:
-        raise HTTPException(status_code=502, detail="could not profile the site")
+    intake = get_settings().intake
+    discovered = int(result.get("discovered") or 0)
+    # The live profile path doesn't fetch body text, so the gate is page-count based.
+    route = classify_intake(
+        discovered, None,
+        min_pages=intake.thin_site_min_pages, min_words=intake.thin_site_min_words,
+    )
+    prof = result.get("profile")
+    if prof is None or route == DEAD:
+        # Crawl found nothing usable → the no-website brief path is the right flow.
+        return {
+            "route": DEAD,
+            "profile": None,
+            "industry": None,
+            "location": None,
+            "discovered": discovered,
+            "source": result.get("source"),
+            "next": "/api/plan",
+        }
     return {
-        "profile": result["profile"],
+        "route": route,  # 'rich' | 'thin'
+        "profile": prof,
+        "industry": prof.get("industry"),
+        "location": prof.get("location"),
         "coverage": result["coverage"],
-        "discovered": result["discovered"],
+        "discovered": discovered,
         "source": result["source"],
     }
 

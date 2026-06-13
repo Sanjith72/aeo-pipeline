@@ -139,6 +139,17 @@ class RetentionCfg(BaseModel):
     enabled: bool = True
 
 
+class IntakeCfg(BaseModel):
+    # Intake intelligence (#3): branch on crawl quality so the URL can be the only
+    # input. A site with fewer than `thin_site_min_pages` pages (or, when body text is
+    # available, fewer than `thin_site_min_words` words) is too thin to audit
+    # meaningfully and is routed to the brief/build path instead; a crawl that finds
+    # nothing falls through to the no-website path. Tunable via AEO__INTAKE__*.
+    enabled: bool = True
+    thin_site_min_pages: int = 5
+    thin_site_min_words: int = 300
+
+
 class PerplexityCfg(BaseModel):
     # The v4 Independent Validator's real-world signal: query the target question
     # on Perplexity and compare the rewrite's shape to what's actually cited.
@@ -225,6 +236,7 @@ class Settings(BaseSettings):
     database: DatabaseCfg = DatabaseCfg()
     validation: ValidationCfg = ValidationCfg()
     retention: RetentionCfg = RetentionCfg()
+    intake: IntakeCfg = IntakeCfg()
     perplexity: PerplexityCfg = PerplexityCfg()
     scoring: ScoringCfg = ScoringCfg()
     reference_architecture: ReferenceArchitectureCfg = ReferenceArchitectureCfg()

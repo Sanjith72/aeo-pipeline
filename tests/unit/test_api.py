@@ -191,6 +191,45 @@ def test_deliverables_builder_mode_shapes_the_kit() -> None:
     assert client.post("/api/deliverables", json={**req, "builder_mode": "nope"}).status_code == 422
 
 
+def test_profile_routes_dead_crawl_to_no_website(monkeypatch) -> None:
+    # #3: a crawl that finds nothing must NOT 502 — it routes to the no-website path so
+    # the URL-first flow always continues.
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+        return {"profile": None, "coverage": {}, "discovered": 0, "source": "none"}
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    r = client.post("/api/profile", json={"domain": "dead.example"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["route"] == "dead"
+    assert body["next"] == "/api/plan"
+    assert body["industry"] is None and body["location"] is None
+
+
+def test_profile_returns_inferred_industry_and_location(monkeypatch) -> None:
+    # #2: a content-rich crawl returns the derived industry/location so the wizard
+    # prefills them instead of asking.
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+        return {
+            "profile": {"industry": "Software / SaaS", "location": None, "scenario": "small_site"},
+            "coverage": {"pct": 50.0},
+            "discovered": 12,
+            "source": "sitemap",
+        }
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    r = client.post("/api/profile", json={"domain": "acme.com"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["route"] == "rich"
+    assert body["industry"] == "Software / SaaS"
+    assert body["location"] is None
+
+
 def test_cors_allows_the_web_ui_origin() -> None:
     # the SP-4b UI on :3000 is a different origin — without this header every browser
     # fetch fails silently, so it's load-bearing for the whole guided flow
