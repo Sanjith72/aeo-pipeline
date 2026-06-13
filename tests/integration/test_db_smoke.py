@@ -279,3 +279,92 @@ def test_recommendation_outcome_lifecycle(db):
             cur.execute("DELETE FROM recommendation_outcomes WHERE url_normalized = %s", (url,))
         runs_repo.finish(issue.id, status="succeeded")
         runs_repo.finish(recrawl.id, status="succeeded")
+
+
+def test_events_record_and_retention_metrics(db):
+    """Instrumentation (Block F): record events across days, then assert each metric.
+    The `events` table is new and only this test writes to it, so whole-table
+    aggregates (DAU / return-rate / quick-win) are isolated once our rows are cleaned
+    up; the implementation-rate is checked against a direct count so it holds whatever
+    else is in recommendation_outcomes."""
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from aeo.storage.db import transaction
+    from aeo.storage.repos import events as events_repo
+    from aeo.storage.repos import outcomes as outcomes_repo
+    from aeo.storage.repos import recommendations as recs_repo
+    from aeo.storage.repos import runs as runs_repo
+
+    now = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
+    d0, d1 = now, now - timedelta(days=1)
+    url_a = "https://securin.io/evt-impl-a"
+    url_b = "https://securin.io/evt-impl-b"
+
+    def _ins(cur, session_id, event_type, created_at, metadata=None):
+        cur.execute(
+            "INSERT INTO events (session_id, event_type, metadata, created_at) "
+            "VALUES (%s, %s, %s::jsonb, %s)",
+            (session_id, event_type, json.dumps(metadata or {}), created_at),
+        )
+
+    issue = runs_repo.start(label="db-smoke-evt-issue")
+    recrawl = runs_repo.start(label="db-smoke-evt-recrawl")
+    try:
+        with transaction() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE session_id LIKE 'smoke-evt-%'")
+            # 'ret' is active two distinct days → a returning session; 'one' a single day.
+            _ins(cur, "smoke-evt-ret", events_repo.SESSION_START, d1)
+            _ins(cur, "smoke-evt-ret", events_repo.WIZARD_STEP_COMPLETED, d0, {"step": 1})
+            _ins(cur, "smoke-evt-one", events_repo.SESSION_START, d0)
+            # quick-win funnel: 3 presented, q1 done as a quick win, q2 done but NOT a
+            # quick win (excluded), q3 never done → completion rate = 1/3.
+            _ins(cur, "smoke-evt-ret", events_repo.PLAN_VIEWED, d0,
+                 {"quick_win_ids": ["q1", "q2", "q3"]})
+            _ins(cur, "smoke-evt-ret", events_repo.TASK_MARKED_DONE, d0,
+                 {"task_id": "q1", "quick_win": True})
+            _ins(cur, "smoke-evt-ret", events_repo.TASK_MARKED_DONE, d0,
+                 {"task_id": "q2", "quick_win": False})
+
+        # record() happy path (today, third distinct session-day combination is 'one'+today
+        # already; this adds an event to 'one' so it stays a single-day session).
+        assert isinstance(events_repo.record("smoke-evt-one", events_repo.PLAN_VIEWED), int)
+
+        # DAU over our window: day d1 → {ret}; day d0 → {ret, one}.
+        series = {row["day"]: row["dau"] for row in events_repo.dau(d1, d0 + timedelta(days=1))}
+        assert series.get(d1.date()) == 1
+        assert series.get(d0.date()) == 2
+
+        # return-rate: of {ret, one}, only 'ret' spans 2+ days → 0.5.
+        assert abs(events_repo.return_rate() - 0.5) < 1e-9
+        # quick-win completion: of {q1,q2,q3} presented, only q1 was done as a quick win.
+        assert abs(events_repo.quick_win_completion_rate() - (1 / 3)) < 1e-9
+
+        # implementation-rate: one implemented + one pending outcome. Compare the repo's
+        # number against a direct count so leftover rows can't make this flaky.
+        page_a = _smoke_page(url_a, "hashimpl_a" + "0" * 54, issue.id)
+        page_b = _smoke_page(url_b, "hashimpl_b" + "0" * 54, issue.id)
+        rec_a = recs_repo.create(page_a.id, issue.id, "schema", {"title": "A"}, criterion="schema_markup")
+        rec_b = recs_repo.create(page_b.id, issue.id, "schema", {"title": "B"}, criterion="schema_markup")
+        outcomes_repo.open(rec_a, page_a.id, page_a.url_normalized,
+                           baseline_run_id=issue.id, baseline_hash="hashimpl_a" + "0" * 54)
+        outcomes_repo.open(rec_b, page_b.id, page_b.url_normalized,
+                           baseline_run_id=issue.id, baseline_hash="hashimpl_b" + "0" * 54)
+        # flip A to implemented via a changed hash; B stays pending.
+        assert outcomes_repo.mark_from_recrawl(page_a.url_normalized, recrawl.id, "changed" + "1" * 57) == 1
+
+        with transaction() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FILTER (WHERE status='implemented')::float "
+                "/ NULLIF(COUNT(*), 0) AS rate FROM recommendation_outcomes"
+            )
+            expected_impl = float(cur.fetchone()["rate"])
+        assert expected_impl > 0  # our implemented row guarantees a positive rate
+        assert abs(events_repo.recommendation_implementation_rate() - expected_impl) < 1e-9
+    finally:
+        with transaction() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE session_id LIKE 'smoke-evt-%'")
+            cur.execute("DELETE FROM recommendation_outcomes WHERE url_normalized IN (%s, %s)",
+                        (url_a, url_b))
+        runs_repo.finish(issue.id, status="succeeded")
+        runs_repo.finish(recrawl.id, status="succeeded")

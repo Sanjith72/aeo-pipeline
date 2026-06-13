@@ -127,6 +127,17 @@ class CompetitorSuggestRequest(BaseModel):
     verify: bool = False  # live domain HEAD-checks are slow; the picker only needs names
 
 
+class EventRequest(BaseModel):
+    """One product-analytics event (Block F instrumentation). ``session_id`` is the
+    browser-minted, cookie-persisted id that DAU/return-rate are computed over."""
+
+    session_id: str
+    event_type: str
+    client_id: int | None = None
+    url: str | None = None
+    metadata: dict[str, Any] = {}
+
+
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 
@@ -360,3 +371,36 @@ def audit_status(job_id: str) -> dict[str, Any]:
     if job is None:
         raise HTTPException(status_code=404, detail=f"no job {job_id}")
     return job.to_dict()
+
+
+@app.post("/api/events")
+def record_event(req: EventRequest) -> dict[str, Any]:
+    """Record one product-analytics event (Block F). Best-effort by design: analytics
+    must never break the user's flow, so a DB hiccup returns ``{"recorded": false}``
+    rather than 500ing. The frontend fires these fire-and-forget (see ``track``)."""
+    from ..logging import get_logger
+    from ..storage.repos import events as events_repo
+
+    sid = req.session_id.strip()
+    etype = req.event_type.strip()
+    if not sid or not etype:
+        raise HTTPException(status_code=422, detail="session_id and event_type are required")
+    try:
+        event_id = events_repo.record(
+            session_id=sid, event_type=etype,
+            client_id=req.client_id, url=req.url, metadata=req.metadata,
+        )
+    except Exception as exc:  # never break the flow over analytics
+        get_logger(__name__).warning("event_record_failed", event_type=etype, error=str(exc))
+        return {"recorded": False}
+    return {"recorded": True, "id": event_id}
+
+
+@app.get("/api/metrics")
+def metrics() -> dict[str, Any]:
+    """The retention dashboard (Block F): DAU series + return-rate + quick-win
+    completion + the recommendation-implementation rate (the real 'did it work?'
+    signal, joined from the Retention Engine's outcomes). Needs a live DB."""
+    from ..storage.repos import events as events_repo
+
+    return events_repo.metrics()

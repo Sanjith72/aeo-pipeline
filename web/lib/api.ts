@@ -20,6 +20,37 @@ function headers(extra?: Record<string, string>): Record<string, string> {
   return h;
 }
 
+// ── instrumentation (Block F) ──────────────────────────────────────────────
+// A stable, browser-minted session id persisted in a cookie (NOT localStorage):
+// the unit DAU and return-rate are computed over server-side. No third-party SDK.
+const SESSION_COOKIE = "aeo_sid";
+const LAST_SEEN_COOKIE = "aeo_seen";
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 365; // ~1 year
+
+function readCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+function writeCookie(name: string, value: string): void {
+  if (typeof document === "undefined") return;
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+}
+
+function getSessionId(): string {
+  if (typeof document === "undefined") return "ssr";
+  let sid = readCookie(SESSION_COOKIE);
+  if (!sid) {
+    sid =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `s_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    writeCookie(SESSION_COOKIE, sid);
+  }
+  return sid;
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   let res: Response;
   try {
@@ -79,5 +110,40 @@ export const api = {
     const res = await fetch(`${BASE}/api/site-report/${runId}`, { headers: headers() });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as SiteReportResponse;
+  },
+
+  // ── instrumentation (Block F) ─────────────────────────────────────────────
+  /** Fire-and-forget a product-analytics event. Best-effort: failures are swallowed
+   *  so analytics can never break the user's flow. `keepalive` lets it survive an
+   *  in-flight page unload (e.g. the last wizard step). */
+  track(eventType: string, metadata?: Record<string, unknown>, url?: string): void {
+    if (typeof window === "undefined") return; // no-op during SSR
+    try {
+      void fetch(`${BASE}/api/events`, {
+        method: "POST",
+        headers: headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          session_id: getSessionId(),
+          event_type: eventType,
+          url: url ?? null,
+          metadata: metadata ?? {},
+        }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      /* best-effort */
+    }
+  },
+
+  /** Call once on app load: emits `session_start` on a brand-new session and
+   *  `return_visit` when an existing session spans a new calendar day — the signal
+   *  behind the return-rate metric. */
+  trackVisit(): void {
+    if (typeof window === "undefined") return;
+    const today = new Date().toISOString().slice(0, 10);
+    const lastSeen = readCookie(LAST_SEEN_COOKIE);
+    if (!lastSeen) this.track("session_start");
+    else if (lastSeen !== today) this.track("return_visit", { last_seen: lastSeen });
+    writeCookie(LAST_SEEN_COOKIE, today);
   },
 };

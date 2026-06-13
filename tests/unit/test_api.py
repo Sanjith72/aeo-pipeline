@@ -119,6 +119,56 @@ def test_audit_status_404() -> None:
     assert client.get("/api/audit/does-not-exist").status_code == 404
 
 
+def test_event_records_via_repo(monkeypatch) -> None:
+    # Block F: POST /api/events delegates to events_repo.record (monkeypatched → no DB).
+    from aeo.storage.repos import events as events_repo
+
+    captured: dict = {}
+
+    def fake_record(session_id, event_type, *, client_id=None, url=None, metadata=None):
+        captured.update(session_id=session_id, event_type=event_type, metadata=metadata)
+        return 123
+
+    monkeypatch.setattr(events_repo, "record", fake_record)
+    r = client.post(
+        "/api/events",
+        json={"session_id": "s1", "event_type": "plan_viewed", "metadata": {"quick_win_ids": ["a"]}},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"recorded": True, "id": 123}
+    assert captured == {"session_id": "s1", "event_type": "plan_viewed", "metadata": {"quick_win_ids": ["a"]}}
+
+
+def test_event_is_best_effort_when_db_down(monkeypatch) -> None:
+    # Analytics must never break the user's flow — a record failure is swallowed (200).
+    from aeo.storage.repos import events as events_repo
+
+    def boom(*a, **k):
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(events_repo, "record", boom)
+    r = client.post("/api/events", json={"session_id": "s1", "event_type": "session_start"})
+    assert r.status_code == 200
+    assert r.json() == {"recorded": False}
+
+
+def test_event_requires_session_and_type() -> None:
+    # blank session_id / event_type → 422 (pydantic accepts the strings, the handler rejects)
+    assert client.post("/api/events", json={"session_id": " ", "event_type": "x"}).status_code == 422
+    assert client.post("/api/events", json={"session_id": "s", "event_type": " "}).status_code == 422
+
+
+def test_metrics_returns_repo_payload(monkeypatch) -> None:
+    from aeo.storage.repos import events as events_repo
+
+    fake = {"dau": [], "return_rate": 0.0, "quick_win_completion_rate": 0.0,
+            "recommendation_implementation_rate": 0.0}
+    monkeypatch.setattr(events_repo, "metrics", lambda *a, **k: fake)
+    r = client.get("/api/metrics")
+    assert r.status_code == 200
+    assert r.json() == fake
+
+
 def test_auth_open_when_no_key_configured() -> None:
     # default test env has no AEO__API__AUTH_KEY → endpoints are open (no header)
     assert client.post("/api/plan", json={"name": "Acme", "domain": "acme.com"}).status_code == 200
