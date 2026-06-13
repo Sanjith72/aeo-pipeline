@@ -1,18 +1,22 @@
 "use client";
 
-// The results experience — one tabbed dashboard after the analysis instead of three
-// extra wizard steps. Every label that comes back from the API gets translated into
-// owner language here (effort levels, scenario names, journey stages).
+// The results experience — one tabbed dashboard after the analysis instead of extra
+// wizard steps. Every label that comes back from the API gets translated into owner
+// language here. The centerpiece is the interactive, phased plan (#10/#13): work it in
+// the app, check things off, with both an AI prompt and a human how-to per task.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { api } from "@/lib/api";
 import type {
   AuditJob,
   BriefPlan,
   BundleAsset,
   DeliverablesResponse,
-  PlanChecklist,
+  PlanPhase,
+  PlanTask,
   SiteProfile,
   SitemapNode,
+  StructuredPlan,
 } from "@/lib/types";
 import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
 import { ArrowRight, Check } from "./ui/icons";
@@ -33,7 +37,6 @@ export function ResultsView({
   deliverables,
   delivLoading,
   aiPersonalization,
-  builderMode,
   onGenerateDeliverables,
   onDownloadZip,
   onEdit,
@@ -45,7 +48,6 @@ export function ResultsView({
   deliverables: DeliverablesResponse | null;
   delivLoading: boolean;
   aiPersonalization: boolean;
-  builderMode: string;
   onGenerateDeliverables: () => void;
   onDownloadZip: () => void;
   onEdit: () => void;
@@ -53,8 +55,8 @@ export function ResultsView({
   const tabs: { id: TabId; label: string }[] = [
     ...(profile ? [{ id: "overview" as const, label: "Overview" }] : []),
     ...(plan ? [{ id: "blueprint" as const, label: "Your website plan" }] : []),
-    ...(profile && profile.actions.length > 0 ? [{ id: "actions" as const, label: "Your action plan" }] : []),
-    { id: "kit" as const, label: "Launch kit" },
+    ...(profile && profile.actions.length > 0 ? [{ id: "actions" as const, label: "Strategy" }] : []),
+    { id: "kit" as const, label: "Your plan" },
   ];
   const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
 
@@ -104,16 +106,106 @@ export function ResultsView({
         {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
         {tab === "actions" && profile && <ActionsPanel profile={profile} />}
         {tab === "kit" && (
-          <LaunchKitPanel
+          <PlanPanel
             deliverables={deliverables}
             loading={delivLoading}
             slowMode={aiPersonalization}
-            storageKey={`aeo-plan:${businessName.toLowerCase()}:${builderMode}`}
+            storageKey={`aeo-plan:${businessName.toLowerCase()}`}
             onGenerate={onGenerateDeliverables}
             onDownloadZip={onDownloadZip}
           />
         )}
       </div>
+    </div>
+  );
+}
+
+// ── live analysis progress (#7) ─────────────────────────────────────────────────
+
+// Maps orchestrator RUN_STAGES → owner-facing copy + a count summary from the event.
+const STAGE_LABEL: Record<string, string> = {
+  discover: "Finding your pages",
+  blueprint: "Mapping your ideal site",
+  coverage: "Spotting the gaps",
+  crawl: "Reading your pages",
+  analyze: "Writing recommendations",
+  report: "Putting your plan together",
+};
+
+function stageSummary(stage: string, counts: Record<string, number | string | null>): string {
+  const n = (k: string) => (typeof counts[k] === "number" ? (counts[k] as number) : undefined);
+  switch (stage) {
+    case "discover": {
+      const d = n("discovered");
+      return d != null ? `Found ${d} page${d === 1 ? "" : "s"}` : "";
+    }
+    case "coverage": {
+      const m = n("nodes");
+      return m != null ? `Checked against ${m} ideal pages` : "";
+    }
+    case "crawl": {
+      const s = n("scored");
+      const f = n("failed");
+      if (s == null) return "";
+      return `Reviewed ${s} page${s === 1 ? "" : "s"}${f ? ` · ${f} couldn't be read` : ""}`;
+    }
+    case "analyze": {
+      const a = n("analyzed");
+      const imp = n("improved");
+      if (a == null) return "";
+      return `${a} page${a === 1 ? "" : "s"} analyzed${imp != null ? ` · ${imp} with fixes` : ""}`;
+    }
+    default:
+      return "";
+  }
+}
+
+export function AnalysisProgress({ job }: { job: AuditJob }) {
+  const stages = job.stages ?? [];
+  const lastStage = stages.length ? stages[stages.length - 1].stage : null;
+  const working = job.status === "queued" || job.status === "running";
+  return (
+    <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-5 text-sm">
+      <div className="flex items-center gap-2.5 text-amber-200">
+        <span className="relative flex h-2.5 w-2.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
+        </span>
+        <span className="font-medium">
+          {job.status === "queued" ? "Getting ready to review your site…" : "Reviewing your website…"}
+        </span>
+      </div>
+
+      <ol className="mt-4 space-y-2">
+        {stages.map((s, i) => {
+          const summary = stageSummary(s.stage, s.counts);
+          return (
+            <li key={`${s.stage}-${i}`} className="step-in flex items-start gap-2.5">
+              <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white">
+                <Check width={10} height={10} />
+              </span>
+              <span className="min-w-0">
+                <span className="font-medium text-ink">{STAGE_LABEL[s.stage] ?? humanizeToken(s.stage)}</span>
+                {summary && <span className="block text-xs text-ink-300">{summary}</span>}
+              </span>
+            </li>
+          );
+        })}
+        {working && lastStage !== "report" && (
+          <li className="flex items-center gap-2.5 text-ink-300">
+            <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-amber-500/40 border-t-amber-400" />
+            <span className="text-xs">
+              {job.progress && STAGE_LABEL[job.progress]
+                ? `${STAGE_LABEL[job.progress]}…`
+                : "Working…"}
+            </span>
+          </li>
+        )}
+      </ol>
+      <p className="mt-4 border-t border-amber-500/15 pt-3 text-xs text-amber-200/80">
+        The thorough review takes a few minutes — findings appear above as they come in. You can leave
+        this tab open.
+      </p>
     </div>
   );
 }
@@ -202,13 +294,14 @@ function Metric({ label, value, sub }: { label: string; value: string; sub: stri
   );
 }
 
-// ── action plan ───────────────────────────────────────────────────────────────
+// ── strategy (high-level profile actions) ───────────────────────────────────────
 
 function ActionsPanel({ profile }: { profile: SiteProfile }) {
   return (
     <div>
       <p className="mb-4 text-sm text-ink-500">
-        Do these in order — each one says how much work to expect.
+        The big moves, in order — each one says how much work to expect. The step-by-step,
+        page-by-page version lives under <span className="font-medium text-ink">Your plan</span>.
       </p>
       <div className="space-y-3">
         {profile.actions.map((a, i) => (
@@ -242,7 +335,7 @@ function ActionsPanel({ profile }: { profile: SiteProfile }) {
   );
 }
 
-// ── website plan ──────────────────────────────────────────────────────────────
+// ── website plan (ideal sitemap) ────────────────────────────────────────────────
 
 function BlueprintPanel({ sitemap, topic }: { sitemap: SitemapNode[]; topic: string }) {
   const sorted = [...sitemap].sort((a, b) => b.priority - a.priority);
@@ -295,7 +388,256 @@ function BlueprintPanel({ sitemap, topic }: { sitemap: SitemapNode[]; topic: str
   );
 }
 
-// ── launch kit ────────────────────────────────────────────────────────────────
+// ── the interactive, phased plan (#10 / #13) ────────────────────────────────────
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard?.writeText(text).then(
+          () => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          },
+          () => {},
+        );
+      }}
+      className="btn-ghost !px-2.5 !py-1 text-[11px]"
+    >
+      {copied ? "Copied ✓" : label}
+    </button>
+  );
+}
+
+function TaskCard({
+  task,
+  done,
+  onToggle,
+}: {
+  task: PlanTask;
+  done: boolean;
+  onToggle: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li className="overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100">
+      <div className="flex items-start gap-3 p-3.5">
+        <input
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+          checked={done}
+          onChange={onToggle}
+          aria-label={`Mark "${task.action_required}" done`}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`font-medium ${done ? "text-ink-300 line-through" : "text-ink"}`}>{task.label}</span>
+            {task.quick_win && (
+              <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300 ring-1 ring-emerald-500/30">
+                Quick win
+              </span>
+            )}
+            <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${EFFORT_PILL[task.effort] ?? "bg-ink/5 text-ink-500"}`}>
+              {EFFORT_LABEL[task.effort] ?? humanizeToken(task.effort)}
+            </span>
+          </div>
+          <p className="mt-1 text-sm text-ink-500">{task.action_required}</p>
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            className="mt-1 text-xs text-ink-300 underline-offset-2 transition-colors hover:text-accent hover:underline"
+            aria-expanded={open}
+          >
+            {open ? "Hide how-to" : "Show me how →"}
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="step-in space-y-3 border-t border-ink/[0.06] bg-paper-200/40 px-4 py-3.5 text-sm">
+          <Detail label="Where you are now" value={task.current_state} />
+          <Detail label="What to do" value={task.action_required} />
+          <Detail label="How to do it" value={task.how_to} />
+          {task.prompts && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <PromptBox
+                title="Doing it with AI"
+                blurb="Paste this into ChatGPT or your builder's AI."
+                text={task.prompts.ai}
+                copyLabel="Copy prompt"
+              />
+              <PromptBox
+                title="Doing it yourself"
+                blurb="A plain checklist if you'd rather write it."
+                text={task.prompts.human}
+                copyLabel="Copy steps"
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span className="label-mono">{label}</span>
+      <p className="mt-0.5 leading-relaxed text-ink-500">{value}</p>
+    </div>
+  );
+}
+
+function PromptBox({ title, blurb, text, copyLabel }: { title: string; blurb: string; text: string; copyLabel: string }) {
+  return (
+    <div className="rounded-lg border border-ink/[0.08] bg-paper-100 p-3">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-ink">{title}</span>
+        <CopyButton text={text} label={copyLabel} />
+      </div>
+      <p className="mb-2 text-[11px] text-ink-300">{blurb}</p>
+      <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-ink/[0.03] p-2 font-mono text-[11px] leading-relaxed text-ink-500">
+        {text}
+      </pre>
+    </div>
+  );
+}
+
+function PhasedPlanView({ plan, storageKey }: { plan: StructuredPlan; storageKey: string }) {
+  const [done, setDone] = useState<Set<string>>(new Set());
+  const planViewed = useRef(false);
+
+  // localStorage only after mount — never during render (prerender has no storage)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      setDone(raw ? new Set(JSON.parse(raw) as string[]) : new Set());
+    } catch {
+      /* private mode / blocked storage — still works, just won't persist */
+    }
+  }, [storageKey]);
+
+  // fire plan_viewed once, with the quick-win ids the metrics' completion rate keys on
+  useEffect(() => {
+    if (planViewed.current) return;
+    planViewed.current = true;
+    api.track("plan_viewed", { quick_win_ids: plan.quick_win_ids, total: plan.total });
+  }, [plan]);
+
+  function toggle(task: PlanTask) {
+    setDone((prev) => {
+      const next = new Set(prev);
+      if (next.has(task.id)) {
+        next.delete(task.id);
+      } else {
+        next.add(task.id);
+        // only the act of completing is a signal (uncheck is a correction)
+        api.track("task_marked_done", { task_id: task.id, quick_win: task.quick_win, phase: task.phase });
+      }
+      try {
+        localStorage.setItem(storageKey, JSON.stringify([...next]));
+      } catch {
+        /* persistence is best-effort */
+      }
+      return next;
+    });
+  }
+
+  const allTasks = plan.phases.flatMap((p) => p.tasks);
+  const doneCount = allTasks.filter((t) => done.has(t.id)).length;
+  const pct = allTasks.length ? Math.round((doneCount / allTasks.length) * 100) : 0;
+  const quickWins = allTasks.filter((t) => t.quick_win);
+  const quickWinsDone = quickWins.filter((t) => done.has(t.id)).length;
+
+  return (
+    <div className="space-y-6">
+      <div className="card p-5 sm:p-6">
+        <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-base font-semibold">Your step-by-step plan</h3>
+          <span className="font-mono text-xs text-ink-500">{doneCount} / {allTasks.length} done</span>
+        </div>
+        <div
+          className="mb-4 h-1.5 overflow-hidden rounded-full bg-ink/[0.07]"
+          role="progressbar"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label="Plan progress"
+        >
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-accent to-accent-600 transition-[width] duration-500 ease-out"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        {quickWins.length > 0 && (
+          <p className="text-sm text-ink-500">
+            <span className="font-medium text-emerald-300">Start here:</span> {quickWins.length} quick win
+            {quickWins.length === 1 ? "" : "s"} you can knock out fast
+            <span className="text-ink-300"> — {quickWinsDone}/{quickWins.length} done.</span>
+          </p>
+        )}
+        {pct === 100 && (
+          <p className="step-in mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+            That's everything — your business is set up to be the one AI recommends. 🎉
+          </p>
+        )}
+      </div>
+
+      {plan.phases.map((phase, idx) => (
+        <PhaseBlock
+          key={phase.key}
+          phase={phase}
+          done={done}
+          onToggle={toggle}
+          locked={idx > 0 && !plan.phases[idx - 1].tasks.every((t) => done.has(t.id))}
+          priorTitle={idx > 0 ? plan.phases[idx - 1].title : undefined}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PhaseBlock({
+  phase,
+  done,
+  onToggle,
+  locked,
+  priorTitle,
+}: {
+  phase: PlanPhase;
+  done: Set<string>;
+  onToggle: (t: PlanTask) => void;
+  locked: boolean;
+  priorTitle?: string;
+}) {
+  const phaseDone = phase.tasks.filter((t) => done.has(t.id)).length;
+  return (
+    <div>
+      <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <span className="label-mono">{phase.title}</span>
+          <span className="ml-2 text-xs text-ink-500">{phase.blurb}</span>
+        </div>
+        <span className="font-mono text-xs text-ink-300">{phaseDone}/{phase.tasks.length}</span>
+      </div>
+      {locked && (
+        <p className="mb-2.5 text-xs text-ink-300">
+          Tip: finish <span className="text-ink-500">{priorTitle}</span> first — but you can start anytime.
+        </p>
+      )}
+      <ul className={`space-y-2 ${locked ? "opacity-70" : ""}`}>
+        {phase.tasks.map((t) => (
+          <TaskCard key={t.id} task={t} done={done.has(t.id)} onToggle={() => onToggle(t)} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ── launch kit downloads (secondary to the in-app plan) ──────────────────────────
 
 // Keys mirror Asset.kind in aeo.report.packager.
 const KIND_LABEL: Record<string, string> = {
@@ -315,95 +657,7 @@ const KIND_LABEL: Record<string, string> = {
   strategy: "action plan",
 };
 
-function PlanChecklistView({ checklist, storageKey }: { checklist: PlanChecklist; storageKey: string }) {
-  const [done, setDone] = useState<Set<string>>(new Set());
-
-  // localStorage only after mount — never during render (prerender has no storage)
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(storageKey);
-      setDone(raw ? new Set(JSON.parse(raw) as string[]) : new Set());
-    } catch {
-      /* private mode / blocked storage — checklist still works, just won't persist */
-    }
-  }, [storageKey]);
-
-  function toggle(id: string) {
-    setDone((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      try {
-        localStorage.setItem(storageKey, JSON.stringify([...next]));
-      } catch {
-        /* same: persistence is best-effort */
-      }
-      return next;
-    });
-  }
-
-  const allIds = checklist.weeks.flatMap((w) => w.tasks.map((t) => t.id));
-  const doneCount = allIds.filter((id) => done.has(id)).length;
-  const pct = allIds.length ? Math.round((doneCount / allIds.length) * 100) : 0;
-
-  return (
-    <div className="card mb-6 p-5 sm:p-6">
-      <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-base font-semibold">Your 30-day plan</h3>
-        <span className="font-mono text-xs text-ink-500">
-          {doneCount} / {allIds.length} done
-        </span>
-      </div>
-      <div className="mb-5 h-1.5 overflow-hidden rounded-full bg-ink/[0.07]" role="progressbar"
-        aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label="Plan progress">
-        <div
-          className="h-full rounded-full bg-gradient-to-r from-accent to-accent-600 transition-[width] duration-500 ease-out"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-
-      <div className="grid gap-5 md:grid-cols-2">
-        {checklist.weeks.map((week) => (
-          <div key={week.title}>
-            <div className="mb-2">
-              <span className="label-mono">{week.title}</span>
-              <span className="ml-2 text-xs text-ink-500">{week.blurb}</span>
-            </div>
-            <ul className="space-y-1">
-              {week.tasks.map((t) => {
-                const on = done.has(t.id);
-                return (
-                  <li key={t.id}>
-                    <label className="flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-ink/[0.03]">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
-                        checked={on}
-                        onChange={() => toggle(t.id)}
-                      />
-                      <span className="min-w-0 text-sm">
-                        <span className={on ? "text-ink-300 line-through" : "text-ink"}>{t.label}</span>
-                        {t.detail && <span className="block truncate text-xs text-ink-300">{t.detail}</span>}
-                      </span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        ))}
-      </div>
-
-      {pct === 100 && (
-        <p className="step-in mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
-          That's everything — your business is set up to be the one AI recommends. 🎉
-        </p>
-      )}
-    </div>
-  );
-}
-
-function LaunchKitPanel({
+function PlanPanel({
   deliverables,
   loading,
   slowMode,
@@ -418,68 +672,88 @@ function LaunchKitPanel({
   onGenerate: () => void;
   onDownloadZip: () => void;
 }) {
+  const [filesOpen, setFilesOpen] = useState(false);
+
   if (!deliverables) {
     return (
       <div className="rounded-xl border border-dashed border-ink/15 p-10 text-center">
         <div className="mx-auto mb-4 h-10 w-10 rounded-lg border border-ink/10 bg-paper blueprint-grid" aria-hidden />
-        <h3 className="text-base font-semibold">Your launch kit</h3>
+        <h3 className="text-base font-semibold">Your step-by-step plan</h3>
         <p className="mx-auto mt-2 max-w-md text-sm text-ink-500">
-          A folder of ready-made files — your page list, content outlines for every page, and
-          copy-paste snippets. Hand it to whoever builds your website and they can start today.
+          A phased, do-it-in-order plan — quick wins first, each task with exactly what to do and a
+          ready-made prompt to do it. Work it right here, or download the files to hand off.
         </p>
         <button onClick={onGenerate} disabled={loading} className="btn-accent mt-5">
           {loading ? (
             <>
               <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-              {slowMode ? "Writing your kit with AI — this takes a while…" : "Preparing your kit…"}
+              {slowMode ? "Writing your plan with AI — this takes a while…" : "Preparing your plan…"}
             </>
           ) : (
             <>
-              Build my launch kit
+              Build my plan
               <ArrowRight />
             </>
           )}
         </button>
         <p className="mx-auto mt-3 max-w-sm text-xs text-ink-300">
           {slowMode
-            ? "AI personalization is on, so every page outline is custom-written — expect several minutes. Want it instantly? Turn off \"Personalize the wording with AI\" under Your plan and rebuild."
+            ? "AI personalization is on, so every page is custom-written — expect several minutes. Want it instantly? Turn off “Personalize the wording with AI” under Your goals and rebuild."
             : "Takes a few seconds."}
         </p>
       </div>
     );
   }
+
   return (
     <div>
-      {deliverables.checklist && deliverables.checklist.total > 0 && (
-        <PlanChecklistView checklist={deliverables.checklist} storageKey={storageKey} />
+      {deliverables.plan && deliverables.plan.total > 0 ? (
+        <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} />
+      ) : (
+        <p className="mb-4 text-sm text-ink-500">Your plan is ready — download the files below.</p>
       )}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <span className="text-sm text-ink-500">
-          <span className="font-mono text-ink">{deliverables.manifest.asset_count}</span> files, ready to share
-        </span>
-        <button onClick={onDownloadZip} className="btn-primary !py-2 text-[13px]">
-          ↓ Download everything (.zip)
+
+      <div className="mt-6 rounded-xl border border-ink/[0.08]">
+        <button
+          type="button"
+          onClick={() => setFilesOpen((o) => !o)}
+          aria-expanded={filesOpen}
+          className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm"
+        >
+          <span className="font-medium">
+            Prefer files? <span className="font-normal text-ink-500">{deliverables.manifest.asset_count} ready to download or hand off</span>
+          </span>
+          <span aria-hidden className="text-ink-300">{filesOpen ? "−" : "+"}</span>
         </button>
+        {filesOpen && (
+          <div className="step-in border-t border-ink/[0.06] p-4">
+            <div className="mb-3 flex justify-end">
+              <button onClick={onDownloadZip} className="btn-primary !py-2 text-[13px]">
+                ↓ Download everything (.zip)
+              </button>
+            </div>
+            <ul className="divide-y divide-ink/[0.06] overflow-hidden rounded-xl border border-ink/[0.08]">
+              {deliverables.assets.map((a, i) => (
+                <li
+                  key={a.path}
+                  className="step-in flex items-center justify-between gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-paper-200/40"
+                  style={{ animationDelay: `${Math.min(i, 10) * 40}ms` }}
+                >
+                  <span className="min-w-0">
+                    <span className="font-mono text-[13px]">{a.path}</span>
+                    <span className="label-mono ml-2 rounded bg-ink/[0.04] px-1.5 py-0.5 !tracking-[0.1em]">
+                      {KIND_LABEL[a.kind] ?? humanizeToken(a.kind)}
+                    </span>
+                  </span>
+                  <button onClick={() => downloadAsset(a)} className="btn-ghost shrink-0 !px-3 !py-1 text-xs">
+                    Download
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
-      <ul className="divide-y divide-ink/[0.06] overflow-hidden rounded-xl border border-ink/[0.08]">
-        {deliverables.assets.map((a, i) => (
-          <li
-            key={a.path}
-            className="step-in flex items-center justify-between gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-paper-200/40"
-            style={{ animationDelay: `${Math.min(i, 10) * 40}ms` }}
-          >
-            <span className="min-w-0">
-              <span className="font-mono text-[13px]">{a.path}</span>
-              <span className="label-mono ml-2 rounded bg-ink/[0.04] px-1.5 py-0.5 !tracking-[0.1em]">
-                {KIND_LABEL[a.kind] ?? humanizeToken(a.kind)}
-              </span>
-            </span>
-            <button onClick={() => downloadAsset(a)} className="btn-ghost shrink-0 !px-3 !py-1 text-xs">
-              Download
-            </button>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

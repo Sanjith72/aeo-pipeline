@@ -29,7 +29,7 @@ from ..reference.competitor_patterns import CompetitorPatterns
 from ..reference.framework import Framework, build_framework, load_framework
 from ..reference.framework_bootstrap import bootstrap_framework, framework_file_path
 from ..reference.generator import generate_blueprint
-from ..report.packager import build_asset_bundle, checklist_for
+from ..report.packager import build_asset_bundle, checklist_for, plan_for
 from . import jobs as jobs_mod
 from .jobs import JOBS
 
@@ -127,6 +127,17 @@ class CompetitorSuggestRequest(BaseModel):
     verify: bool = False  # live domain HEAD-checks are slow; the picker only needs names
 
 
+class EventRequest(BaseModel):
+    """One product-analytics event (Block F instrumentation). ``session_id`` is the
+    browser-minted, cookie-persisted id that DAU/return-rate are computed over."""
+
+    session_id: str
+    event_type: str
+    client_id: int | None = None
+    url: str | None = None
+    metadata: dict[str, Any] = {}
+
+
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 
@@ -220,6 +231,14 @@ def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
     )
     return {
         "manifest": bundle.manifest(),
+        # #10 — the prioritized plan as structured JSON: phased, quick-wins flagged, each
+        # task carrying current_state/action_required/how_to + AI-vs-human prompts. This
+        # is what the interactive in-app checklist renders.
+        "plan": plan_for(
+            blueprint=plan_result.blueprint, coverage=plan_result.coverage,
+            builder_mode=req.builder_mode, business=_business_dict(brief),
+        ),
+        # Legacy flat-weeks checklist kept for the zip fallback + back-compat.
         "checklist": checklist_for(
             blueprint=plan_result.blueprint, coverage=plan_result.coverage,
             builder_mode=req.builder_mode,
@@ -251,16 +270,43 @@ def deliverables_zip(req: DeliverablesRequest) -> Response:
 
 @app.post("/api/profile")
 async def profile(req: ProfileRequest) -> dict[str, Any]:
-    """Classify a LIVE site and return its SiteProfile (reuses the zero-DB dry-run path)."""
+    """Classify a LIVE site (reuses the zero-DB dry-run path) and BRANCH ON CRAWL QUALITY.
+
+    The URL-first intake (#1/#2/#3) leans on this: a content-rich/thin site returns its
+    SiteProfile with the crawl-derived ``industry`` + ``location`` (so the wizard prefills
+    instead of asking), while a dead/unreachable crawl returns ``route='dead'`` pointing at
+    the no-website brief path (``/api/plan``) — never a 502, so the flow always continues."""
+    from ..intelligence import DEAD, classify_intake
     from ..pipeline import Orchestrator
+    from ..settings import get_settings
 
     result = await Orchestrator().dry_run(req.domain, max_urls=req.max_urls, pages=0, use_llm=req.use_llm)
-    if result.get("profile") is None:
-        raise HTTPException(status_code=502, detail="could not profile the site")
+    intake = get_settings().intake
+    discovered = int(result.get("discovered") or 0)
+    # The live profile path doesn't fetch body text, so the gate is page-count based.
+    route = classify_intake(
+        discovered, None,
+        min_pages=intake.thin_site_min_pages, min_words=intake.thin_site_min_words,
+    )
+    prof = result.get("profile")
+    if prof is None or route == DEAD:
+        # Crawl found nothing usable → the no-website brief path is the right flow.
+        return {
+            "route": DEAD,
+            "profile": None,
+            "industry": None,
+            "location": None,
+            "discovered": discovered,
+            "source": result.get("source"),
+            "next": "/api/plan",
+        }
     return {
-        "profile": result["profile"],
+        "route": route,  # 'rich' | 'thin'
+        "profile": prof,
+        "industry": prof.get("industry"),
+        "location": prof.get("location"),
         "coverage": result["coverage"],
-        "discovered": result["discovered"],
+        "discovered": discovered,
         "source": result["source"],
     }
 
@@ -325,3 +371,36 @@ def audit_status(job_id: str) -> dict[str, Any]:
     if job is None:
         raise HTTPException(status_code=404, detail=f"no job {job_id}")
     return job.to_dict()
+
+
+@app.post("/api/events")
+def record_event(req: EventRequest) -> dict[str, Any]:
+    """Record one product-analytics event (Block F). Best-effort by design: analytics
+    must never break the user's flow, so a DB hiccup returns ``{"recorded": false}``
+    rather than 500ing. The frontend fires these fire-and-forget (see ``track``)."""
+    from ..logging import get_logger
+    from ..storage.repos import events as events_repo
+
+    sid = req.session_id.strip()
+    etype = req.event_type.strip()
+    if not sid or not etype:
+        raise HTTPException(status_code=422, detail="session_id and event_type are required")
+    try:
+        event_id = events_repo.record(
+            session_id=sid, event_type=etype,
+            client_id=req.client_id, url=req.url, metadata=req.metadata,
+        )
+    except Exception as exc:  # never break the flow over analytics
+        get_logger(__name__).warning("event_record_failed", event_type=etype, error=str(exc))
+        return {"recorded": False}
+    return {"recorded": True, "id": event_id}
+
+
+@app.get("/api/metrics")
+def metrics() -> dict[str, Any]:
+    """The retention dashboard (Block F): DAU series + return-rate + quick-win
+    completion + the recommendation-implementation rate (the real 'did it work?'
+    signal, joined from the Retention Engine's outcomes). Needs a live DB."""
+    from ..storage.repos import events as events_repo
+
+    return events_repo.metrics()

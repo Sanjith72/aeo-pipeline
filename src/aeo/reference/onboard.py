@@ -136,7 +136,7 @@ _KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 _-]*$")
 def _yaml_key(name: str) -> str:
     """Quote the entity key only when the bare form would need it (mirrors the
     quoting already present in entities.yaml, e.g. ``"XM Cyber"``, ``Securin``)."""
-    return name if _KEY_RE.match(name) else yaml.safe_dump(name).strip().rstrip("\n...").strip()
+    return name if _KEY_RE.match(name) else yaml.safe_dump(name).strip().removesuffix("...").strip()
 
 
 def _entity_block(name: str, *, canonical: str, aliases: list[str], domain: str | None, first_person: list[str]) -> str:

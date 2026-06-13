@@ -95,17 +95,62 @@ export interface PlanChecklist {
   total: number;
 }
 
+// The structured, phased plan (#8/#9/#4/#10) from aeo.report.packager.build_plan.
+// Page tasks carry implementation prompts; visibility tasks (vis:*) carry none.
+export interface PlanTask {
+  id: string;
+  label: string;
+  detail?: string;
+  phase: "week_1" | "week_2_4" | "later";
+  quick_win: boolean;
+  effort: "low" | "medium" | "high";
+  priority?: number;
+  current_state: string;
+  action_required: string;
+  how_to: string;
+  prompts?: { ai: string; human: string };
+}
+
+export interface PlanPhase {
+  key: "week_1" | "week_2_4" | "later";
+  title: string;
+  blurb: string;
+  tasks: PlanTask[];
+}
+
+export interface StructuredPlan {
+  phases: PlanPhase[];
+  quick_win_ids: string[];
+  quick_win_count: number;
+  total: number;
+}
+
 export interface DeliverablesResponse {
   manifest: { bundle: string; asset_count: number; assets: { path: string; kind: string }[] };
-  checklist?: PlanChecklist;
+  plan?: StructuredPlan; // #10 — the interactive in-app plan
+  checklist?: PlanChecklist; // legacy flat-weeks list (zip fallback / back-compat)
   assets: BundleAsset[];
 }
 
+// /api/profile now branches on crawl quality (Block B #2/#3): a rich/thin site returns
+// its profile + crawl-derived industry/location for the wizard to prefill; a dead crawl
+// returns route='dead' (+ next) pointing at the no-website brief path.
 export interface ProfileResponse {
-  profile: SiteProfile;
-  coverage: { pct: number; total_nodes: number; missing: number } & Record<string, unknown>;
+  route: "rich" | "thin" | "dead" | string;
+  profile: SiteProfile | null;
+  industry: string | null;
+  location: string | null;
+  coverage?: { pct: number; total_nodes: number; missing: number } & Record<string, unknown>;
   discovered: number;
   source: string;
+  next?: string;
+}
+
+// One per-stage progress event the deep audit streams (#7) — see orchestrator.RUN_STAGES.
+export interface AuditStage {
+  stage: string;
+  counts: Record<string, number | string | null>;
+  at: number;
 }
 
 export interface AuditJob {
@@ -113,6 +158,7 @@ export interface AuditJob {
   kind: string;
   status: "queued" | "running" | "succeeded" | "failed" | string;
   progress: string;
+  stages: AuditStage[];
   result: { run?: { run_id?: number }; analysis?: Record<string, number>; site_report_id?: number } | null;
   error: string | null;
 }

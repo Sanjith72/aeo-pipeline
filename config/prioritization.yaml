@@ -6,6 +6,18 @@
 # How many top-ranked URLs feed the per-page pipeline.
 top_n: 30
 
+# Plan phasing (#8/#9): the prioritized to-build/fix list is split into phases so the
+# in-app checklist shows essentials first instead of a flat 30-day dump. Tasks are
+# already priority-ordered; the top `week_1_top_n` are Week-1 essentials, the next up
+# to `week_2_4_top_n` (cumulative) are Weeks 2–4, the rest are "later". A task is a
+# quick win (#9) when it's at most `quick_win_max_effort` effort AND its priority is at
+# least `quick_win_min_priority` — low lift, high impact, surfaced before day 30.
+phasing:
+  week_1_top_n: 3
+  week_2_4_top_n: 10
+  quick_win_max_effort: low      # low | medium | high
+  quick_win_min_priority: 0.6
+
 # Pages with no inbound internal links still rank by base_weight (floor avoids ×0).
 min_traffic_signal: 1.0
 

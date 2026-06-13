@@ -242,10 +242,16 @@ class TestAnalyzeRun:
         bundles = {1: make_bundle(qa_blocks={"pair_count": 0})}
         self._patch(monkeypatch, pages, lambda pid: bundles.get(pid))
 
-        summary = Orchestrator(llm=DISABLED).analyze_run(7)
+        events: list[tuple[str, dict]] = []
+        summary = Orchestrator(llm=DISABLED).analyze_run(
+            7, progress=lambda stage, counts: events.append((stage, counts))
+        )
         assert summary.total == 1
         assert summary.analyzed == 1
         assert summary.failed == 0
+        # #7: analyze_run emits a stage-end progress event with counts
+        assert events and events[-1][0] == "analyze"
+        assert events[-1][1]["analyzed"] == 1
 
     def test_isolates_per_page_failure(self, monkeypatch):
         from aeo.pipeline import Orchestrator

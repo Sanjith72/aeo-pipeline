@@ -51,6 +51,26 @@ def test_deliverables_returns_inline_bundle() -> None:
     assert sum(1 for a in body["assets"] if a["kind"] == "page_spec") == 3
 
 
+def test_deliverables_returns_structured_phased_plan() -> None:
+    # #10: the prioritized plan as structured JSON — phased, quick-wins flagged, each
+    # page task with the three fields + AI-vs-human prompts.
+    r = client.post(
+        "/api/deliverables",
+        json={"name": "Acme", "domain": "acme.com", "use_llm": False, "draft_limit": 2, "builder_mode": "ai"},
+    )
+    assert r.status_code == 200
+    plan = r.json()["plan"]
+    assert plan["total"] > 0
+    assert any(p["key"] == "week_1" for p in plan["phases"])
+    assert plan["quick_win_count"] >= 1  # at least the GBP visibility win
+    page_tasks = [t for p in plan["phases"] for t in p["tasks"] if t["id"].startswith("page:")]
+    assert page_tasks
+    assert all(t["prompts"]["ai"] and t["prompts"]["human"] for t in page_tasks)
+    assert all(t["current_state"] and t["action_required"] and t["how_to"] for t in page_tasks)
+    # legacy checklist kept as the zip fallback
+    assert r.json()["checklist"]["total"] > 0
+
+
 def test_deliverables_zip_returns_a_zip() -> None:
     r = client.post("/api/deliverables.zip", json={"name": "Acme", "domain": "acme.com", "draft_limit": 2})
     assert r.status_code == 200
@@ -71,7 +91,10 @@ def test_audit_job_lifecycle_with_fake_runner(monkeypatch) -> None:
 
     from aeo.api import jobs as jobs_mod
 
-    async def fake_runner(domain: str, name: str):
+    async def fake_runner(domain: str, name: str, progress=None):
+        if progress is not None:  # drive a couple of stage updates through the job
+            progress("discover", {"discovered": 5})
+            progress("report", {"site_report_id": 1})
         return {"run": {"run_id": 7}, "domain": domain, "name": name}
 
     monkeypatch.setattr(jobs_mod, "default_audit_runner", fake_runner)
@@ -88,10 +111,62 @@ def test_audit_job_lifecycle_with_fake_runner(monkeypatch) -> None:
         time.sleep(0.02)
     assert body["status"] == "succeeded"
     assert body["result"]["run"]["run_id"] == 7
+    # #7: the per-stage progress the runner emitted is polled back on the job
+    assert [s["stage"] for s in body["stages"]] == ["discover", "report"]
 
 
 def test_audit_status_404() -> None:
     assert client.get("/api/audit/does-not-exist").status_code == 404
+
+
+def test_event_records_via_repo(monkeypatch) -> None:
+    # Block F: POST /api/events delegates to events_repo.record (monkeypatched → no DB).
+    from aeo.storage.repos import events as events_repo
+
+    captured: dict = {}
+
+    def fake_record(session_id, event_type, *, client_id=None, url=None, metadata=None):
+        captured.update(session_id=session_id, event_type=event_type, metadata=metadata)
+        return 123
+
+    monkeypatch.setattr(events_repo, "record", fake_record)
+    r = client.post(
+        "/api/events",
+        json={"session_id": "s1", "event_type": "plan_viewed", "metadata": {"quick_win_ids": ["a"]}},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"recorded": True, "id": 123}
+    assert captured == {"session_id": "s1", "event_type": "plan_viewed", "metadata": {"quick_win_ids": ["a"]}}
+
+
+def test_event_is_best_effort_when_db_down(monkeypatch) -> None:
+    # Analytics must never break the user's flow — a record failure is swallowed (200).
+    from aeo.storage.repos import events as events_repo
+
+    def boom(*a, **k):
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(events_repo, "record", boom)
+    r = client.post("/api/events", json={"session_id": "s1", "event_type": "session_start"})
+    assert r.status_code == 200
+    assert r.json() == {"recorded": False}
+
+
+def test_event_requires_session_and_type() -> None:
+    # blank session_id / event_type → 422 (pydantic accepts the strings, the handler rejects)
+    assert client.post("/api/events", json={"session_id": " ", "event_type": "x"}).status_code == 422
+    assert client.post("/api/events", json={"session_id": "s", "event_type": " "}).status_code == 422
+
+
+def test_metrics_returns_repo_payload(monkeypatch) -> None:
+    from aeo.storage.repos import events as events_repo
+
+    fake = {"dau": [], "return_rate": 0.0, "quick_win_completion_rate": 0.0,
+            "recommendation_implementation_rate": 0.0}
+    monkeypatch.setattr(events_repo, "metrics", lambda *a, **k: fake)
+    r = client.get("/api/metrics")
+    assert r.status_code == 200
+    assert r.json() == fake
 
 
 def test_auth_open_when_no_key_configured() -> None:
@@ -189,6 +264,45 @@ def test_deliverables_builder_mode_shapes_the_kit() -> None:
     assert any(t["id"] == "vis:gbp" for w in checklist["weeks"] for t in w["tasks"])
 
     assert client.post("/api/deliverables", json={**req, "builder_mode": "nope"}).status_code == 422
+
+
+def test_profile_routes_dead_crawl_to_no_website(monkeypatch) -> None:
+    # #3: a crawl that finds nothing must NOT 502 — it routes to the no-website path so
+    # the URL-first flow always continues.
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+        return {"profile": None, "coverage": {}, "discovered": 0, "source": "none"}
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    r = client.post("/api/profile", json={"domain": "dead.example"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["route"] == "dead"
+    assert body["next"] == "/api/plan"
+    assert body["industry"] is None and body["location"] is None
+
+
+def test_profile_returns_inferred_industry_and_location(monkeypatch) -> None:
+    # #2: a content-rich crawl returns the derived industry/location so the wizard
+    # prefills them instead of asking.
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+        return {
+            "profile": {"industry": "Software / SaaS", "location": None, "scenario": "small_site"},
+            "coverage": {"pct": 50.0},
+            "discovered": 12,
+            "source": "sitemap",
+        }
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    r = client.post("/api/profile", json={"domain": "acme.com"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["route"] == "rich"
+    assert body["industry"] == "Software / SaaS"
+    assert body["location"] is None
 
 
 def test_cors_allows_the_web_ui_origin() -> None:

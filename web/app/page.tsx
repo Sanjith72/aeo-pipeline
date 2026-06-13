@@ -1,9 +1,10 @@
 "use client";
 
-// AEO Studio — five quick questions, then a tabbed results dashboard. Competitors are
-// recommended (names only, URLs optional), known answers are dropdowns, and all copy
-// is owner language. Marketing chrome lives in components/chrome.tsx, the results
-// experience in components/results.tsx.
+// AEO Studio — URL-first. The website is the only thing you must enter; a fast crawl
+// derives your industry and location so you edit prefilled answers instead of typing
+// them. Goals come after that crawl, then a comprehensive site analysis (with live
+// progress) produces a phased, interactive plan. Chrome lives in components/chrome.tsx,
+// the results experience in components/results.tsx.
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
@@ -16,13 +17,11 @@ import type {
   ProfileResponse,
   SiteProfile,
 } from "@/lib/types";
-import { BUILDER_MODES, BUSINESS_SIZES, GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
-import type { BuilderMode } from "@/lib/options";
+import { GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
 import { Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/components/chrome";
-import { ResultsView, triggerDownload } from "@/components/results";
+import { AnalysisProgress, ResultsView, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { Combobox } from "@/components/ui/Combobox";
-import { Select } from "@/components/ui/Select";
 import { Check } from "@/components/ui/icons";
 
 function splitList(value: string): string[] {
@@ -32,38 +31,53 @@ function splitList(value: string): string[] {
     .filter(Boolean);
 }
 
+// A friendly default business name from a domain ("harbor-dental.com" → "Harbor Dental"),
+// so the owner edits a sensible value rather than starting from an empty field.
+function deriveName(domain: string): string {
+  const host = domain
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/^www\./i, "")
+    .split(/[/?#]/)[0];
+  const root = host.split(".")[0] || host;
+  return root
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 const STEPS = [
-  { label: "Your business", blurb: "The basics — so the plan fits you." },
-  { label: "Your goals", blurb: "What would success look like?" },
-  { label: "Your website", blurb: "Already online? We'll take a look." },
+  { label: "Your website", blurb: "Pop in your address — we'll take a look." },
+  { label: "About you", blurb: "We filled this in from your site. Fix anything that's off." },
   { label: "Competitors", blurb: "We found some likely ones — just tick the right names." },
-  { label: "Your plan", blurb: "One last look, then we build it." },
+  { label: "Your goals", blurb: "What would success look like? Then we'll build your plan." },
 ] as const;
 
 export default function Page() {
   const [step, setStep] = useState(0);
   const [view, setView] = useState<"wizard" | "results">("wizard");
 
-  // the brief
+  // the brief — the website is the only required first input (#1)
+  const [domain, setDomain] = useState("");
+  const [hasSite, setHasSite] = useState(true);
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
   const [location, setLocation] = useState("");
-  const [sizeBand, setSizeBand] = useState("");
   const [servicesText, setServicesText] = useState("");
+  const [competitors, setCompetitors] = useState<CompetitorPick[]>([]);
   const [goals, setGoals] = useState<string[]>([]);
   const [challenges, setChallenges] = useState("");
-  const [hasSite, setHasSite] = useState(false);
-  const [liveDepth, setLiveDepth] = useState<"none" | "quick" | "deep">("none");
-  const [domain, setDomain] = useState("");
-  const [competitors, setCompetitors] = useState<CompetitorPick[]>([]);
   const [useLlm, setUseLlm] = useState(true);
-  const [builderMode, setBuilderMode] = useState<BuilderMode>("diy");
+
+  // crawl-derived intake (#2/#3): the fast profile that runs when leaving step 0
+  const [prefilling, setPrefilling] = useState(false);
+  const [profileResult, setProfileResult] = useState<ProfileResponse | null>(null);
 
   // results
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<BriefPlan | null>(null);
-  const [profileResult, setProfileResult] = useState<ProfileResponse | null>(null);
   const [deliverables, setDeliverables] = useState<DeliverablesResponse | null>(null);
   const [delivLoading, setDelivLoading] = useState(false);
   const [auditJob, setAuditJob] = useState<AuditJob | null>(null);
@@ -71,10 +85,15 @@ export default function Page() {
 
   const studioRef = useRef<HTMLElement>(null);
 
-  const quickMode = hasSite && liveDepth === "quick" && domain.trim().length > 0;
-  const deepMode = hasSite && liveDepth === "deep" && domain.trim().length > 0;
-  const profile: SiteProfile | null = plan?.profile ?? profileResult?.profile ?? deepProfile;
-  const analyzed = profile !== null || auditJob?.status === "succeeded";
+  // A dead crawl (or no site at all) routes to the no-website brief path (#3).
+  const noSite = !hasSite || profileResult?.route === "dead";
+  const profile: SiteProfile | null = deepProfile ?? profileResult?.profile ?? plan?.profile ?? null;
+  const analyzed = profile !== null || plan !== null || auditJob?.status === "succeeded";
+
+  // fire session_start / return_visit once on load (Block F instrumentation)
+  useEffect(() => {
+    api.trackVisit();
+  }, []);
 
   // moving between steps always shows the top of the new step
   useEffect(() => {
@@ -85,7 +104,7 @@ export default function Page() {
 
   function briefFromForm(): BriefRequest {
     return {
-      name: name.trim(),
+      name: name.trim() || deriveName(domain) || "My business",
       domain: domain.trim() || undefined,
       category: category.trim() || undefined,
       location: location.trim() || undefined,
@@ -100,22 +119,55 @@ export default function Page() {
     setGoals((prev) => (prev.includes(goal) ? prev.filter((g) => g !== goal) : [...prev, goal]));
   }
 
-  async function runAnalysis() {
+  // Leaving step 0: take a fast look at the site so steps 1–3 come prefilled (#2). The
+  // profile endpoint never 502s — a dead crawl returns route='dead' and we fall through
+  // to manual entry / the no-website path (#3).
+  async function handleWebsiteNext() {
+    api.track("wizard_step_completed", { step: 0 });
+    if (!hasSite || !domain.trim()) {
+      setStep(1);
+      return;
+    }
+    setPrefilling(true);
+    setError(null);
+    try {
+      const res = await api.profile({ domain: domain.trim(), use_llm: useLlm });
+      setProfileResult(res);
+      if (res.industry && !category.trim()) setCategory(res.industry);
+      if (res.location && !location.trim()) setLocation(res.location);
+      if (!name.trim()) setName(deriveName(domain));
+    } catch (err) {
+      // network failure only — let the user continue with manual entry
+      setError(err instanceof Error ? err.message : String(err));
+      if (!name.trim()) setName(deriveName(domain));
+    } finally {
+      setPrefilling(false);
+      setStep(1);
+    }
+  }
+
+  function advance(fromStep: number) {
+    api.track("wizard_step_completed", { step: fromStep });
+    setStep((s) => s + 1);
+  }
+
+  // Final action: run the comprehensive analysis (always — no mode to choose, #6), then
+  // show results. A site gets the full page-by-page audit with live progress (#7); a
+  // no-website brief gets the instant blueprint.
+  async function createPlan() {
+    api.track("wizard_step_completed", { step: 3 });
     setError(null);
     setPlan(null);
-    setProfileResult(null);
     setDeliverables(null);
     setAuditJob(null);
     setDeepProfile(null);
     setLoading(true);
     try {
-      if (deepMode) {
-        const ok = await runDeepAudit();
-        if (!ok) return;
-      } else if (quickMode) {
-        setProfileResult(await api.profile({ domain: domain.trim(), use_llm: useLlm }));
-      } else {
+      if (noSite) {
         setPlan(await api.plan(briefFromForm()));
+      } else {
+        const ok = await runDeepAudit();
+        if (!ok) return; // audit failed — error already surfaced
       }
       setView("results");
     } catch (err) {
@@ -126,19 +178,23 @@ export default function Page() {
   }
 
   async function runDeepAudit(): Promise<boolean> {
-    const { job_id } = await api.startAudit({ domain: domain.trim(), name: name.trim() || domain.trim() });
+    const { job_id } = await api.startAudit({ domain: domain.trim(), name: name.trim() || deriveName(domain) });
     let job = await api.auditStatus(job_id);
     setAuditJob(job);
     let tries = 0;
-    while ((job.status === "queued" || job.status === "running") && tries < 150) {
+    while ((job.status === "queued" || job.status === "running") && tries < 450) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       job = await api.auditStatus(job_id);
       setAuditJob(job);
       tries += 1;
     }
     if (job.status === "failed") {
-      setError(job.error || "We couldn't finish reviewing your site. Please try again.");
-      return false;
+      // fall back to the fast profile we already have rather than dead-ending
+      if (!profileResult?.profile) {
+        setError(job.error || "We couldn't finish reviewing your site. Please try again.");
+        return false;
+      }
+      return true;
     }
     const runId = job.result?.run?.run_id;
     if (typeof runId === "number") {
@@ -156,9 +212,7 @@ export default function Page() {
     setDelivLoading(true);
     setError(null);
     try {
-      setDeliverables(
-        await api.deliverables({ ...briefFromForm(), draft_limit: 10, builder_mode: builderMode }),
-      );
+      setDeliverables(await api.deliverables({ ...briefFromForm(), draft_limit: 10 }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -185,11 +239,12 @@ export default function Page() {
   }
 
   const nextBlocker: string | null = (() => {
-    if (step === 0 && !name.trim()) return "Add your business name to continue";
-    if (step === 2 && hasSite && liveDepth !== "none" && !domain.trim())
-      return 'Add your website address, or pick "Just plan my ideal website"';
+    if (step === 0 && hasSite && !domain.trim()) return "Add your website address, or pick “I don't have a site yet”";
+    if (step === 1 && !name.trim()) return "Add your business name to continue";
     return null;
   })();
+
+  const isLast = step === STEPS.length - 1;
 
   return (
     <>
@@ -201,12 +256,12 @@ export default function Page() {
         <div className="mb-8 animate-fade-up">
           <SheetTag no="03">Your plan builder</SheetTag>
           <h2 className="mt-2 text-2xl font-semibold sm:text-3xl">
-            {view === "results" ? "Your results" : "Five questions. One clear plan."}
+            {view === "results" ? "Your results" : "Start with your website. We'll do the rest."}
           </h2>
           {view === "wizard" && (
             <p className="mt-1 max-w-2xl text-ink-500">
-              Answer a few quick questions and get a personalized, step-by-step plan to make your
-              business the one AI recommends.
+              Enter your address and we'll figure out your industry, your gaps, and a step-by-step plan
+              to make your business the one AI recommends.
             </p>
           )}
         </div>
@@ -222,7 +277,6 @@ export default function Page() {
               deliverables={deliverables}
               delivLoading={delivLoading}
               aiPersonalization={useLlm}
-              builderMode={builderMode}
               onGenerateDeliverables={generateDeliverables}
               onDownloadZip={downloadZip}
               onEdit={() => setView("wizard")}
@@ -240,45 +294,97 @@ export default function Page() {
 
                 <div key={step} className="step-in">
                   {step === 0 && (
-                    <div className="grid gap-5 sm:grid-cols-2">
-                      <Field label="Business name" required>
+                    <div className="space-y-6">
+                      <div>
+                        <span className="field-label">Do you have a website?</span>
+                        <div className="inline-flex rounded-xl border border-ink/10 bg-paper-200/60 p-1">
+                          {[
+                            { v: true, label: "Yes" },
+                            { v: false, label: "Not yet" },
+                          ].map(({ v, label }) => (
+                            <button
+                              key={label}
+                              type="button"
+                              aria-pressed={hasSite === v}
+                              onClick={() => setHasSite(v)}
+                              className={`rounded-lg px-5 py-2 text-sm transition-all duration-200 ${
+                                hasSite === v ? "bg-paper-100 font-medium text-ink shadow-card" : "text-ink-300 hover:text-ink-500"
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <Field
+                        label={hasSite ? "Your website address" : "Got a domain name picked out?"}
+                        hint={hasSite ? undefined : "optional"}
+                        required={hasSite}
+                      >
                         <input
                           className="input"
-                          value={name}
-                          onChange={(e) => setName(e.target.value)}
-                          placeholder="e.g. Harbor Dental"
-                          autoComplete="organization"
-                          aria-label="Business name"
+                          value={domain}
+                          onChange={(e) => setDomain(e.target.value)}
+                          placeholder="yourbusiness.com"
+                          inputMode="url"
+                          autoFocus
+                          aria-label="Website address"
                         />
                       </Field>
-                      <Field label="Industry">
-                        <Combobox
-                          value={category}
-                          onChange={setCategory}
-                          options={INDUSTRIES}
-                          placeholder="Choose or type your own…"
-                          ariaLabel="Industry"
-                        />
-                      </Field>
-                      <Field label="Location" hint="optional">
-                        <Combobox
-                          value={location}
-                          onChange={setLocation}
-                          options={LOCATIONS}
-                          placeholder="City, region, or online only…"
-                          ariaLabel="Location"
-                        />
-                      </Field>
-                      <Field label="Team size" hint="optional">
-                        <Select
-                          value={sizeBand}
-                          onChange={setSizeBand}
-                          options={BUSINESS_SIZES}
-                          placeholder="How big is your team?"
-                          ariaLabel="Team size"
-                        />
-                      </Field>
-                      <div className="sm:col-span-2">
+
+                      <p className="text-xs text-ink-300">
+                        {hasSite
+                          ? "We take a quick look so the next steps come pre-filled — usually a few seconds."
+                          : "No website yet? No problem — we'll plan your ideal one from scratch."}
+                      </p>
+                    </div>
+                  )}
+
+                  {step === 1 && (
+                    <div className="space-y-5">
+                      {profileResult && profileResult.route !== "dead" && (
+                        <p className="step-in rounded-lg border border-emerald-500/25 bg-emerald-500/[0.08] px-3.5 py-2.5 text-sm text-emerald-300">
+                          <Check className="mr-1.5 inline" width={13} height={13} />
+                          We looked at <span className="font-mono">{domain.trim()}</span> and filled in what we
+                          could. Edit anything below.
+                        </p>
+                      )}
+                      {noSite && hasSite && (
+                        <p className="step-in rounded-lg border border-amber-500/25 bg-amber-500/[0.08] px-3.5 py-2.5 text-sm text-amber-200">
+                          We couldn't read much from that address, so we'll plan from your answers. Fill in
+                          the basics below.
+                        </p>
+                      )}
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        <Field label="Business name" required>
+                          <input
+                            className="input"
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            placeholder="e.g. Harbor Dental"
+                            autoComplete="organization"
+                            aria-label="Business name"
+                          />
+                        </Field>
+                        <Field label="Industry">
+                          <Combobox
+                            value={category}
+                            onChange={setCategory}
+                            options={INDUSTRIES}
+                            placeholder="Choose or type your own…"
+                            ariaLabel="Industry"
+                          />
+                        </Field>
+                        <Field label="Location" hint="optional">
+                          <Combobox
+                            value={location}
+                            onChange={setLocation}
+                            options={LOCATIONS}
+                            placeholder="City, region, or online only…"
+                            ariaLabel="Location"
+                          />
+                        </Field>
                         <Field label="What do you offer?" hint="optional — separate with commas">
                           <input
                             className="input"
@@ -292,7 +398,18 @@ export default function Page() {
                     </div>
                   )}
 
-                  {step === 1 && (
+                  {step === 2 && (
+                    <CompetitorPicker
+                      businessName={name}
+                      category={category}
+                      location={location}
+                      domain={domain}
+                      selected={competitors}
+                      onChange={setCompetitors}
+                    />
+                  )}
+
+                  {step === 3 && (
                     <div className="space-y-6">
                       <div className="grid gap-2.5 sm:grid-cols-2">
                         {GOAL_OPTIONS.map((g, i) => {
@@ -321,6 +438,7 @@ export default function Page() {
                           );
                         })}
                       </div>
+
                       <Field label="Anything frustrating you right now?" hint="optional">
                         <textarea
                           className="input h-20 resize-none"
@@ -330,148 +448,6 @@ export default function Page() {
                           aria-label="Anything frustrating you right now"
                         />
                       </Field>
-                    </div>
-                  )}
-
-                  {step === 2 && (
-                    <div className="space-y-6">
-                      <div>
-                        <span className="field-label">Do you have a website?</span>
-                        <div className="inline-flex rounded-xl border border-ink/10 bg-paper-200/60 p-1">
-                          {[
-                            { v: true, label: "Yes" },
-                            { v: false, label: "Not yet" },
-                          ].map(({ v, label }) => (
-                            <button
-                              key={label}
-                              type="button"
-                              aria-pressed={hasSite === v}
-                              onClick={() => {
-                                setHasSite(v);
-                                if (!v) setLiveDepth("none");
-                              }}
-                              className={`rounded-lg px-5 py-2 text-sm transition-all duration-200 ${
-                                hasSite === v ? "bg-paper-100 font-medium text-ink shadow-card" : "text-ink-300 hover:text-ink-500"
-                              }`}
-                            >
-                              {label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <Field label={hasSite ? "Your website address" : "Got a domain name picked out?"} hint={hasSite ? undefined : "optional"}>
-                        <input
-                          className="input"
-                          value={domain}
-                          onChange={(e) => setDomain(e.target.value)}
-                          placeholder="yourbusiness.com"
-                          inputMode="url"
-                          aria-label="Website address"
-                        />
-                      </Field>
-
-                      {hasSite && (
-                        <fieldset className="space-y-2.5" role="radiogroup" aria-label="How deep should we look">
-                          <legend className="field-label">How deep should we look?</legend>
-                          <DepthOption
-                            value="none"
-                            current={liveDepth}
-                            onPick={setLiveDepth}
-                            title="Just plan my ideal website"
-                            detail="Skip the check-up — build the plan from your answers alone."
-                            badge="Instant"
-                          />
-                          <DepthOption
-                            value="quick"
-                            current={liveDepth}
-                            onPick={setLiveDepth}
-                            title="Quick look at my site"
-                            detail="A fast scan so the plan reflects what you already have."
-                            badge="~1 min"
-                          />
-                          <DepthOption
-                            value="deep"
-                            current={liveDepth}
-                            onPick={setLiveDepth}
-                            title="Full website check-up"
-                            detail="Page-by-page review with scores — the most accurate plan."
-                            badge="5–15 min"
-                          />
-                        </fieldset>
-                      )}
-                    </div>
-                  )}
-
-                  {step === 3 && (
-                    <CompetitorPicker
-                      businessName={name}
-                      category={category}
-                      location={location}
-                      domain={domain}
-                      selected={competitors}
-                      onChange={setCompetitors}
-                    />
-                  )}
-
-                  {step === 4 && (
-                    <div className="space-y-6">
-                      <ReviewSummary
-                        rows={[
-                          {
-                            label: "Business",
-                            value: [name.trim(), category.trim(), location.trim()].filter(Boolean).join(" · ") || "—",
-                            jump: 0,
-                          },
-                          { label: "Goals", value: goals.join(", ") || "Improve AI visibility", jump: 1 },
-                          {
-                            label: "Website",
-                            value: !hasSite
-                              ? "Planning a new one"
-                              : `${domain.trim() || "—"}${
-                                  liveDepth === "deep" ? " · full check-up" : liveDepth === "quick" ? " · quick look" : ""
-                                }`,
-                            jump: 2,
-                          },
-                          {
-                            label: "Competitors",
-                            value: competitors.map((c) => c.name).join(", ") || "None — that's fine",
-                            jump: 3,
-                          },
-                        ]}
-                        onJump={setStep}
-                      />
-
-                      <div>
-                        <span className="field-label">Who's building your website?</span>
-                        <div className="grid gap-2.5 sm:grid-cols-2" role="radiogroup" aria-label="Who's building your website">
-                          {BUILDER_MODES.map((m, i) => {
-                            const on = builderMode === m.value;
-                            return (
-                              <button
-                                key={m.value}
-                                type="button"
-                                role="radio"
-                                aria-checked={on}
-                                onClick={() => {
-                                  setBuilderMode(m.value);
-                                  if (deliverables) setDeliverables(null); // a new audience needs a new kit
-                                }}
-                                className={`option-card !items-start ${on ? "option-card-on" : "option-card-off"} step-in`}
-                                style={{ animationDelay: `${i * 50}ms` }}
-                              >
-                                <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${on ? "border-accent" : "border-ink/30"}`}>
-                                  {on && <span className="h-2 w-2 animate-pop rounded-full bg-accent" />}
-                                </span>
-                                <span>
-                                  <span className="block font-medium text-ink">{m.label}</span>
-                                  <span className="mt-0.5 block text-xs leading-relaxed text-ink-300">{m.hint}</span>
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
 
                       <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-ink/10 bg-paper-200/50 px-4 py-3.5 text-sm">
                         <input
@@ -487,15 +463,11 @@ export default function Page() {
                       </label>
 
                       <div>
-                        <button
-                          onClick={runAnalysis}
-                          disabled={loading || !name.trim()}
-                          className="btn-accent !px-6 !py-3 text-[15px]"
-                        >
+                        <button onClick={createPlan} disabled={loading} className="btn-accent !px-6 !py-3 text-[15px]">
                           {loading ? (
                             <>
                               <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                              {deepMode ? "Reviewing your website…" : "Building your plan…"}
+                              {noSite ? "Building your plan…" : "Reviewing your website…"}
                             </>
                           ) : analyzed ? (
                             "Rebuild my plan"
@@ -505,18 +477,14 @@ export default function Page() {
                         </button>
                         {!loading && (
                           <p className="mt-2 text-xs text-ink-300">
-                            {!name.trim()
-                              ? "Add your business name in step 1 first."
-                              : deepMode
-                                ? "The full check-up usually takes 5–15 minutes — you can leave this tab open."
-                                : "Usually under a minute."}
+                            {noSite
+                              ? "Usually under a minute."
+                              : "We review your site page by page — usually 5–15 minutes. You'll see progress as it goes, and you can leave this tab open."}
                           </p>
                         )}
                       </div>
 
-                      {auditJob && (auditJob.status === "queued" || auditJob.status === "running") && (
-                        <AuditProgress job={auditJob} />
-                      )}
+                      {loading && !noSite && auditJob && <AnalysisProgress job={auditJob} />}
                       {analyzed && !loading && (
                         <button onClick={() => setView("results")} className="btn-ghost text-[13px]">
                           View my results →
@@ -534,15 +502,24 @@ export default function Page() {
                 <span className="label-mono">
                   {String(step + 1).padStart(2, "0")} / {STEPS.length}
                 </span>
-                {step < STEPS.length - 1 ? (
+                {!isLast ? (
                   <div className="text-right">
                     <button
-                      onClick={() => setStep((s) => s + 1)}
-                      disabled={nextBlocker !== null}
+                      onClick={() => (step === 0 ? handleWebsiteNext() : advance(step))}
+                      disabled={nextBlocker !== null || prefilling}
                       className="btn-primary group"
                     >
-                      Next
-                      <span aria-hidden className="transition-transform duration-200 group-hover:translate-x-0.5">→</span>
+                      {prefilling ? (
+                        <>
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink/30 border-t-ink" />
+                          Taking a look…
+                        </>
+                      ) : (
+                        <>
+                          Next
+                          <span aria-hidden className="transition-transform duration-200 group-hover:translate-x-0.5">→</span>
+                        </>
+                      )}
                     </button>
                     {nextBlocker && <p className="mt-1.5 text-xs text-ink-300">{nextBlocker}</p>}
                   </div>
@@ -619,8 +596,8 @@ function StepHeader({ index }: { index: number }) {
 }
 
 // Deliberately a <div>, not a <label>: several fields wrap composite widgets
-// (Select/Combobox popovers), and a wrapping label re-dispatches option clicks to the
-// inner control. Inputs carry explicit aria-labels instead.
+// (Combobox popovers), and a wrapping label re-dispatches option clicks to the inner
+// control. Inputs carry explicit aria-labels instead.
 function Field({
   label,
   hint,
@@ -640,88 +617,6 @@ function Field({
         {hint && <span className="ml-1.5 normal-case tracking-normal text-ink-300">({hint})</span>}
       </span>
       {children}
-    </div>
-  );
-}
-
-function DepthOption({
-  value,
-  current,
-  onPick,
-  title,
-  detail,
-  badge,
-}: {
-  value: "none" | "quick" | "deep";
-  current: string;
-  onPick: (v: "none" | "quick" | "deep") => void;
-  title: string;
-  detail: string;
-  badge: string;
-}) {
-  const on = current === value;
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={on}
-      onClick={() => onPick(value)}
-      className={`option-card !items-start justify-between ${on ? "option-card-on" : "option-card-off"}`}
-    >
-      <span className="flex items-start gap-3">
-        <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${on ? "border-accent" : "border-ink/30"}`}>
-          {on && <span className="h-2 w-2 animate-pop rounded-full bg-accent" />}
-        </span>
-        <span>
-          <span className={`block font-medium ${on ? "text-ink" : ""}`}>{title}</span>
-          <span className="mt-0.5 block text-xs leading-relaxed text-ink-300">{detail}</span>
-        </span>
-      </span>
-      <span className="label-mono shrink-0">{badge}</span>
-    </button>
-  );
-}
-
-function ReviewSummary({
-  rows,
-  onJump,
-}: {
-  rows: { label: string; value: string; jump: number }[];
-  onJump: (step: number) => void;
-}) {
-  return (
-    <dl className="divide-y divide-ink/[0.06] overflow-hidden rounded-xl border border-ink/[0.08]">
-      {rows.map((r, i) => (
-        <div key={r.label} className="step-in flex items-center gap-4 px-4 py-3" style={{ animationDelay: `${i * 60}ms` }}>
-          <dt className="label-mono w-24 shrink-0">{r.label}</dt>
-          <dd className="min-w-0 flex-1 truncate text-sm text-ink">{r.value}</dd>
-          <button
-            type="button"
-            onClick={() => onJump(r.jump)}
-            className="shrink-0 text-xs text-ink-300 underline-offset-2 transition-colors hover:text-accent hover:underline"
-          >
-            Edit
-          </button>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function AuditProgress({ job }: { job: AuditJob }) {
-  return (
-    <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
-      <div className="flex items-center gap-2.5">
-        <span className="relative flex h-2.5 w-2.5">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
-          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
-        </span>
-        <span className="font-medium">
-          {job.status === "queued" ? "Getting ready to review your site…" : "Reviewing your website page by page…"}
-        </span>
-      </div>
-      {job.progress && <p className="mt-1.5 font-mono text-xs opacity-70">{job.progress}</p>}
-      <p className="mt-1.5 text-xs">This is the thorough option — grab a coffee, we'll keep working.</p>
     </div>
   );
 }

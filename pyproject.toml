@@ -62,7 +62,10 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
-ignore = ["E501"]
+# RUF001/002/003 flag "ambiguous" Unicode (en-dash, curly quotes) in strings/docstrings/
+# comments. This codebase uses typographic punctuation deliberately in user-facing output
+# (e.g. "2–3 sentences", "Weeks 2–4") and prose, so those are intentional, not confusables.
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 # typer's API uses function calls (typer.Argument/Option) as parameter defaults

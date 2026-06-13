@@ -398,8 +398,9 @@ def _owner_page_md(node: Any, *, topic: str, origin: str, llm: Any) -> Asset:
     return Asset(path=f"pages/{_slug_filename(draft.slug)}.md", content=body, kind="page_draft")
 
 
-def _prompt_md(node: Any, business: dict[str, Any] | None, topic: str) -> Asset:
-    """One paste-into-ChatGPT prompt per page. Deterministic — no LLM call here."""
+def _ai_prompt_text(node: Any, business: dict[str, Any] | None, topic: str) -> str:
+    """The paste-into-ChatGPT prompt body for a page — the AI half of #4's AI-vs-human
+    prompts. Deterministic; shared by the ``prompts/`` asset and the structured plan."""
     biz = _biz(business)
     who = biz["name"]
     if biz["category"]:
@@ -428,11 +429,36 @@ def _prompt_md(node: Any, business: dict[str, Any] | None, topic: str) -> Asset:
         "could quote on its own. Use clear section headings, end with a short FAQ, and keep the",
         "tone friendly and expert — plain language, no buzzwords, no filler.",
     ]
+    return "\n".join(prompt_lines)
+
+
+def _human_prompt_text(node: Any) -> str:
+    """The do-it-yourself instruction for a page — the human half of #4's prompts.
+    A concrete recipe an owner/writer can follow without any AI."""
+    title = _node_attr(node, "title", "")
+    questions = [str(q) for q in (_node_attr(node, "seed_questions", []) or [])]
+    entities = [str(e) for e in (_node_attr(node, "required_entities", []) or [])]
+    parts = [
+        f"Write the “{title}” page yourself: open with a 2–3 sentence direct answer an AI "
+        "assistant could quote on its own, then expand into clear sections.",
+    ]
+    if questions:
+        parts.append("Make sure the page answers, as headings or an FAQ: " + "; ".join(questions) + ".")
+    if entities:
+        parts.append("Name these explicitly where relevant: " + ", ".join(entities) + ".")
+    parts.append("Aim for 600–900 words in plain, expert language; end with a short FAQ.")
+    return " ".join(parts)
+
+
+def _prompt_md(node: Any, business: dict[str, Any] | None, topic: str) -> Asset:
+    """One paste-into-ChatGPT prompt per page. Deterministic — no LLM call here."""
+    title = _node_attr(node, "title", "")
+    prompt_text = _ai_prompt_text(node, business, topic)
     body = (
         f"# AI prompt — {title}\n\n"
         f"Copy everything in the box into ChatGPT (or your website builder's AI assistant),\n"
         f"then paste the result into a new page with a web address ending `{_node_attr(node, 'slug', '')}`.\n\n"
-        "```text\n" + "\n".join(prompt_lines) + "\n```\n\n"
+        "```text\n" + prompt_text + "\n```\n\n"
         "After pasting the result: read it once and fix anything that isn't true for your business —\n"
         "AI sometimes invents specifics. Your real details always win.\n"
     )
@@ -629,6 +655,183 @@ def build_checklist(nodes: list[Any], builder_mode: str) -> dict[str, Any]:
         })
     total = sum(len(w["tasks"]) for w in weeks)
     return {"weeks": weeks, "total": total}
+
+
+# ── phased plan (#8 phases · #9 quick wins · #4 AI-vs-human prompts · #10 JSON) ──
+
+# Phase keys (#8): essentials first, then the rest of the month, then later.
+PHASE_WEEK_1 = "week_1"
+PHASE_WEEK_2_4 = "week_2_4"
+PHASE_LATER = "later"
+
+_PHASE_TITLES: dict[str, str] = {
+    PHASE_WEEK_1: "Week 1 — essentials",
+    PHASE_WEEK_2_4: "Weeks 2–4",
+    PHASE_LATER: "Later",
+}
+_PHASE_BLURBS: dict[str, str] = {
+    PHASE_WEEK_1: "The highest-impact pages — do these first.",
+    PHASE_WEEK_2_4: "Round out coverage and authority.",
+    PHASE_LATER: "Nice-to-have pages once the essentials are live.",
+}
+_PHASE_ORDER = (PHASE_WEEK_1, PHASE_WEEK_2_4, PHASE_LATER)
+
+# Effort by page type — creating a contact/about page is low lift; a pillar is high.
+_EFFORT_BY_TYPE: dict[str, str] = {
+    "contact": "low", "about": "low", "faq": "low", "utility": "low", "homepage": "low",
+    "blog": "medium", "default": "medium", "solution": "medium",
+    "pillar": "high", "product": "high",
+}
+_EFFORT_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def _load_phasing_cfg() -> dict[str, Any]:
+    """Phasing knobs from config/prioritization.yaml (code defaults if absent)."""
+    from ..settings import load_yaml_file
+
+    raw = (load_yaml_file("prioritization.yaml") or {}).get("phasing") or {}
+    return {
+        "week_1_top_n": int(raw.get("week_1_top_n", 3)),
+        "week_2_4_top_n": int(raw.get("week_2_4_top_n", 10)),
+        "quick_win_max_effort": str(raw.get("quick_win_max_effort", "low")),
+        "quick_win_min_priority": float(raw.get("quick_win_min_priority", 0.6)),
+    }
+
+
+def _phase_for_rank(rank: int, cfg: dict[str, Any]) -> str:
+    if rank < cfg["week_1_top_n"]:
+        return PHASE_WEEK_1
+    if rank < cfg["week_2_4_top_n"]:
+        return PHASE_WEEK_2_4
+    return PHASE_LATER
+
+
+def _is_quick_win(effort: str, priority: float, cfg: dict[str, Any]) -> bool:
+    max_rank = _EFFORT_RANK.get(cfg["quick_win_max_effort"], 0)
+    return _EFFORT_RANK.get(effort, 1) <= max_rank and priority >= cfg["quick_win_min_priority"]
+
+
+def _page_plan_task(
+    node: Any, rank: int, *, business: dict[str, Any] | None, topic: str, cfg: dict[str, Any]
+) -> dict[str, Any]:
+    """One enriched plan task for a page to build: phase, quick-win flag, the three
+    Block-A fields, and both AI and human implementation prompts (#4)."""
+    slug = _node_attr(node, "slug", "")
+    title = _node_attr(node, "title", "")
+    page_type = str(_node_attr(node, "page_type", "default"))
+    priority = float(_node_attr(node, "priority", 0.0) or 0.0)
+    effort = _EFFORT_BY_TYPE.get(page_type, "medium")
+    phase = _phase_for_rank(rank, cfg)
+    return {
+        "id": f"page:{slug}",
+        "label": f"Create the “{title}” page",
+        "detail": f"web address ending {slug}",
+        "phase": phase,
+        "quick_win": _is_quick_win(effort, priority, cfg),
+        "effort": effort,
+        "priority": round(priority, 3),
+        # Block A's three plain-language fields, for a page that doesn't exist yet.
+        "current_state": "This page doesn't exist on your site yet.",
+        "action_required": f"Create the “{title}” page at a web address ending {slug}.",
+        "how_to": (
+            "Use the AI prompt below (or the matching draft in pages/) to write it, publish it "
+            f"at {slug}, then link it into your navigation."
+        ),
+        # #4 — AI-vs-human implementation prompts, embedded in the payload.
+        "prompts": {
+            "ai": _ai_prompt_text(node, business, topic),
+            "human": _human_prompt_text(node),
+        },
+    }
+
+
+# Visibility wins (owner modes) — no website needed; inherently low-effort/high-impact.
+_VIS_PLAN_TASKS: list[dict[str, Any]] = [
+    {
+        "id": "vis:gbp", "label": "Claim your Google Business Profile", "phase": PHASE_WEEK_1,
+        "quick_win": True, "effort": "low",
+        "current_state": "Your business may not appear (or appears unverified) in Google's local data.",
+        "action_required": "Claim and fully fill out your Google Business Profile.",
+        "how_to": "Follow step 1 in get-found-now.md — name, category, services, hours, photos.",
+    },
+    {
+        "id": "vis:listings", "label": "Claim the other free listings", "phase": PHASE_WEEK_2_4,
+        "quick_win": True, "effort": "low",
+        "current_state": "Bing, Apple, Yelp and Facebook have no verified listing for you.",
+        "action_required": "Claim Bing Places, Apple Business Connect, Yelp and a Facebook page.",
+        "how_to": "Follow step 2 in get-found-now.md — keep name/address/phone identical everywhere.",
+    },
+    {
+        "id": "vis:reviews", "label": "Ask three happy customers for a Google review", "phase": PHASE_WEEK_2_4,
+        "quick_win": True, "effort": "low",
+        "current_state": "Few or no recent reviews — the fuel AI assistants weigh most for recommendations.",
+        "action_required": "Ask three recent happy customers for a Google review, same day.",
+        "how_to": "Use the ready-made ask script in get-found-now.md with a direct review link.",
+    },
+    {
+        "id": "vis:readthrough", "label": "Read every new page once on your phone", "phase": PHASE_WEEK_2_4,
+        "quick_win": False, "effort": "low",
+        "current_state": "New pages haven't been proofed on a real device.",
+        "action_required": "Read every new page once on your phone.",
+        "how_to": "Check for typos, broken links, and missing contact info; fix as you go.",
+    },
+]
+
+
+def plan_for(
+    *,
+    blueprint: Blueprint,
+    coverage: CoverageDiffResult | None,
+    builder_mode: str,
+    business: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """:func:`build_plan` over the same to-build nodes the bundle uses."""
+    return build_plan(
+        _target_nodes(blueprint, coverage), builder_mode,
+        business=business, topic=blueprint.topic,
+    )
+
+
+def build_plan(
+    nodes: list[Any],
+    builder_mode: str,
+    *,
+    business: dict[str, Any] | None = None,
+    topic: str = "",
+) -> dict[str, Any]:
+    """The prioritized plan as structured JSON (#10): phased (#8), quick-wins flagged
+    (#9), each task carrying current_state/action_required/how_to (Block A) and both an
+    AI and a human implementation prompt (#4).
+
+    Pure and deterministic; the same priority-ordered nodes as the kit, so a task id
+    (stable page slug / fixed visibility id) lines up with the bundle assets and lets
+    client-side progress survive a regeneration."""
+    cfg = _load_phasing_cfg()
+    tasks: list[dict[str, Any]] = [
+        _page_plan_task(n, rank, business=business, topic=topic, cfg=cfg)
+        for rank, n in enumerate(nodes)
+    ]
+    # Visibility wins ride along in the owner-facing modes (no website needed).
+    if builder_mode != "dev":
+        tasks += [dict(t) for t in _VIS_PLAN_TASKS]
+
+    phases = [
+        {
+            "key": key,
+            "title": _PHASE_TITLES[key],
+            "blurb": _PHASE_BLURBS[key],
+            "tasks": [t for t in tasks if t["phase"] == key],
+        }
+        for key in _PHASE_ORDER
+    ]
+    phases = [p for p in phases if p["tasks"]]  # drop empty phases
+    quick_win_ids = [t["id"] for t in tasks if t.get("quick_win")]
+    return {
+        "phases": phases,
+        "quick_win_ids": quick_win_ids,
+        "quick_win_count": len(quick_win_ids),
+        "total": len(tasks),
+    }
 
 
 # ── public API ────────────────────────────────────────────────────────────────
