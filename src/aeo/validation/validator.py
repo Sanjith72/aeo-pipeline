@@ -216,7 +216,7 @@ def _open_outcomes(
         if not url_normalized:
             return
         baseline_hash = page.get("content_hash")
-        for rid, rec in zip(rec_ids, recs):
+        for rid, rec in zip(rec_ids, recs, strict=True):  # 1 persisted id per rec
             outcomes_repo.open(
                 rid, page_id, url_normalized,
                 baseline_run_id=run_id, baseline_hash=baseline_hash,

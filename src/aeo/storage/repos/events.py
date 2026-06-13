@@ -66,9 +66,15 @@ def dau(start: datetime | None = None, end: datetime | None = None) -> list[dict
         params.append(end)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with transaction() as conn, conn.cursor() as cur:
+        # Bucket on the UTC calendar day, not ``created_at::date``: a bare ``::date``
+        # cast resolves in the connection's session timezone, so the same data would
+        # report different DAU on a UTC host vs. an IST host (and the day boundary
+        # would sit at local midnight). Pin it to UTC for a stable, location-independent
+        # metric — keep this in sync with return_rate() below.
         cur.execute(
             f"""
-            SELECT created_at::date AS day, COUNT(DISTINCT session_id) AS dau
+            SELECT (created_at AT TIME ZONE 'UTC')::date AS day,
+                   COUNT(DISTINCT session_id) AS dau
             FROM events
             {where}
             GROUP BY day
@@ -87,7 +93,11 @@ def return_rate() -> float:
         cur.execute(
             """
             WITH session_days AS (
-                SELECT session_id, COUNT(DISTINCT created_at::date) AS days
+                -- UTC calendar day, matching dau(): a bare ``created_at::date`` would
+                -- count "distinct days" in the session timezone, so a single-day session
+                -- whose events straddle local midnight could be miscounted as returning.
+                SELECT session_id,
+                       COUNT(DISTINCT (created_at AT TIME ZONE 'UTC')::date) AS days
                 FROM events
                 GROUP BY session_id
             )

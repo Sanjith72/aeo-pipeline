@@ -5,14 +5,14 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+from types import SimpleNamespace
+from typing import ClassVar
 from xml.etree import ElementTree as ET
 
 from aeo.intelligence.brief import plan_from_brief
 from aeo.reference.blueprint import Blueprint, CoverageCluster, CoverageMap, SitemapNode
 from aeo.reference.business_input import BusinessInput
 from aeo.reference.framework import load_framework
-from types import SimpleNamespace
-
 from aeo.report.packager import (
     PHASE_LATER,
     PHASE_WEEK_1,
@@ -246,8 +246,10 @@ def _twelve_nodes() -> list[SimpleNamespace]:
 
 
 class TestPhasingHelpers:
-    _CFG = {"week_1_top_n": 3, "week_2_4_top_n": 10,
-            "quick_win_max_effort": "low", "quick_win_min_priority": 0.6}
+    _CFG: ClassVar[dict[str, object]] = {
+        "week_1_top_n": 3, "week_2_4_top_n": 10,
+        "quick_win_max_effort": "low", "quick_win_min_priority": 0.6,
+    }
 
     def test_phase_for_rank(self):
         assert _phase_for_rank(0, self._CFG) == PHASE_WEEK_1
