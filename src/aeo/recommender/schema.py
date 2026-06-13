@@ -83,6 +83,15 @@ def _faq_page(bundle: ExtractionBundle, present: set[str]) -> Recommendation | N
             f"The body has {n} question/answer pair{'s' if n != 1 else ''} but no FAQPage "
             "structured data. Answer engines surface FAQ schema directly in results."
         ),
+        current_state=(
+            f"The page has {n} Q&A pair{'s' if n != 1 else ''} in the body but no FAQPage "
+            "structured data, so engines can't lift them as answers."
+        ),
+        action_required=f"Add a FAQPage JSON-LD block covering the {n} existing Q&A pair{'s' if n != 1 else ''}.",
+        how_to=(
+            "Paste the generated FAQPage JSON-LD into the page <head>, then validate with "
+            "Google's Rich Results Test."
+        ),
         payload={"schema_type": "FAQPage", "jsonld": jsonld},
     )
 
@@ -118,6 +127,15 @@ def _article(bundle: ExtractionBundle, present: set[str], url: str) -> Recommend
             "The page reads as an article (byline/date present) but carries no Article "
             "structured data, so engines can't attribute author or freshness."
         ),
+        current_state=(
+            "The page has a byline/date but no Article structured data, so engines can't "
+            "attribute its author or freshness."
+        ),
+        action_required="Add an Article JSON-LD block with the author and publish date.",
+        how_to=(
+            "Insert the generated Article JSON-LD into the page <head> and confirm author/date "
+            "resolve in the Rich Results Test."
+        ),
         payload={"schema_type": "Article", "jsonld": jsonld},
     )
 
@@ -142,6 +160,12 @@ def _organization(bundle: ExtractionBundle, present: set[str], origin: str) -> R
         rationale=(
             f"'{name}' is the page's primary entity but has no Organization markup, "
             "weakening entity recognition by answer engines."
+        ),
+        current_state=f"'{name}' is the page's primary entity but carries no Organization markup.",
+        action_required=f"Add an Organization JSON-LD block naming '{name}'.",
+        how_to=(
+            "Add the generated Organization JSON-LD to the site-wide <head> (or homepage) so "
+            "engines bind the brand entity consistently."
         ),
         payload={"schema_type": "Organization", "jsonld": jsonld},
     )
@@ -177,6 +201,9 @@ def _breadcrumb(present: set[str], url: str, origin: str) -> Recommendation | No
             "The URL has a clear section hierarchy but no BreadcrumbList markup; "
             "breadcrumbs help engines place the page in site context."
         ),
+        current_state="The URL has a clear section hierarchy but no BreadcrumbList markup.",
+        action_required="Add a BreadcrumbList JSON-LD block reflecting the URL path.",
+        how_to="Insert the generated BreadcrumbList JSON-LD into the page <head>.",
         payload={"schema_type": "BreadcrumbList", "jsonld": jsonld},
     )
 

@@ -40,6 +40,7 @@ from ..scoring.rubric import load_rubric
 from ..settings import get_settings
 from ..storage.models import FetchedPage, PageScore, Target
 from ..storage.repos import extractions as extractions_repo
+from ..storage.repos import outcomes as outcomes_repo
 from ..storage.repos import runs as runs_repo
 from ..storage.repos import scores as scores_repo
 from ..utils.url import normalize
@@ -512,6 +513,24 @@ class Orchestrator:
         )
         return site_reports_repo.put(site)
 
+    def _detect_completions(self, page: FetchedPage, run_id: int) -> None:
+        """Retention Engine bookkeeping: reconcile this URL's pending recommendation
+        outcomes against the freshly-crawled content hash. Best-effort and isolated —
+        completion detection must never abort the crawl that carries it."""
+        if not get_settings().retention.enabled:
+            return
+        try:
+            flipped = outcomes_repo.mark_from_recrawl(
+                page.url_normalized, run_id, page.content_hash
+            )
+            if flipped:
+                log.info(
+                    "recommendations_implemented",
+                    url=page.url, run_id=run_id, count=flipped,
+                )
+        except Exception as exc:  # detection is bookkeeping, never fatal to a run
+            log.warning("completion_detection_skipped", url=page.url, error=str(exc))
+
     def _process_one(
         self,
         page: FetchedPage,
@@ -526,6 +545,13 @@ class Orchestrator:
             self.persist.page(page, run_id, client_id, competitor_id)
             summary.failed += 1
             return
+
+        # Retention Engine (#11): completion detection is SEPARATE from skip-for-cost.
+        # Run it for EVERY successfully-crawled page, BEFORE any fingerprint
+        # short-circuit — a watched page that changed since we recommended an edit is
+        # the most valuable event in the system and must never be silently skipped.
+        # Compares against each pending outcome's BASELINE hash, not last_hash().
+        self._detect_completions(page, run_id)
 
         # Fingerprint short-circuit only pays off when scoring (it skips the
         # LLM). For crawl-only runs, extraction is cheap — just redo it.

@@ -231,3 +231,51 @@ def test_recent_observations_keeps_unscored_cited_page(db):
         assert obs[0].tiers == {}  # empty tiers → downstream skips per-criterion
     finally:
         runs_repo.finish(run.id, status="succeeded")
+
+
+def test_recommendation_outcome_lifecycle(db):
+    """Retention Engine (#11): open a pending outcome at issue time → a re-crawl with
+    the SAME content hash stays pending → a re-crawl with a CHANGED hash flips it to
+    'implemented' with the detecting run recorded. Detection keys on url_normalized
+    (stable), not the per-run page id."""
+    from aeo.storage.db import transaction
+    from aeo.storage.repos import outcomes as outcomes_repo
+    from aeo.storage.repos import recommendations as recs_repo
+    from aeo.storage.repos import runs as runs_repo
+
+    url = "https://securin.io/retention-loop"
+    issue = runs_repo.start(label="db-smoke-outcome-issue")
+    recrawl = runs_repo.start(label="db-smoke-outcome-recrawl")
+    try:
+        baseline_hash = "hashbaseline" + "0" * 52
+        page = _smoke_page(url, baseline_hash, issue.id)
+        rec_id = recs_repo.create(
+            page.id, issue.id, "schema", {"title": "Add FAQPage JSON-LD"},
+            criterion="schema_markup",
+        )
+        oid = outcomes_repo.open(
+            rec_id, page.id, page.url_normalized,
+            baseline_run_id=issue.id, baseline_hash=baseline_hash, criterion="schema_markup",
+        )
+
+        # Re-crawl, content unchanged → no flip, outcome still pending.
+        assert outcomes_repo.mark_from_recrawl(page.url_normalized, recrawl.id, baseline_hash) == 0
+        assert any(o["id"] == oid for o in outcomes_repo.pending_for_url(page.url_normalized))
+
+        # Re-crawl, content changed → flips to implemented with the detecting run.
+        changed_hash = "hashchanged" + "1" * 53
+        assert outcomes_repo.mark_from_recrawl(page.url_normalized, recrawl.id, changed_hash) == 1
+        done = outcomes_repo.for_page(page.id, status="implemented")
+        assert len(done) == 1
+        assert done[0]["id"] == oid
+        assert done[0]["detected_run_id"] == recrawl.id
+        assert done[0]["detection_method"] == "content_hash_changed"
+        assert done[0]["detected_at"] is not None
+
+        # No pending outcomes remain for the URL — a second re-crawl is a no-op.
+        assert outcomes_repo.pending_for_url(page.url_normalized) == []
+    finally:
+        with transaction() as conn, conn.cursor() as cur:  # leave no outcome rows behind
+            cur.execute("DELETE FROM recommendation_outcomes WHERE url_normalized = %s", (url,))
+        runs_repo.finish(issue.id, status="succeeded")
+        runs_repo.finish(recrawl.id, status="succeeded")

@@ -129,6 +129,16 @@ class ValidationCfg(BaseModel):
     verify_citations: bool = False
 
 
+class RetentionCfg(BaseModel):
+    # Retention Engine (#11): on every re-crawl, check whether the watched page
+    # changed since we issued a recommendation against it, and flip the pending
+    # outcome to 'implemented'. This is detection bookkeeping, kept SEPARATE from the
+    # fingerprint skip-for-cost path — a watched page that changed is the most
+    # valuable event in the system and must never be silently skipped. Best-effort:
+    # a hiccup here is logged and never aborts a crawl/analysis run.
+    enabled: bool = True
+
+
 class PerplexityCfg(BaseModel):
     # The v4 Independent Validator's real-world signal: query the target question
     # on Perplexity and compare the rewrite's shape to what's actually cited.
@@ -214,6 +224,7 @@ class Settings(BaseSettings):
     llm: LLMCfg = LLMCfg()
     database: DatabaseCfg = DatabaseCfg()
     validation: ValidationCfg = ValidationCfg()
+    retention: RetentionCfg = RetentionCfg()
     perplexity: PerplexityCfg = PerplexityCfg()
     scoring: ScoringCfg = ScoringCfg()
     reference_architecture: ReferenceArchitectureCfg = ReferenceArchitectureCfg()

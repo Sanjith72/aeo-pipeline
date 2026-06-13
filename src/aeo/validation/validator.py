@@ -187,4 +187,40 @@ def _persist(
         recs_repo.set_validation(
             rid, status=rec_status, validated=improved, score_after=score_after
         )
+    _open_outcomes(page_id, run_id, rec_ids, recs)
     return rec_ids
+
+
+def _open_outcomes(
+    page_id: int, run_id: int, rec_ids: list[int], recs: list[Recommendation]
+) -> None:
+    """Retention Engine (#11): open a pending outcome per issued recommendation,
+    pinning the page's current content hash as the baseline the next re-crawl
+    compares against. This is THE rec-create call site, so detection bookkeeping is
+    opened here exactly once per persisted rec.
+
+    Best-effort and flag-gated; a no-op for synthetic page ids (dry-run uses 0), so
+    the offline tests that monkeypatch the recommendations repo never reach a real
+    connection. A failure here is logged, never raised — issuing the rec must not
+    depend on the outcome log."""
+    if page_id <= 0 or not get_settings().retention.enabled:
+        return
+    try:
+        from ..storage.repos import outcomes as outcomes_repo
+        from ..storage.repos import pages as pages_repo
+
+        page = pages_repo.get(page_id)
+        if not page:
+            return
+        url_normalized = page.get("url_normalized")
+        if not url_normalized:
+            return
+        baseline_hash = page.get("content_hash")
+        for rid, rec in zip(rec_ids, recs):
+            outcomes_repo.open(
+                rid, page_id, url_normalized,
+                baseline_run_id=run_id, baseline_hash=baseline_hash,
+                criterion=rec.criterion,
+            )
+    except Exception as exc:  # outcome bookkeeping must never break rec issuance
+        log.warning("outcome_open_skipped", page_id=page_id, error=str(exc))

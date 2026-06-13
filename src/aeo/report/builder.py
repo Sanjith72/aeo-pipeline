@@ -193,6 +193,10 @@ def _rec(rec: Recommendation) -> dict[str, Any]:
         "title": rec.title,
         "rationale": rec.rationale,
         "source": rec.scored_by,
+        # #12 — the three plain-language fields the in-app checklist renders.
+        "current_state": rec.effective_current_state(),
+        "action_required": rec.effective_action_required(),
+        "how_to": rec.effective_how_to(),
         "detail": detail,
     }
 
