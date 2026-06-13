@@ -29,7 +29,7 @@ from ..reference.competitor_patterns import CompetitorPatterns
 from ..reference.framework import Framework, build_framework, load_framework
 from ..reference.framework_bootstrap import bootstrap_framework, framework_file_path
 from ..reference.generator import generate_blueprint
-from ..report.packager import build_asset_bundle, checklist_for
+from ..report.packager import build_asset_bundle, checklist_for, plan_for
 from . import jobs as jobs_mod
 from .jobs import JOBS
 
@@ -220,6 +220,14 @@ def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
     )
     return {
         "manifest": bundle.manifest(),
+        # #10 — the prioritized plan as structured JSON: phased, quick-wins flagged, each
+        # task carrying current_state/action_required/how_to + AI-vs-human prompts. This
+        # is what the interactive in-app checklist renders.
+        "plan": plan_for(
+            blueprint=plan_result.blueprint, coverage=plan_result.coverage,
+            builder_mode=req.builder_mode, business=_business_dict(brief),
+        ),
+        # Legacy flat-weeks checklist kept for the zip fallback + back-compat.
         "checklist": checklist_for(
             blueprint=plan_result.blueprint, coverage=plan_result.coverage,
             builder_mode=req.builder_mode,

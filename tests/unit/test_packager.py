@@ -11,7 +11,19 @@ from aeo.intelligence.brief import plan_from_brief
 from aeo.reference.blueprint import Blueprint, CoverageCluster, CoverageMap, SitemapNode
 from aeo.reference.business_input import BusinessInput
 from aeo.reference.framework import load_framework
-from aeo.report.packager import AssetBundle, build_asset_bundle, build_checklist
+from types import SimpleNamespace
+
+from aeo.report.packager import (
+    PHASE_LATER,
+    PHASE_WEEK_1,
+    PHASE_WEEK_2_4,
+    AssetBundle,
+    _is_quick_win,
+    _phase_for_rank,
+    build_asset_bundle,
+    build_checklist,
+    build_plan,
+)
 
 
 def _blueprint() -> Blueprint:
@@ -213,3 +225,75 @@ def test_owner_mode_zip_contains_nested_paths() -> None:
         names = set(zf.namelist())
         assert "hire-someone/job-post.md" in names
         assert "for-your-developer/sitemap.xml" in names
+
+
+# ── phased plan (#8 phases · #9 quick wins · #4 AI-vs-human prompts · #10 JSON) ──
+
+
+def _pnode(slug: str, title: str, page_type: str, priority: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        slug=slug, title=title, page_type=page_type, intent="informational",
+        journey_stage="awareness", cluster=None, priority=priority,
+        seed_questions=["What is X?"], required_entities=["X"],
+    )
+
+
+def _twelve_nodes() -> list[SimpleNamespace]:
+    return [
+        _pnode(f"/p{i}", f"Page {i}", "pillar" if i == 0 else "blog", round(1.0 - i * 0.05, 3))
+        for i in range(12)
+    ]
+
+
+class TestPhasingHelpers:
+    _CFG = {"week_1_top_n": 3, "week_2_4_top_n": 10,
+            "quick_win_max_effort": "low", "quick_win_min_priority": 0.6}
+
+    def test_phase_for_rank(self):
+        assert _phase_for_rank(0, self._CFG) == PHASE_WEEK_1
+        assert _phase_for_rank(2, self._CFG) == PHASE_WEEK_1
+        assert _phase_for_rank(3, self._CFG) == PHASE_WEEK_2_4
+        assert _phase_for_rank(9, self._CFG) == PHASE_WEEK_2_4
+        assert _phase_for_rank(10, self._CFG) == PHASE_LATER
+
+    def test_is_quick_win(self):
+        assert _is_quick_win("low", 0.7, self._CFG) is True
+        assert _is_quick_win("high", 0.9, self._CFG) is False   # too much effort
+        assert _is_quick_win("low", 0.3, self._CFG) is False    # too little impact
+
+
+class TestBuildPlan:
+    def test_phases_assigned_by_rank(self):
+        plan = build_plan(_twelve_nodes(), "dev")
+        assert [p["key"] for p in plan["phases"]] == [PHASE_WEEK_1, PHASE_WEEK_2_4, PHASE_LATER]
+        wk1 = next(p for p in plan["phases"] if p["key"] == PHASE_WEEK_1)
+        assert len(wk1["tasks"]) == 3            # week_1_top_n default
+        later = next(p for p in plan["phases"] if p["key"] == PHASE_LATER)
+        assert len(later["tasks"]) == 2          # nodes ranked 10, 11
+        assert plan["total"] == 12
+
+    def test_quick_wins_flagged(self):
+        nodes = [_pnode("/contact", "Contact", "contact", 0.9), _pnode("/pillar", "Pillar", "pillar", 0.9)]
+        plan = build_plan(nodes, "dev")
+        tasks = {t["id"]: t for p in plan["phases"] for t in p["tasks"]}
+        assert tasks["page:/contact"]["quick_win"] is True    # low effort + high priority
+        assert tasks["page:/pillar"]["quick_win"] is False     # high effort
+        assert "page:/contact" in plan["quick_win_ids"]
+        assert plan["quick_win_count"] == 1
+
+    def test_each_page_task_has_three_fields_and_both_prompts(self):
+        plan = build_plan(_twelve_nodes(), "ai", business={"name": "Acme"}, topic="CTEM")
+        page_tasks = [t for p in plan["phases"] for t in p["tasks"] if t["id"].startswith("page:")]
+        assert page_tasks
+        for t in page_tasks:
+            assert t["current_state"] and t["action_required"] and t["how_to"]
+            assert t["prompts"]["ai"] and t["prompts"]["human"]
+
+    def test_visibility_tasks_only_in_owner_modes(self):
+        dev = build_plan(_twelve_nodes(), "dev")
+        assert all(not t["id"].startswith("vis:") for p in dev["phases"] for t in p["tasks"])
+        ai_ids = {t["id"] for p in build_plan(_twelve_nodes(), "ai")["phases"] for t in p["tasks"]}
+        assert "vis:gbp" in ai_ids
+
+    def test_deterministic(self):
+        assert build_plan(_twelve_nodes(), "ai", topic="t") == build_plan(_twelve_nodes(), "ai", topic="t")

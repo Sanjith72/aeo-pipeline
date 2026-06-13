@@ -51,6 +51,26 @@ def test_deliverables_returns_inline_bundle() -> None:
     assert sum(1 for a in body["assets"] if a["kind"] == "page_spec") == 3
 
 
+def test_deliverables_returns_structured_phased_plan() -> None:
+    # #10: the prioritized plan as structured JSON — phased, quick-wins flagged, each
+    # page task with the three fields + AI-vs-human prompts.
+    r = client.post(
+        "/api/deliverables",
+        json={"name": "Acme", "domain": "acme.com", "use_llm": False, "draft_limit": 2, "builder_mode": "ai"},
+    )
+    assert r.status_code == 200
+    plan = r.json()["plan"]
+    assert plan["total"] > 0
+    assert any(p["key"] == "week_1" for p in plan["phases"])
+    assert plan["quick_win_count"] >= 1  # at least the GBP visibility win
+    page_tasks = [t for p in plan["phases"] for t in p["tasks"] if t["id"].startswith("page:")]
+    assert page_tasks
+    assert all(t["prompts"]["ai"] and t["prompts"]["human"] for t in page_tasks)
+    assert all(t["current_state"] and t["action_required"] and t["how_to"] for t in page_tasks)
+    # legacy checklist kept as the zip fallback
+    assert r.json()["checklist"]["total"] > 0
+
+
 def test_deliverables_zip_returns_a_zip() -> None:
     r = client.post("/api/deliverables.zip", json={"name": "Acme", "domain": "acme.com", "draft_limit": 2})
     assert r.status_code == 200
