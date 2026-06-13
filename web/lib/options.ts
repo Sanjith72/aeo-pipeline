@@ -74,23 +74,11 @@ export const GOAL_OPTIONS = [
   { label: "Sell more online", hint: "Help shoppers find and choose your products" },
 ];
 
-// Who's building the website — decides which flavor of launch kit the API packs.
-export const BUILDER_MODES = [
-  {
-    value: "diy",
-    label: "Me, with a website builder",
-    hint: "Paste-ready pages for Wix, Squarespace, WordPress…",
-  },
-  { value: "ai", label: "AI tools", hint: "Copy-paste prompts for ChatGPT or your builder's AI" },
-  {
-    value: "hire",
-    label: "I'll hire someone",
-    hint: "A ready-to-post job brief, plus how to check the work",
-  },
-  { value: "dev", label: "My developer or agency", hint: "Technical files they can build from directly" },
-] as const;
-
-export type BuilderMode = (typeof BUILDER_MODES)[number]["value"];
+// The owner-facing kit shape we always pack now that the "who's building?" question is
+// gone (#4): the in-app plan embeds BOTH an AI prompt and a human how-to per task, so the
+// owner picks per task instead of declaring a builder up front. "diy" includes the
+// get-found-now visibility quick wins; "dev" (the API default) would omit them.
+export const DEFAULT_BUILDER_MODE = "diy" as const;
 
 // Friendly names for the analysis labels the API returns.
 export const EFFORT_LABEL: Record<string, string> = {
