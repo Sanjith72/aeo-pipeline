@@ -503,25 +503,42 @@ export default function Page() {
                   {String(step + 1).padStart(2, "0")} / {STEPS.length}
                 </span>
                 {!isLast ? (
-                  <div className="text-right">
-                    <button
-                      onClick={() => (step === 0 ? handleWebsiteNext() : advance(step))}
-                      disabled={nextBlocker !== null || prefilling}
-                      className="btn-primary group"
-                    >
-                      {prefilling ? (
-                        <>
-                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink/30 border-t-ink" />
-                          Taking a look…
-                        </>
-                      ) : (
-                        <>
-                          Next
-                          <span aria-hidden className="transition-transform duration-200 group-hover:translate-x-0.5">→</span>
-                        </>
-                      )}
-                    </button>
-                    {nextBlocker && <p className="mt-1.5 text-xs text-ink-300">{nextBlocker}</p>}
+                  <div className="flex items-center gap-3">
+                    {/* After the URL+crawl, every later step is prefilled/optional — let the
+                        user bail straight to the comprehensive analysis (#1: URL is enough). */}
+                    {step >= 1 && (
+                      <button
+                        onClick={() => {
+                          setStep(STEPS.length - 1); // land on the step that shows live progress
+                          createPlan();
+                        }}
+                        disabled={loading || prefilling}
+                        className="btn-ghost"
+                        title="Skip the rest — analyze your site with what we already have"
+                      >
+                        Skip — just analyze my site
+                      </button>
+                    )}
+                    <div className="text-right">
+                      <button
+                        onClick={() => (step === 0 ? handleWebsiteNext() : advance(step))}
+                        disabled={nextBlocker !== null || prefilling}
+                        className="btn-primary group"
+                      >
+                        {prefilling ? (
+                          <>
+                            <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink/30 border-t-ink" />
+                            Taking a look…
+                          </>
+                        ) : (
+                          <>
+                            Next
+                            <span aria-hidden className="transition-transform duration-200 group-hover:translate-x-0.5">→</span>
+                          </>
+                        )}
+                      </button>
+                      {nextBlocker && <p className="mt-1.5 text-xs text-ink-300">{nextBlocker}</p>}
+                    </div>
                   </div>
                 ) : (
                   <span aria-hidden className="w-[72px]" />
