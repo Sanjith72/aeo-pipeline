@@ -14,7 +14,13 @@ from aeo.recommender.models import CONTENT, SCHEMA
 from aeo.report.builder import _rec
 from aeo.storage import migrate
 from aeo.storage.repos import outcomes as outcomes_repo
-from aeo.storage.repos.outcomes import IMPLEMENTED, decide_status
+from aeo.storage.repos.outcomes import (
+    IMPLEMENTED,
+    METHOD_CRITERION_IMPROVED,
+    METHOD_CRITERION_REGRESSED,
+    REGRESSED,
+    decide_status,
+)
 
 
 class TestMigration0010:
@@ -59,21 +65,57 @@ class TestReposImportable:
         assert callable(outcomes_repo.pending_for_url)
 
 
+class TestMigration0013:
+    def _sql(self) -> str:
+        paths = {v: p for v, _n, p in migrate._discover()}
+        assert "0013" in paths, "migration 0013 not discovered"
+        return paths["0013"].read_text(encoding="utf-8")
+
+    def test_adds_baseline_tier_additively(self):
+        sql = self._sql()
+        assert "ADD COLUMN IF NOT EXISTS baseline_tier" in sql
+        assert "DROP COLUMN" not in sql.upper()
+
+
 class TestDecideStatus:
-    """The pure completion decision — the lifecycle, DB-free."""
+    """The pure, honest completion decision — the lifecycle, DB-free."""
 
     def test_unchanged_hash_stays_pending(self):
-        # identical hash → no change → leave the outcome pending
-        assert decide_status("a" * 64, "a" * 64) is None
+        # identical hash → no change → leave it pending, even if tiers were provided
+        assert decide_status("a" * 64, "a" * 64, criterion="schema_markup", baseline_tier=2, new_tier=5) == (
+            None,
+            None,
+        )
 
-    def test_changed_hash_flips_to_implemented(self):
-        assert decide_status("a" * 64, "b" * 64) == IMPLEMENTED
+    def test_changed_hash_alone_is_not_verified(self):
+        # A hash change we can't tie to a criterion improvement is NOT honest proof.
+        assert decide_status("a" * 64, "b" * 64) == (None, None)
+        assert decide_status("a" * 64, "b" * 64, criterion="schema_markup") == (None, None)
+
+    def test_criterion_tier_rise_flips_to_implemented(self):
+        assert decide_status("a" * 64, "b" * 64, criterion="schema_markup", baseline_tier=2, new_tier=4) == (
+            IMPLEMENTED,
+            METHOD_CRITERION_IMPROVED,
+        )
+
+    def test_criterion_tier_fall_flips_to_regressed(self):
+        assert decide_status("a" * 64, "b" * 64, criterion="schema_markup", baseline_tier=4, new_tier=2) == (
+            REGRESSED,
+            METHOD_CRITERION_REGRESSED,
+        )
+
+    def test_changed_hash_same_tier_stays_pending(self):
+        # The page moved but this criterion didn't improve → keep watching, don't claim it.
+        assert decide_status("a" * 64, "b" * 64, criterion="schema_markup", baseline_tier=3, new_tier=3) == (
+            None,
+            None,
+        )
 
     def test_indeterminate_when_a_hash_is_missing(self):
         # Can't conclude anything without both hashes → keep watching.
-        assert decide_status(None, "b" * 64) is None
-        assert decide_status("a" * 64, None) is None
-        assert decide_status(None, None) is None
+        assert decide_status(None, "b" * 64, criterion="x", baseline_tier=1, new_tier=5) == (None, None)
+        assert decide_status("a" * 64, None) == (None, None)
+        assert decide_status(None, None) == (None, None)
 
 
 class TestThreeFieldContract:

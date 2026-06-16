@@ -1,7 +1,7 @@
 # AEO Verified Re-crawl Moat — Design (Spec #2 of Approach B / "B3")
 
-**Status:** in progress — security hardening landed; honest-verifier core next. **Date:** 2026-06-17.
-**Branch:** `feat/aeo-retention-foundation`.
+**Status:** in progress — Slice A (hardening) + Slice B (honest verifier) landed; Slice C
+(UI surfacing) next. **Date:** 2026-06-17. **Branch:** `feat/aeo-retention-foundation`.
 
 This is the moat: a re-crawl that **proves a recommended fix actually shipped on the live
 site** — the one thing every persona in the teardown said they'd pay for, and the
@@ -58,24 +58,28 @@ browser bundle, so X-API-Key is a scanner filter, not an auth boundary — real 
 per-IP rate limiting and the auth model are a separate hardening track; and the compose
 deployment should set `AEO__API__AUTH_KEY` / front the API with a reverse proxy.
 
-## Slice B — the honest criterion verifier (NEXT, trust-critical)
+## Slice B — the honest criterion verifier (LANDED, trust-critical)
 
-Make `implemented` mean "the specific fix landed", not "the page changed".
+`implemented` now means "the specific fix landed", not "the page changed".
 
-- **Pin the baseline tier at issue.** Extend `outcomes` (migration `0013`) with
-  `baseline_tier INT NULL`; `_open_outcomes` writes the criterion's score tier from the
-  page's `PageScore` at issue time (alongside the existing `baseline_hash`).
-- **Verify after re-score, not on hash.** Detection currently runs *before* the page is
-  re-scored (`_process_one` calls `_detect_completions` first). Move criterion
-  verification to *after* `score.run()` so the new tier is available, then mark
-  `implemented` only when the targeted criterion's tier **rose** vs `baseline_tier`
-  (re-using `rubric_scores_v2` tiers). A hash change with no tier gain is recorded as
-  `changed`/still-pending, never "verified". Keep the hash short-circuit for "no change at
-  all".
-- **Honest fallback.** When a criterion can't be re-scored (e.g. JS-rendered, fetch
-  flaked), record `not_detected` and surface "couldn't confirm yet — re-check later",
-  never a false negative that implies the user didn't do the work.
-- Pure decision (`decide_status` successor) stays unit-testable offline.
+- **Baseline tier pinned at issue.** Migration `0013` adds `baseline_tier INTEGER`;
+  `validator._open_outcomes` writes the targeted criterion's score tier from the page's
+  baseline `PageScore` at issue time (alongside `baseline_hash`).
+- **Verify after re-score, not on hash.** `_detect_completions` moved to run *after*
+  `score.run()` in `_process_one`, and is handed the fresh `PageScore`. `decide_status`
+  now returns `(status, method)` and marks `implemented` only when the targeted
+  criterion's re-scored tier is **strictly higher** than `baseline_tier`
+  (`regressed` when lower). A hash change with no tier gain — or any change we can't tie
+  to a criterion improvement — stays **pending**, never falsely "verified". The
+  `recommendation_implementation_rate` metric is therefore honest now.
+- **Why no detection on skipped pages:** a changed page never fingerprint-skips (its hash
+  differs from the prior run), so it always re-scores and is checked; an unchanged page
+  can't have a pending outcome that should flip. (Documented in `_process_one`.)
+- **Tests:** `test_outcomes.py` covers the new `decide_status` matrix offline; the
+  integration loop in `test_db_smoke.py` now asserts changed-but-no-tier-gain stays
+  pending and only a tier rise flips to `implemented` via `criterion_improved`.
+- *Deferred refinement:* a re-scorable-but-flaky fallback to `not_detected` (vs. staying
+  pending) — current behavior keeps it pending so future re-crawls can still confirm.
 
 ## Slice C — surface verified state (NEXT)
 
