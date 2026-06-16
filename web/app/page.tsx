@@ -93,7 +93,8 @@ export default function Page() {
   // re-crawl ("Re-check my site") that drives the Strategy tab's readiness bar
   const [rechecking, setRechecking] = useState(false);
   const [recheckJob, setRecheckJob] = useState<AuditJob | null>(null);
-  const [recheckPrevScore, setRecheckPrevScore] = useState<number | null>(null);
+  // a one-shot "+N since last check" delta, set only when a re-check improves the score
+  const [recheckDelta, setRecheckDelta] = useState<number | null>(null);
 
   const studioRef = useRef<HTMLElement>(null);
 
@@ -180,6 +181,12 @@ export default function Page() {
     setDeliverables(null);
     setAuditJob(null);
     setDeepProfile(null);
+    // a rebuild supersedes any prior saved plan — drop its id + delta and clear the
+    // /plan/<id> address so a reload doesn't load the stale plan (a fresh id is minted
+    // when the new deliverables are persisted).
+    setPlanStateId(null);
+    setRecheckDelta(null);
+    if (typeof window !== "undefined") window.history.replaceState(null, "", "/");
     setLoading(true);
     try {
       if (noSite) {
@@ -232,7 +239,8 @@ export default function Page() {
   // (and the bar) climb when the rebuilt site actually improves.
   async function recheckSite() {
     if (!domain.trim() || rechecking) return;
-    setRecheckPrevScore(profile ? aeoScore(profile) : null);
+    const before = profile ? aeoScore(profile) : null;
+    setRecheckDelta(null);
     setRechecking(true);
     setError(null);
     try {
@@ -255,7 +263,12 @@ export default function Page() {
       if (typeof runId === "number") {
         try {
           const rep = await api.siteReport(runId);
-          if (rep.sections?.strategy) setDeepProfile(rep.sections.strategy);
+          if (rep.sections?.strategy) {
+            setDeepProfile(rep.sections.strategy);
+            // one-shot celebratory delta — only when this re-check actually raised the score
+            const after = aeoScore(rep.sections.strategy);
+            if (before != null && after > before) setRecheckDelta(after - before);
+          }
         } catch {
           /* best-effort — the score holds at its last value */
         }
@@ -280,6 +293,8 @@ export default function Page() {
           const { id } = await api.createPlanState({
             plan: resp.plan,
             profile,
+            // frozen at plan-issue time — later re-checks don't rewrite it (it seeds the
+            // score-over-time delta in a later spec, which wants the issuing run)
             run_id: auditJob?.result?.run?.run_id ?? null,
             business_name: name.trim() || undefined,
             domain: domain.trim() || undefined,
@@ -380,11 +395,16 @@ export default function Page() {
               domain={domain.trim()}
               rechecking={rechecking}
               recheckJob={recheckJob}
-              recheckPrevScore={recheckPrevScore}
+              recheckDelta={recheckDelta}
               onRecheck={recheckSite}
               onGenerateDeliverables={generateDeliverables}
               onDownloadZip={downloadZip}
-              onEdit={() => setView("wizard")}
+              onEdit={() => {
+                setView("wizard");
+                // back to editing → the address bar should reflect the wizard, not the
+                // saved /plan/<id> (a reload otherwise loads the old plan)
+                if (typeof window !== "undefined") window.history.replaceState(null, "", "/");
+              }}
             />
           </>
         ) : (

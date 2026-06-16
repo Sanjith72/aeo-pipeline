@@ -56,7 +56,7 @@ export function ResultsView({
   domain,
   rechecking,
   recheckJob,
-  recheckPrevScore,
+  recheckDelta,
   onRecheck,
   onGenerateDeliverables,
   onDownloadZip,
@@ -73,7 +73,7 @@ export function ResultsView({
   domain: string;
   rechecking: boolean;
   recheckJob: AuditJob | null;
-  recheckPrevScore: number | null;
+  recheckDelta: number | null;
   onRecheck: () => void;
   onGenerateDeliverables: () => void;
   onDownloadZip: () => void;
@@ -144,7 +144,7 @@ export function ResultsView({
             domain={domain}
             rechecking={rechecking}
             recheckJob={recheckJob}
-            prevScore={recheckPrevScore}
+            delta={recheckDelta}
             onRecheck={onRecheck}
           />
         )}
@@ -153,7 +153,7 @@ export function ResultsView({
             deliverables={deliverables}
             loading={delivLoading}
             slowMode={aiPersonalization}
-            storageKey={`aeo-plan:${businessName.toLowerCase()}`}
+            storageKey={`aeo-plan:${domain || businessName.toLowerCase()}`}
             planStateId={planStateId}
             score={score}
             onGenerate={onGenerateDeliverables}
@@ -422,11 +422,21 @@ const PRIORITY_FOLDERS = [
   { key: "low", title: "Low priority", blurb: "Nice-to-haves that round things out.", badge: "bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/30" },
 ] as const;
 
-// Split the priority-ordered actions into three importance bands.
+// Split the priority-ordered actions into three importance bands as evenly as possible
+// (remainder lands on the higher-priority bands first): n=4 → 2/1/1, n=5 → 2/2/1.
 function bucketActions(actions: StrategyAction[]): StrategyAction[][] {
   const sorted = [...actions].sort((a, b) => a.priority - b.priority);
-  const cut = Math.ceil(sorted.length / 3);
-  return [sorted.slice(0, cut), sorted.slice(cut, cut * 2), sorted.slice(cut * 2)];
+  const n = sorted.length;
+  const base = Math.floor(n / 3);
+  const rem = n % 3;
+  const sizes = [base + (rem > 0 ? 1 : 0), base + (rem > 1 ? 1 : 0), base];
+  const out: StrategyAction[][] = [];
+  let i = 0;
+  for (const size of sizes) {
+    out.push(sorted.slice(i, i + size));
+    i += size;
+  }
+  return out;
 }
 
 function ActionRow({ action }: { action: StrategyAction }) {
@@ -508,19 +518,19 @@ function StrategyPanel({
   domain,
   rechecking,
   recheckJob,
-  prevScore,
+  delta,
   onRecheck,
 }: {
   profile: SiteProfile;
   domain: string;
   rechecking: boolean;
   recheckJob: AuditJob | null;
-  prevScore: number | null;
+  delta: number | null;
   onRecheck: () => void;
 }) {
   const score = aeoScore(profile);
   const ceiling = aeoScoreCeiling(profile);
-  const improved = prevScore != null && score > prevScore;
+  const improved = delta != null && delta > 0;
   const buckets = bucketActions(profile.actions);
 
   return (
@@ -564,7 +574,7 @@ function StrategyPanel({
         </p>
         {improved && (
           <p className="step-in mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
-            +{score - (prevScore ?? 0)} since your last check — your changes are landing. 🎉
+            +{delta} since your last check — your changes are landing. 🎉
           </p>
         )}
         {domain && (

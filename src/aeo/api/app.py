@@ -448,13 +448,13 @@ def create_plan_state(req: PlanStateCreate) -> dict[str, Any]:
 
 
 @app.get("/api/plan-state")
-def resume_plan_state(session_id: str) -> dict[str, Any]:
+def resume_plan_state(session_id: str | None = None) -> dict[str, Any]:
     """The newest saved plan for a returning session — powers the homepage 'resume'
-    banner. Returns ``{"id": null}`` (200) when the session has no saved plan yet, so the
-    frontend never has to treat 'nothing to resume' as an error."""
+    banner. Returns ``{"id": null}`` (200) when the session is absent/blank or has no saved
+    plan yet, so the frontend never has to treat 'nothing to resume' as an error."""
     from ..storage.repos import plan_state as plan_state_repo
 
-    sid = session_id.strip()
+    sid = (session_id or "").strip()
     row = plan_state_repo.latest_for_session(sid) if sid else None
     if not row:
         return {"id": None}
