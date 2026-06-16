@@ -133,7 +133,8 @@ export const api = {
   },
   async getPlanState(id: string): Promise<PlanStateResponse> {
     const res = await fetch(`${BASE}/api/plan-state/${encodeURIComponent(id)}`, { headers: headers() });
-    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    // Attach the status so the caller can tell 404 (gone) from 5xx/network (retry).
+    if (!res.ok) throw Object.assign(new Error(`API ${res.status} ${res.statusText}`), { status: res.status });
     return (await res.json()) as PlanStateResponse;
   },
   /** Fire-and-forget progress save: a failed write must never lose the user's check, so

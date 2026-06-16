@@ -202,7 +202,6 @@ export interface BriefRequest {
 // Mirrors src/aeo/storage/repos/plan_state.py rows.
 export interface PlanStateResponse {
   id: string;
-  session_id: string | null;
   run_id: number | null;
   business_name: string | null;
   domain: string | null;
