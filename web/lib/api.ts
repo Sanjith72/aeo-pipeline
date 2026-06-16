@@ -7,8 +7,12 @@ import type {
   BriefRequest,
   CompetitorSuggestResponse,
   DeliverablesResponse,
+  PlanStateResponse,
   ProfileResponse,
+  ResumeResponse,
+  SiteProfile,
   SiteReportResponse,
+  StructuredPlan,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -110,6 +114,57 @@ export const api = {
     const res = await fetch(`${BASE}/api/site-report/${runId}`, { headers: headers() });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as SiteReportResponse;
+  },
+
+  // ── persisted, resumable plan (B1) ────────────────────────────────────────
+  /** Persist the interactive plan so progress survives a device switch and earns a
+   *  resumable /plan/<id> link. The session id is attached so the homepage can
+   *  auto-offer a resume on return. */
+  createPlanState(req: {
+    plan: StructuredPlan;
+    profile?: SiteProfile | null;
+    run_id?: number | null;
+    business_name?: string | null;
+    domain?: string | null;
+    score?: number | null;
+    done_task_ids?: string[];
+  }): Promise<{ id: string }> {
+    return postJson<{ id: string }>("/api/plan-state", { session_id: getSessionId(), ...req });
+  },
+  async getPlanState(id: string): Promise<PlanStateResponse> {
+    const res = await fetch(`${BASE}/api/plan-state/${encodeURIComponent(id)}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as PlanStateResponse;
+  },
+  /** Fire-and-forget progress save: a failed write must never lose the user's check, so
+   *  callers also mirror to localStorage. `keepalive` lets the last toggle survive an
+   *  in-flight page unload. */
+  updatePlanState(id: string, body: { done_task_ids: string[]; score?: number | null }): void {
+    if (typeof window === "undefined") return;
+    try {
+      void fetch(`${BASE}/api/plan-state/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify(body),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      /* best-effort */
+    }
+  },
+  /** The newest saved plan for this browser's session, for the 'resume your plan' banner.
+   *  Best-effort: any failure resolves to {id:null} so the homepage never shows an error. */
+  async resumePlan(): Promise<ResumeResponse> {
+    if (typeof window === "undefined") return { id: null };
+    try {
+      const res = await fetch(`${BASE}/api/plan-state?session_id=${encodeURIComponent(getSessionId())}`, {
+        headers: headers(),
+      });
+      if (!res.ok) return { id: null };
+      return (await res.json()) as ResumeResponse;
+    } catch {
+      return { id: null };
+    }
   },
 
   // ── instrumentation (Block F) ─────────────────────────────────────────────

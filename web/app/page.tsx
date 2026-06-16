@@ -18,6 +18,7 @@ import type {
   SiteProfile,
 } from "@/lib/types";
 import { GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
+import { aeoScore } from "@/lib/score";
 import { Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/components/chrome";
 import { AnalysisProgress, ResultsView, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
@@ -83,6 +84,17 @@ export default function Page() {
   const [auditJob, setAuditJob] = useState<AuditJob | null>(null);
   const [deepProfile, setDeepProfile] = useState<SiteProfile | null>(null);
 
+  // the persisted, resumable plan (B1): set once the plan is saved server-side
+  const [planStateId, setPlanStateId] = useState<string | null>(null);
+  // a saved plan from a previous visit on this browser — powers the "resume" banner
+  const [resumeId, setResumeId] = useState<string | null>(null);
+  const [resumeDismissed, setResumeDismissed] = useState(false);
+
+  // re-crawl ("Re-check my site") that drives the Strategy tab's readiness bar
+  const [rechecking, setRechecking] = useState(false);
+  const [recheckJob, setRecheckJob] = useState<AuditJob | null>(null);
+  const [recheckPrevScore, setRecheckPrevScore] = useState<number | null>(null);
+
   const studioRef = useRef<HTMLElement>(null);
 
   // A dead crawl (or no site at all) routes to the no-website brief path (#3).
@@ -90,9 +102,16 @@ export default function Page() {
   const profile: SiteProfile | null = deepProfile ?? profileResult?.profile ?? plan?.profile ?? null;
   const analyzed = profile !== null || plan !== null || auditJob?.status === "succeeded";
 
-  // fire session_start / return_visit once on load (Block F instrumentation)
+  // fire session_start / return_visit once on load (Block F instrumentation), and offer
+  // to resume a plan this browser saved on an earlier visit (B1).
   useEffect(() => {
     api.trackVisit();
+    api.resumePlan().then(
+      (r) => {
+        if (r.id) setResumeId(r.id);
+      },
+      () => {},
+    );
   }, []);
 
   // moving between steps always shows the top of the new step
@@ -208,11 +227,71 @@ export default function Page() {
     return true;
   }
 
+  // Re-crawl the same site to measure progress as the user ships changes — drives the
+  // Strategy tab's readiness bar. The fresh profile flows into `profile`, so the score
+  // (and the bar) climb when the rebuilt site actually improves.
+  async function recheckSite() {
+    if (!domain.trim() || rechecking) return;
+    setRecheckPrevScore(profile ? aeoScore(profile) : null);
+    setRechecking(true);
+    setError(null);
+    try {
+      const { job_id } = await api.startAudit({ domain: domain.trim(), name: name.trim() || deriveName(domain) });
+      let job = await api.auditStatus(job_id);
+      setRecheckJob(job);
+      let tries = 0;
+      while ((job.status === "queued" || job.status === "running") && tries < 450) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        job = await api.auditStatus(job_id);
+        setRecheckJob(job);
+        tries += 1;
+      }
+      if (job.status === "failed") {
+        setError(job.error || "We couldn't finish re-checking your site. Please try again.");
+        return;
+      }
+      setAuditJob(job);
+      const runId = job.result?.run?.run_id;
+      if (typeof runId === "number") {
+        try {
+          const rep = await api.siteReport(runId);
+          if (rep.sections?.strategy) setDeepProfile(rep.sections.strategy);
+        } catch {
+          /* best-effort — the score holds at its last value */
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRechecking(false);
+    }
+  }
+
   async function generateDeliverables() {
     setDelivLoading(true);
     setError(null);
     try {
-      setDeliverables(await api.deliverables({ ...briefFromForm(), draft_limit: 10 }));
+      const resp = await api.deliverables({ ...briefFromForm(), draft_limit: 10 });
+      setDeliverables(resp);
+      // Persist the plan so progress survives a device switch and earns a /plan/<id> link
+      // (B1). Best-effort: on failure the plan still works via localStorage.
+      if (resp.plan && resp.plan.total > 0) {
+        try {
+          const { id } = await api.createPlanState({
+            plan: resp.plan,
+            profile,
+            run_id: auditJob?.result?.run?.run_id ?? null,
+            business_name: name.trim() || undefined,
+            domain: domain.trim() || undefined,
+            score: profile ? aeoScore(profile) : null,
+          });
+          setPlanStateId(id);
+          setResumeId(id); // keep the 'resume' banner pointing at the latest plan
+          if (typeof window !== "undefined") window.history.replaceState(null, "", `/plan/${id}`);
+        } catch {
+          /* persistence is best-effort — the plan still works locally */
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -266,6 +345,26 @@ export default function Page() {
           )}
         </div>
 
+        {view === "wizard" && resumeId && !resumeDismissed && (
+          <div className="step-in mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/[0.06] px-4 py-3 text-sm">
+            <span className="text-ink">
+              <span className="font-medium">Welcome back.</span> You have a saved plan in progress.
+            </span>
+            <span className="flex items-center gap-2">
+              <a href={`/plan/${resumeId}`} className="btn-accent !px-3 !py-1.5 text-[13px]">
+                Resume my plan →
+              </a>
+              <button
+                onClick={() => setResumeDismissed(true)}
+                aria-label="Dismiss"
+                className="btn-ghost !px-2 !py-1 text-ink-300"
+              >
+                ✕
+              </button>
+            </span>
+          </div>
+        )}
+
         {view === "results" ? (
           <>
             {error && <ErrorNote message={error} />}
@@ -277,6 +376,12 @@ export default function Page() {
               deliverables={deliverables}
               delivLoading={delivLoading}
               aiPersonalization={useLlm}
+              planStateId={planStateId}
+              domain={domain.trim()}
+              rechecking={rechecking}
+              recheckJob={recheckJob}
+              recheckPrevScore={recheckPrevScore}
+              onRecheck={recheckSite}
               onGenerateDeliverables={generateDeliverables}
               onDownloadZip={downloadZip}
               onEdit={() => setView("wizard")}

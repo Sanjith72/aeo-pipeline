@@ -70,7 +70,7 @@ def _install_cors(application: FastAPI) -> None:
         application.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
-            allow_methods=["GET", "POST"],
+            allow_methods=["GET", "POST", "PUT"],
             allow_headers=["Content-Type", "X-API-Key"],
         )
 
@@ -136,6 +136,30 @@ class EventRequest(BaseModel):
     client_id: int | None = None
     url: str | None = None
     metadata: dict[str, Any] = {}
+
+
+class PlanStateCreate(BaseModel):
+    """Persist the interactive plan so it survives a device switch and earns a resumable
+    /plan/<id> link (B1). ``plan`` is the StructuredPlan the UI renders; ``profile`` is a
+    SiteProfile snapshot for the score/overview; ``score`` is the canonical AEO score at
+    issue time (seeds the score-over-time delta in a later spec)."""
+
+    session_id: str | None = None
+    run_id: int | None = None
+    business_name: str | None = None
+    domain: str | None = None
+    plan: dict[str, Any]
+    profile: dict[str, Any] | None = None
+    score: int | None = None
+    done_task_ids: list[str] = []
+
+
+class PlanProgressUpdate(BaseModel):
+    """Save progress for a plan — the set of completed task ids (and optionally a
+    refreshed score). Idempotent; ``score`` is only written when present."""
+
+    done_task_ids: list[str] = []
+    score: int | None = None
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -404,3 +428,55 @@ def metrics() -> dict[str, Any]:
     from ..storage.repos import events as events_repo
 
     return events_repo.metrics()
+
+
+# ── persisted, resumable plan (B1) ──────────────────────────────────────────────
+
+
+@app.post("/api/plan-state")
+def create_plan_state(req: PlanStateCreate) -> dict[str, Any]:
+    """Persist the interactive plan so progress survives a device switch and earns a
+    resumable ``/plan/<id>`` link. Returns the minted id."""
+    from ..storage.repos import plan_state as plan_state_repo
+
+    pid = plan_state_repo.create(
+        plan=req.plan, profile=req.profile, session_id=(req.session_id or None),
+        run_id=req.run_id, business_name=req.business_name, domain=req.domain,
+        score_snapshot=req.score, done_task_ids=req.done_task_ids,
+    )
+    return {"id": pid}
+
+
+@app.get("/api/plan-state")
+def resume_plan_state(session_id: str) -> dict[str, Any]:
+    """The newest saved plan for a returning session — powers the homepage 'resume'
+    banner. Returns ``{"id": null}`` (200) when the session has no saved plan yet, so the
+    frontend never has to treat 'nothing to resume' as an error."""
+    from ..storage.repos import plan_state as plan_state_repo
+
+    sid = session_id.strip()
+    row = plan_state_repo.latest_for_session(sid) if sid else None
+    if not row:
+        return {"id": None}
+    return {"id": row["id"], "business_name": row.get("business_name"), "domain": row.get("domain")}
+
+
+@app.get("/api/plan-state/{plan_id}")
+def get_plan_state(plan_id: str) -> dict[str, Any]:
+    """The saved plan behind a ``/plan/<id>`` link (plan + profile snapshot + progress)."""
+    from ..storage.repos import plan_state as plan_state_repo
+
+    row = plan_state_repo.get(plan_id)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"no plan {plan_id}")
+    return row
+
+
+@app.put("/api/plan-state/{plan_id}")
+def update_plan_state(plan_id: str, req: PlanProgressUpdate) -> dict[str, Any]:
+    """Save progress (the completed-task set, optionally a refreshed score) for a plan."""
+    from ..storage.repos import plan_state as plan_state_repo
+
+    if not plan_state_repo.update_progress(plan_id, req.done_task_ids, req.score):
+        raise HTTPException(status_code=404, detail=f"no plan {plan_id}")
+    return {"ok": True}
