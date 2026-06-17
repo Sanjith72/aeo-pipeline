@@ -47,14 +47,44 @@ class CitationObservation:
 @dataclass(slots=True)
 class CriteriaRefinement:
     criterion: str
-    current_target: int
-    proposed_target: int
+    # Nullable: rubric proposals carry numeric tier targets; an override-derived proposal
+    # (R2-4) has no numeric target and leaves both None (the values live in ``evidence``).
+    current_target: int | None
+    proposed_target: int | None
     rationale: str
     evidence: dict
     status: str = "proposed"
 
     def to_row(self) -> dict:
         return asdict(self)
+
+
+# Override-derived proposals are namespaced on the criterion so they're distinguishable
+# from rubric-tier proposals in the same human-gated queue.
+_OVERRIDE_PREFIX = "override:"
+
+
+def propose_refinement_from_override(
+    *, field: str, old_value: object, new_value: object, kind: str = "field_override"
+) -> CriteriaRefinement:
+    """Turn a human override — an edited prefill, or a rejected recommendation — into a
+    **proposed** refinement for the human-gated queue.
+
+    The learning loop is capture → propose → human-validate. This function ALWAYS returns
+    ``status='proposed'`` and never touches an existing refinement: per the v4 design the
+    system must never auto-apply (or auto-tune toward) a learned change, to avoid the
+    circular-validation trap. A human reviews every proposal via ``set_refinement_status``."""
+    return CriteriaRefinement(
+        criterion=f"{_OVERRIDE_PREFIX}{field}"[:40],
+        current_target=None,
+        proposed_target=None,
+        rationale=(
+            f"User {kind.replace('_', ' ')} on '{field}': {old_value!r} → {new_value!r}. "
+            "Captured as a proposal for human review; not auto-applied."
+        ),
+        evidence={"kind": kind, "field": field, "old": old_value, "new": new_value},
+        status="proposed",
+    )
 
 
 def _median(values: list[int]) -> float | None:

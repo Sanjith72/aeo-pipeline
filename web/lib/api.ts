@@ -146,6 +146,37 @@ export const api = {
     }
   },
 
+  /** Capture a human override (R2-4) — an edited prefill or a rejected recommendation.
+   *  Fire-and-forget + best-effort: the server logs it as eval signal AND a human-gated
+   *  PROPOSED refinement (never auto-applied). Failures are swallowed so it can't break
+   *  the user's flow. */
+  captureOverride(
+    field: string,
+    oldValue: unknown,
+    newValue: unknown,
+    kind: "field_override" | "recommendation_rejected" = "field_override",
+    url?: string,
+  ): void {
+    if (typeof window === "undefined") return;
+    try {
+      void fetch(`${BASE}/api/overrides`, {
+        method: "POST",
+        headers: headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          session_id: getSessionId(),
+          field,
+          old_value: oldValue ?? null,
+          new_value: newValue ?? null,
+          kind,
+          url: url ?? null,
+        }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      /* best-effort */
+    }
+  },
+
   /** Call once on app load: emits `session_start` on a brand-new session and
    *  `return_visit` when an existing session spans a new calendar day — the signal
    *  behind the return-rate metric. */

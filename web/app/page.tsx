@@ -164,11 +164,28 @@ export default function Page() {
     setStep((s) => s + 1);
   }
 
+  // Capture any prefilled value the user edited away from what the crawl inferred (R2-4):
+  // each edit is logged as eval signal AND a human-gated PROPOSED refinement (never
+  // auto-applied). The LLM does the inferring; the human only validates/overrides.
+  function captureIntakeOverrides() {
+    const inf = profileResult;
+    if (!inf) return;
+    const cat = category.trim();
+    const loc = location.trim();
+    if (inf.industry && cat && cat !== inf.industry) {
+      api.captureOverride("industry", inf.industry, cat, "field_override", domain.trim() || undefined);
+    }
+    if (inf.location && loc && loc !== inf.location) {
+      api.captureOverride("location", inf.location, loc, "field_override", domain.trim() || undefined);
+    }
+  }
+
   // Final action: run the comprehensive analysis (always — no mode to choose, #6), then
   // show results. A site gets the full page-by-page audit with live progress (#7); a
   // no-website brief gets the instant blueprint.
   async function createPlan() {
     api.track("wizard_step_completed", { step: 3 });
+    captureIntakeOverrides();
     setError(null);
     setPlan(null);
     setDeliverables(null);
