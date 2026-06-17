@@ -245,6 +245,8 @@ def blueprint(req: BlueprintRequest) -> dict[str, Any]:
 def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
     """Build the developer-ready asset bundle from a brief and return it inline (the
     frontend renders / offers each asset for download)."""
+    from ..report.strategy import build_strategy
+
     brief = _brief(req)
     framework, llm = _framework_and_llm(brief, req.use_llm)
     plan_result = plan_from_brief(brief, framework=framework, llm=llm)
@@ -254,15 +256,20 @@ def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
         llm=llm, draft_limit=req.draft_limit,
         builder_mode=req.builder_mode, business=_business_dict(brief),
     )
+    # #10 — the prioritized plan as structured JSON: phased, quick-wins flagged, each
+    # task carrying current_state/action_required/how_to + AI-vs-human prompts. This
+    # is what the interactive in-app checklist renders.
+    plan = plan_for(
+        blueprint=plan_result.blueprint, coverage=plan_result.coverage,
+        builder_mode=req.builder_mode, business=_business_dict(brief),
+    )
     return {
         "manifest": bundle.manifest(),
-        # #10 — the prioritized plan as structured JSON: phased, quick-wins flagged, each
-        # task carrying current_state/action_required/how_to + AI-vs-human prompts. This
-        # is what the interactive in-app checklist renders.
-        "plan": plan_for(
-            blueprint=plan_result.blueprint, coverage=plan_result.coverage,
-            builder_mode=req.builder_mode, business=_business_dict(brief),
-        ),
+        "plan": plan,
+        # R2-5 — the same tasks clustered by difficulty/maturity grade (the Strategy tab),
+        # each group with a what/why/how readme + its linked task ids. LLM enriches the
+        # readmes when enabled; deterministic otherwise.
+        "strategy": build_strategy(plan, llm=llm),
         # Legacy flat-weeks checklist kept for the zip fallback + back-compat.
         "checklist": checklist_for(
             blueprint=plan_result.blueprint, coverage=plan_result.coverage,
