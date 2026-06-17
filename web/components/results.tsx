@@ -280,12 +280,71 @@ function stageSummary(stage: string, counts: Record<string, number | string | nu
   }
 }
 
-export function AnalysisProgress({ job }: { job: AuditJob }) {
+// Evocative, honest reassurance lines that cycle while the deep audit runs — so the wait
+// reads as active work, not a dead spinner (Task 3 premium loading).
+const WAIT_MESSAGES = [
+  "Reading your pages the way an AI assistant would…",
+  "Checking how answer engines describe your business…",
+  "Comparing you against the ideal site structure…",
+  "Finding the gaps competitors are winning…",
+  "Lining up your highest-impact fixes…",
+];
+
+// The fast profile we already computed on step 0, shown DURING the deep-audit wait so the
+// user sees real, site-specific value in seconds instead of a bare checklist (Task 3).
+function EarlyFindings({ profile }: { profile: SiteProfile }) {
+  const score = aeoScore(profile);
+  const band = scoreBand(score);
+  const tone = RING_TONE[band.tone];
+  const stages = profile.journey?.stages ?? [];
+  return (
+    <div className="step-in mb-4 rounded-lg border border-ink/[0.08] bg-paper-100 p-4">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="label-mono">Early findings — going deeper now</span>
+        <span className={`font-display text-lg font-semibold ${tone.text}`}>
+          {score}
+          <span className="text-xs text-ink-300">/100</span>
+        </span>
+      </div>
+      {profile.headline && <p className="text-sm text-ink-500">{profile.headline}</p>}
+      {stages.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {stages.map((s) => (
+            <span
+              key={s.stage}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] capitalize ${
+                s.covered
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                  : "border-ink/10 bg-paper-200/70 text-ink-300"
+              }`}
+            >
+              {s.covered ? <Check width={10} height={10} /> : <span className="h-1 w-1 rounded-full bg-ink/20" />}
+              {humanizeToken(s.stage)}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function AnalysisProgress({ job, profile }: { job: AuditJob; profile?: SiteProfile | null }) {
   const stages = job.stages ?? [];
   const lastStage = stages.length ? stages[stages.length - 1].stage : null;
   const working = job.status === "queued" || job.status === "running";
+
+  // Cycle the reassurance line every few seconds while the audit is in flight.
+  const [msgIdx, setMsgIdx] = useState(0);
+  useEffect(() => {
+    if (!working) return;
+    const t = setInterval(() => setMsgIdx((i) => (i + 1) % WAIT_MESSAGES.length), 3000);
+    return () => clearInterval(t);
+  }, [working]);
+
   return (
     <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-5 text-sm">
+      {profile && <EarlyFindings profile={profile} />}
+
       <div className="flex items-center gap-2.5 text-amber-200">
         <span className="relative flex h-2.5 w-2.5">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
@@ -314,11 +373,7 @@ export function AnalysisProgress({ job }: { job: AuditJob }) {
         {working && lastStage !== "report" && (
           <li className="flex items-center gap-2.5 text-ink-300">
             <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-amber-500/40 border-t-amber-400" />
-            <span className="text-xs">
-              {job.progress && STAGE_LABEL[job.progress]
-                ? `${STAGE_LABEL[job.progress]}…`
-                : "Working…"}
-            </span>
+            <span key={msgIdx} className="step-in text-xs">{WAIT_MESSAGES[msgIdx]}</span>
           </li>
         )}
       </ol>

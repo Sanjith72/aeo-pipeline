@@ -643,7 +643,9 @@ export default function Page() {
                         )}
                       </div>
 
-                      {loading && !noSite && auditJob && <AnalysisProgress job={auditJob} />}
+                      {loading && !noSite && auditJob && (
+                        <AnalysisProgress job={auditJob} profile={profileResult?.profile} />
+                      )}
                       {analyzed && !loading && (
                         <button onClick={() => setView("results")} className="btn-ghost text-[13px]">
                           View my results →
