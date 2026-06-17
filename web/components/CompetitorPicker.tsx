@@ -23,6 +23,7 @@ export function CompetitorPicker({
   category,
   location,
   domain,
+  services,
   selected,
   onChange,
 }: {
@@ -30,6 +31,7 @@ export function CompetitorPicker({
   category: string;
   location: string;
   domain: string;
+  services: string[];
   selected: CompetitorPick[];
   onChange: (next: CompetitorPick[]) => void;
 }) {
@@ -40,7 +42,7 @@ export function CompetitorPicker({
   const [showSite, setShowSite] = useState(false);
   const requestSeq = useRef(0);
 
-  const cacheKey = [businessName, category, location, domain]
+  const cacheKey = [businessName, category, location, domain, services.join(",")]
     .map((s) => s.trim().toLowerCase())
     .join("|");
 
@@ -61,6 +63,7 @@ export function CompetitorPicker({
         category: category.trim() || undefined,
         location: location.trim() || undefined,
         domain: domain.trim() || undefined,
+        services: services.length > 0 ? services : undefined,
         count: 8,
       });
       if (seq !== requestSeq.current) return; // a newer request superseded this one

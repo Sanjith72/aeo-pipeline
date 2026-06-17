@@ -48,13 +48,27 @@ _DISCOVERY_SYSTEM = (
 
 
 def _discovery_prompt(
-    name: str, domain: str, topic: str | None, location: str | None, count: int
+    name: str,
+    domain: str,
+    topic: str | None,
+    location: str | None,
+    count: int,
+    services: list[str] | None = None,
 ) -> str:
     topic_clause = f' in the "{topic}" space' if topic else ""
     location_clause = f" based in or serving {location}" if location else ""
     company = f"{name} ({domain})" if domain else name
+    # The crawled offerings sharpen "direct competitor" — companies selling these same
+    # things, not just anyone in the broad category.
+    cleaned_services = [s.strip() for s in (services or []) if s and s.strip()][:8]
+    services_clause = (
+        f"\nThey offer: {', '.join(cleaned_services)}. Prioritise competitors that sell "
+        "these same products/services."
+        if cleaned_services
+        else ""
+    )
     return (
-        f"Company: {company}{topic_clause}{location_clause}\n"
+        f"Company: {company}{topic_clause}{location_clause}{services_clause}\n"
         f"List up to {count} of this company's REAL, direct competitors — companies that "
         "actually exist and compete for the same customers today. Do not include the "
         "company itself.\n"
@@ -138,6 +152,7 @@ def discover_competitors(
     *,
     topic: str | None = None,
     location: str | None = None,
+    services: list[str] | None = None,
     count: int = _DEFAULT_COUNT,
     llm: LLMClient | None = None,
     head_check: HeadCheck | None = None,
@@ -155,7 +170,7 @@ def discover_competitors(
 
     try:
         data = llm.generate_json(
-            _discovery_prompt(name, domain, topic, location, count), _DISCOVERY_SYSTEM
+            _discovery_prompt(name, domain, topic, location, count, services), _DISCOVERY_SYSTEM
         )
     except Exception as exc:
         log.warning("competitor_discovery_llm_failed", name=name, domain=domain, error=str(exc))
