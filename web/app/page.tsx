@@ -57,6 +57,9 @@ const STEPS = [
 
 export default function Page() {
   const [step, setStep] = useState(0);
+  // P5: the furthest step the user has reached — the Stepper only lets you jump to steps
+  // you've actually been to, so a first-timer can't land on an empty step 2/3.
+  const [furthest, setFurthest] = useState(0);
   const [view, setView] = useState<"wizard" | "results">("wizard");
 
   // the brief — the website is the only required first input (#1)
@@ -67,9 +70,13 @@ export default function Page() {
   const [location, setLocation] = useState("");
   const [servicesText, setServicesText] = useState("");
   const [competitors, setCompetitors] = useState<CompetitorPick[]>([]);
-  const [goals, setGoals] = useState<string[]>([]);
+  // P7: pre-select the universal AEO goal so the user validates a default instead of
+  // facing an empty multi-select (LLM-first: recommend, don't ask cold).
+  const [goals, setGoals] = useState<string[]>([GOAL_OPTIONS[0].label]);
   const [challenges, setChallenges] = useState("");
-  const [useLlm, setUseLlm] = useState(true);
+  // P1/P2: default OFF so the auto-built plan is fast (seconds) and never burns LLM
+  // compute on a bouncer; AI personalization is an explicit opt-in.
+  const [useLlm, setUseLlm] = useState(false);
 
   // crawl-derived intake (#2/#3): the fast profile that runs when leaving step 0
   const [prefilling, setPrefilling] = useState(false);
@@ -114,6 +121,11 @@ export default function Page() {
       () => {},
     );
   }, []);
+
+  // P5: remember the furthest step reached so the Stepper can gate forward jumps.
+  useEffect(() => {
+    setFurthest((f) => Math.max(f, step));
+  }, [step]);
 
   // moving between steps always shows the top of the new step
   useEffect(() => {
@@ -213,6 +225,11 @@ export default function Page() {
         if (!ok) return; // audit failed — error already surfaced
       }
       setView("results");
+      // P1 (LLM-first): auto-build the interactive plan in the background — no second
+      // "Build my plan" click or wait. Fire-and-forget so results (score/overview/strategy)
+      // show immediately while the plan tab fills in. useLlm defaults OFF → this is the
+      // fast deterministic build (seconds, no compute burn); AI personalization is opt-in.
+      void generateDeliverables();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -426,7 +443,7 @@ export default function Page() {
           </>
         ) : (
           <div className="grid animate-fade-up-slow gap-8 md:grid-cols-[230px_1fr]">
-            <Stepper current={step} onJump={setStep} />
+            <Stepper current={step} furthest={furthest} onJump={setStep} />
 
             <div>
               {error && <ErrorNote message={error} />}
@@ -600,7 +617,7 @@ export default function Page() {
                         />
                         <span>
                           <span className="block font-medium text-ink">Personalize the wording with AI</span>
-                          <span className="block text-xs text-ink-300">Recommended — takes a little longer but reads like it was written for you.</span>
+                          <span className="block text-xs text-ink-300">Optional — your plan builds instantly without it. Turn on to have each page custom-written (takes a few minutes).</span>
                         </span>
                       </label>
 
@@ -711,21 +728,23 @@ function ErrorNote({ message }: { message: string }) {
   );
 }
 
-function Stepper({ current, onJump }: { current: number; onJump: (i: number) => void }) {
+function Stepper({ current, furthest, onJump }: { current: number; furthest: number; onJump: (i: number) => void }) {
   return (
     <nav aria-label="Steps" className="md:sticky md:top-24 md:self-start">
       <ol className="flex gap-1 overflow-x-auto pb-2 md:flex-col md:gap-0.5 md:overflow-visible md:pb-0">
         {STEPS.map(({ label }, i) => {
           const done = i < current;
           const active = i === current;
+          const reachable = i <= furthest; // only jump to steps you've actually reached (P5)
           return (
             <li key={label} className="shrink-0">
               <button
-                onClick={() => onJump(i)}
+                onClick={() => reachable && onJump(i)}
+                disabled={!reachable}
                 aria-current={active ? "step" : undefined}
                 className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-all duration-200 ${
                   active ? "bg-ink text-paper-100 shadow-card" : "text-ink-500 hover:translate-x-0.5 hover:bg-ink/[0.04]"
-                }`}
+                } ${reachable ? "" : "cursor-not-allowed opacity-40 hover:translate-x-0 hover:bg-transparent"}`}
               >
                 <span
                   className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-mono text-[11px] transition-colors duration-200 ${

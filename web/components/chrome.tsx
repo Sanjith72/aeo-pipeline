@@ -90,7 +90,7 @@ export function Hero() {
   const reduced = useReducedMotion();
   const stats: [ReactNode, string][] = [
     // The one number on the page earns a count-up; the other stats stay still.
-    [<CountUp key="min" to={5} suffix=" min" />, "from questions to plan"],
+    [<CountUp key="score" to={100} />, "point AI-readiness score"],
     ["Plain English", "no tech background needed"],
     ["Ready to use", "checklists your team can run with"],
   ];
@@ -189,8 +189,8 @@ export function HowItWorks() {
   const steps: [string, string, string][] = [
     [
       "01",
-      "Tell us about your business",
-      "Five quick questions — your name, your goals, your competitors. We even suggest the competitors for you.",
+      "Start with your website",
+      "Just paste your address — we read your site and fill in your industry, competitors, and goals. You only confirm.",
     ],
     [
       "02",
