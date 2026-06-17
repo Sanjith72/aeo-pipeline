@@ -12,9 +12,16 @@
 #   business_model.signals         — per-model weighted slug signals (token: weight)
 #   business_model.llm_tiebreak_margin — relative gap under which the LLM breaks a tie
 #   business_model.industry_hints  — onboarding industry/topic keywords -> model boost
+#   topic_industries               — topic-taxonomy CODE -> human-readable industry label
 #   journey.stage_signals          — 5-stage funnel mapping (page_types + slug_tokens)
 #   scenario.map                   — site_class -> scenario
 #   scenario.deliverables          — scenario -> named deliverable
+
+# Topic codes (framework.yaml `topic`) are internal routing keys, not user-facing
+# industries — map each to a real label so the wizard never shows "PEV". Onboarding a new
+# topic = add its entry here. Keys are case-insensitive.
+topic_industries:
+  PEV: Cyber Security
 
 classification:
   thresholds:

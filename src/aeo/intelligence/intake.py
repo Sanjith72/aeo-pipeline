@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .config import IntelligenceCfg
+from .config import IntelligenceCfg, load_intelligence_cfg
 from .signals import PageView
 
 # Intake routes (what the crawl quality says we should do next).
@@ -71,6 +71,13 @@ def classify_intake(
     return RICH
 
 
+def _looks_like_topic_code(value: str) -> bool:
+    """A bare taxonomy code — e.g. "PEV", "CTEM" — vs. a human phrase. Codes are short,
+    all-uppercase, and spaceless; they are internal routing keys, never a user-facing
+    industry, so we must not surface them as one."""
+    return value.isupper() and " " not in value and len(value) <= 8
+
+
 def infer_industry(
     pages: list[PageView],
     *,
@@ -79,13 +86,24 @@ def infer_industry(
     business_model: str | None = None,
     cfg: IntelligenceCfg | None = None,
 ) -> str | None:
-    """Best-effort industry, derived deterministically. An explicit ``category`` (the
-    user override) wins; then a specific crawl/onboarding ``topic``; then a coarse label
-    from the inferred ``business_model``. ``None`` only when nothing is known."""
+    """Best-effort industry, derived deterministically. An explicit ``category`` (the user
+    override) wins; then the ``topic`` — mapped through ``topic_industries`` when it's an
+    internal taxonomy code (e.g. "PEV" → "Cyber Security"), echoed when it's already a
+    human phrase, and SKIPPED when it's an unmapped code (so a routing key never leaks as
+    an industry); then a coarse label from the inferred ``business_model``. ``None`` only
+    when nothing is known."""
     if category and category.strip():
         return category.strip()
-    if topic and topic.strip().lower() not in _GENERIC_TOPICS:
-        return topic.strip()
+    if topic and topic.strip():
+        t = topic.strip()
+        if t.lower() not in _GENERIC_TOPICS:
+            cfg = cfg or load_intelligence_cfg()
+            mapped = cfg.topic_industries.get(t.lower())
+            if mapped:
+                return mapped
+            if not _looks_like_topic_code(t):
+                return t  # already a human phrase ("Vulnerability Management")
+            # else: an unmapped taxonomy code — fall through to the business-model label.
     if business_model:
         return _INDUSTRY_BY_MODEL.get(business_model)
     return None

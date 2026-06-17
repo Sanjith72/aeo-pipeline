@@ -60,6 +60,14 @@ _DEFAULT_MODEL_SIGNALS: dict[str, dict[str, Any]] = {
     "enterprise": {"slug_tokens": {"investors": 3, "careers": 1, "press": 2, "global": 2, "annual-report": 3, "leadership": 2, "newsroom": 2}, "site_class_bonus": {"large": 2, "enterprise": 4}},
 }
 
+# Human-readable industry per topic-taxonomy code (lowercased keys). The `topic` is an
+# internal routing key (e.g. "PEV" = Proactive Exposure / Vulnerability management) that
+# must exist in framework.yaml — it is NOT a user-facing industry, so we map it to a real
+# label. Onboarding a new topic = add its entry here (or override in intelligence.yaml).
+_DEFAULT_TOPIC_INDUSTRIES: dict[str, str] = {
+    "pev": "Cyber Security",
+}
+
 # Onboarding industry/topic text -> model boost (each matched keyword adds a fixed nudge).
 _DEFAULT_INDUSTRY_HINTS: dict[str, list[str]] = {
     "saas":      ["software", "saas", "platform", "b2b", "cloud", "api"],
@@ -100,6 +108,7 @@ class IntelligenceCfg:
     model_signals: dict[str, dict[str, Any]]
     llm_tiebreak_margin: float
     industry_hints: dict[str, list[str]]
+    topic_industries: dict[str, str]
     stage_signals: dict[str, dict[str, list[str]]]
     scenario_map: dict[str, str]
     deliverables: dict[str, str]
@@ -122,6 +131,8 @@ def load_intelligence_cfg() -> IntelligenceCfg:
     bm = raw.get("business_model", {}) or {}
     jr = raw.get("journey", {}) or {}
     sc = raw.get("scenario", {}) or {}
+    # Lowercase the topic_industries keys so lookup is case-insensitive ("PEV" == "pev").
+    topic_ind = {str(k).lower(): str(v) for k, v in _merge(_DEFAULT_TOPIC_INDUSTRIES, raw.get("topic_industries")).items()}
     return IntelligenceCfg(
         thresholds=_merge(_DEFAULT_THRESHOLDS, cls.get("thresholds")),
         archetypes=_merge(_DEFAULT_ARCHETYPES, cls.get("archetypes")),
@@ -129,6 +140,7 @@ def load_intelligence_cfg() -> IntelligenceCfg:
         model_signals=_merge(_DEFAULT_MODEL_SIGNALS, bm.get("signals")),
         llm_tiebreak_margin=float(bm.get("llm_tiebreak_margin", 0.15)),
         industry_hints=_merge(_DEFAULT_INDUSTRY_HINTS, bm.get("industry_hints")),
+        topic_industries=topic_ind,
         stage_signals=_merge(_DEFAULT_STAGE_SIGNALS, jr.get("stage_signals")),
         scenario_map=_merge(_DEFAULT_SCENARIO_MAP, sc.get("map")),
         deliverables=_merge(_DEFAULT_DELIVERABLES, sc.get("deliverables")),

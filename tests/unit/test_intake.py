@@ -51,6 +51,17 @@ class TestInferIndustry:
     def test_specific_topic_used_when_no_category(self):
         assert infer_industry([], topic="Vulnerability Management", business_model="saas") == "Vulnerability Management"
 
+    def test_topic_code_maps_to_human_industry(self):
+        # "PEV" is an internal taxonomy code — it must resolve to its human label, never
+        # surface raw (the Securin "industry = PV" bug).
+        assert infer_industry([], topic="PEV", business_model="saas") == "Cyber Security"
+        assert infer_industry([], topic="pev", business_model="saas") == "Cyber Security"
+
+    def test_unmapped_topic_code_is_not_surfaced(self):
+        # An unmapped code (all-caps, spaceless) falls back to the business-model label
+        # rather than leaking the routing key as an industry.
+        assert infer_industry([], topic="CTEM", business_model="saas") == "Software / SaaS"
+
     def test_generic_topic_falls_back_to_model_label(self):
         assert infer_industry([], topic="generic", business_model="saas") == "Software / SaaS"
 
