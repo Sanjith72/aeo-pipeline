@@ -148,6 +148,17 @@ export default function Page() {
       setProfileResult(res);
       if (res.industry && !category.trim()) setCategory(res.industry);
       if (res.location && !location.trim()) setLocation(res.location);
+      // What you offer — prefilled from the crawl (schema.org offerings + service pages).
+      if (res.services && res.services.length > 0 && !servicesText.trim()) {
+        setServicesText(res.services.join(", "));
+      }
+      // Seed competitors found on-site so they're already ticked when the user reaches
+      // the competitor step (they can untick/add). The picker still fetches more.
+      if (res.competitors && res.competitors.length > 0 && competitors.length === 0) {
+        setCompetitors(
+          res.competitors.map((c) => ({ name: c.name, domain: c.domain || undefined, source: "suggested" as const })),
+        );
+      }
       if (!name.trim()) setName(deriveName(domain));
     } catch (err) {
       // network failure only — let the user continue with manual entry

@@ -306,6 +306,7 @@ def test_profile_routes_dead_crawl_to_no_website(monkeypatch) -> None:
         return {"profile": None, "coverage": {}, "discovered": 0, "source": "none"}
 
     monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    _stub_site_facts(monkeypatch)
     r = client.post("/api/profile", json={"domain": "dead.example"})
     assert r.status_code == 200
     body = r.json()
@@ -328,12 +329,68 @@ def test_profile_returns_inferred_industry_and_location(monkeypatch) -> None:
         }
 
     monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    _stub_site_facts(monkeypatch)
     r = client.post("/api/profile", json={"domain": "acme.com"})
     assert r.status_code == 200
     body = r.json()
     assert body["route"] == "rich"
     assert body["industry"] == "Software / SaaS"
     assert body["location"] is None
+
+
+def _stub_site_facts(monkeypatch, *, location=None, services=None, competitors=None) -> None:
+    """Stop /api/profile's homepage crawl from hitting the network in tests."""
+    from aeo.intelligence.site_facts import SiteFacts
+
+    async def fake_gather(domain, **_):
+        return SiteFacts(location=location, services=services or [], competitors=competitors or [])
+
+    monkeypatch.setattr("aeo.intelligence.site_facts.gather_site_facts", fake_gather)
+
+
+def test_profile_includes_crawled_services_and_competitors(monkeypatch) -> None:
+    # Location / what-you-offer / on-site competitors come back from the crawl so the
+    # wizard's "About you" step arrives prefilled.
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+        return {
+            "profile": {"industry": "Dentistry", "location": None, "scenario": "small_site"},
+            "coverage": {"pct": 40.0},
+            "discovered": 9,
+            "source": "sitemap",
+        }
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    _stub_site_facts(
+        monkeypatch,
+        location="Austin, TX",
+        services=["Teeth Whitening", "Dental Implants"],
+        competitors=[{"name": "Globex", "domain": ""}],
+    )
+    body = client.post("/api/profile", json={"domain": "harbor.com"}).json()
+    assert body["location"] == "Austin, TX"  # content-derived location wins
+    assert body["services"] == ["Teeth Whitening", "Dental Implants"]
+    assert body["competitors"] == [{"name": "Globex", "domain": ""}]
+
+
+def test_competitor_suggest_falls_back_to_onsite_without_llm(monkeypatch) -> None:
+    class _Disabled:
+        enabled = False
+
+    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _Disabled())
+
+    from aeo.intelligence.site_facts import SiteFacts
+
+    async def fake_gather(domain, **_):
+        return SiteFacts(competitors=[{"name": "Globex", "domain": ""}])
+
+    monkeypatch.setattr("aeo.intelligence.site_facts.gather_site_facts", fake_gather)
+    r = client.post("/api/competitors/suggest", json={"name": "Acme", "domain": "acme.com"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "onsite"
+    assert body["competitors"] == [{"name": "Globex", "domain": ""}]
 
 
 def test_cors_allows_the_web_ui_origin() -> None:
