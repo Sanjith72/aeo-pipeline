@@ -22,6 +22,7 @@ from ..extract import schema_jsonld
 from ..logging import get_logger
 from ..utils.html import parse
 from ..utils.url import absolute, host_of, normalize, same_site
+from .industry import classify_vertical
 from .intake import infer_location
 from .signals import to_page_views
 
@@ -65,9 +66,17 @@ class SiteFacts:
     location: str | None = None
     services: list[str] = field(default_factory=list)
     competitors: list[dict[str, str]] = field(default_factory=list)
+    # Crawl-derived specific vertical (Healthcare, Finance, …) — the fallback when
+    # Wikidata has no entity for this site. None when the content gives no clear signal.
+    industry: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"location": self.location, "services": self.services, "competitors": self.competitors}
+        return {
+            "location": self.location,
+            "services": self.services,
+            "competitors": self.competitors,
+            "industry": self.industry,
+        }
 
 
 @dataclass(slots=True)
@@ -269,7 +278,8 @@ def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
         _MAX_SERVICES,
     )
     competitors = competitors_from_docs(docs, own)
-    return SiteFacts(location=location, services=services, competitors=competitors)
+    industry = classify_vertical(" ".join(text_parts), services=services)
+    return SiteFacts(location=location, services=services, competitors=competitors, industry=industry)
 
 
 def _url_views(urls: list[str]) -> list[Any]:

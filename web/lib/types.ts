@@ -165,6 +165,8 @@ export interface ProfileResponse {
   // competitor signals (the wizard seeds these so the user edits instead of typing).
   services?: string[];
   competitors?: CompetitorSuggestion[];
+  // Where the resolved specific industry came from: "wikidata" | "crawl" | "model".
+  industry_source?: string | null;
   // R2-2 cache age: when this domain's homepage was last crawled, so the UI can show
   // "data from N hours ago" and offer an explicit re-crawl. Null = never crawled / no DB.
   last_crawled_at?: string | null;
