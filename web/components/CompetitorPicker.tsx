@@ -15,7 +15,10 @@ type SuggestState =
   | { status: "unavailable" }
   | { status: "error" };
 
-// Session-level cache so revisiting the step doesn't refetch the same brief.
+// Session-level cache so revisiting the step doesn't refetch the same brief. Only
+// non-empty results are cached: with the backend's relaxation ladder a genuine empty
+// list is rare and usually means a transient timeout / data gap, so we let the UI
+// self-heal by refetching on the next visit instead of pinning a blank state.
 const suggestionCache = new Map<string, CompetitorSuggestion[]>();
 
 export function CompetitorPicker({
@@ -50,8 +53,8 @@ export function CompetitorPicker({
     if (!businessName.trim()) return;
     if (!force) {
       const cached = suggestionCache.get(cacheKey);
-      if (cached) {
-        setSuggest(cached.length > 0 ? { status: "ready", items: cached } : { status: "unavailable" });
+      if (cached && cached.length > 0) {
+        setSuggest({ status: "ready", items: cached });
         return;
       }
     }
@@ -68,7 +71,7 @@ export function CompetitorPicker({
       });
       if (seq !== requestSeq.current) return; // a newer request superseded this one
       if (res.source === "unavailable" || res.competitors.length === 0) {
-        suggestionCache.set(cacheKey, []);
+        // Don't cache the blank — a later visit refetches and may succeed.
         setSuggest({ status: "unavailable" });
       } else {
         suggestionCache.set(cacheKey, res.competitors);
