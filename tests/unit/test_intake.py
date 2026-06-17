@@ -51,6 +51,16 @@ class TestInferIndustry:
     def test_specific_topic_used_when_no_category(self):
         assert infer_industry([], topic="Vulnerability Management", business_model="saas") == "Vulnerability Management"
 
+    def test_taxonomy_key_resolves_to_display_label(self):
+        # The taxonomy KEY "PEV" must render as its human label, not leak verbatim.
+        assert infer_industry([], topic="PEV", business_model="saas") == "Cybersecurity"
+
+    def test_taxonomy_key_lookup_is_case_insensitive(self):
+        assert infer_industry([], topic="pev") == "Cybersecurity"
+
+    def test_explicit_category_still_wins_over_taxonomy_key(self):
+        assert infer_industry([], category="Security", topic="PEV") == "Security"
+
     def test_generic_topic_falls_back_to_model_label(self):
         assert infer_industry([], topic="generic", business_model="saas") == "Software / SaaS"
 

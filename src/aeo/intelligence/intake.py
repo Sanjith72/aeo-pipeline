@@ -48,6 +48,15 @@ _LOCATION_STOPWORDS = frozenset({"index", "all", "map", "near-me", "near", "list
 # Topic values that carry no industry signal (don't echo them back as an industry).
 _GENERIC_TOPICS = frozenset({"", "generic", "default", "unknown", "none"})
 
+# Topic taxonomy KEY -> human display LABEL. The taxonomy key (e.g. "PEV") is what we
+# measure against in framework.yaml; it must NOT leak to the UI as the industry. Keys are
+# matched case-insensitively. A topic absent from this map is assumed to already be a
+# human-readable industry (e.g. "Vulnerability Management") and passes through unchanged,
+# preserving the prior behaviour. Mirror new entries in framework.yaml's `display_label`.
+_TOPIC_DISPLAY_LABELS: dict[str, str] = {
+    "pev": "Cybersecurity",  # securin.io: Proactive Exposure / Vulnerability management
+}
+
 
 def classify_intake(
     page_count: int,
@@ -80,12 +89,17 @@ def infer_industry(
     cfg: IntelligenceCfg | None = None,
 ) -> str | None:
     """Best-effort industry, derived deterministically. An explicit ``category`` (the
-    user override) wins; then a specific crawl/onboarding ``topic``; then a coarse label
-    from the inferred ``business_model``. ``None`` only when nothing is known."""
+    user override) wins; then a specific crawl/onboarding ``topic`` (resolved through
+    ``_TOPIC_DISPLAY_LABELS`` so a taxonomy key like ``"PEV"`` renders as its human label
+    ``"Cybersecurity"`` rather than leaking the key); then a coarse label from the inferred
+    ``business_model``. ``None`` only when nothing is known."""
     if category and category.strip():
         return category.strip()
     if topic and topic.strip().lower() not in _GENERIC_TOPICS:
-        return topic.strip()
+        key = topic.strip()
+        # Resolve a taxonomy key (e.g. "PEV") to its human label; an unmapped topic is
+        # assumed already human-readable and echoed back unchanged.
+        return _TOPIC_DISPLAY_LABELS.get(key.lower(), key)
     if business_model:
         return _INDUSTRY_BY_MODEL.get(business_model)
     return None
