@@ -19,8 +19,9 @@ import type {
   SitemapNode,
   StrategyAction,
   StructuredPlan,
+  VerifiedOutcome,
 } from "@/lib/types";
-import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
+import { CRITERION_LABEL, DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
 import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/score";
 import { CountUp } from "./motion/primitives";
 import { ArrowRight, Check } from "./ui/icons";
@@ -513,6 +514,16 @@ function PriorityFolder({
   );
 }
 
+// The path portion of a URL, for the compact "Verified live" list (falls back to the
+// raw value if it isn't a parseable URL).
+function pathOf(url: string): string {
+  try {
+    return new URL(url).pathname || "/";
+  } catch {
+    return url;
+  }
+}
+
 function StrategyPanel({
   profile,
   domain,
@@ -533,8 +544,58 @@ function StrategyPanel({
   const improved = delta != null && delta > 0;
   const buckets = bucketActions(profile.actions);
 
+  // Re-crawl-verified fixes (Spec #2 Slice C). Fetched on mount and again whenever a
+  // re-check finishes (rechecking flips false) so newly-confirmed fixes appear.
+  const [verified, setVerified] = useState<VerifiedOutcome[]>([]);
+  useEffect(() => {
+    if (!domain || rechecking) return;
+    let alive = true;
+    api.recheckStatus(domain).then(
+      (r) => {
+        if (alive) setVerified(r.verified);
+      },
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, [domain, rechecking]);
+
   return (
     <div className="space-y-6">
+      {verified.length > 0 && (
+        <div className="card border-emerald-500/30 bg-emerald-500/[0.06] p-5 sm:p-6">
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-white">
+              <Check width={11} height={11} />
+            </span>
+            <span className="font-medium text-emerald-300">
+              {verified.length} fix{verified.length === 1 ? "" : "es"} verified live
+            </span>
+          </div>
+          <p className="text-sm text-ink-500">
+            We re-crawled your site and confirmed these are actually live — verified by us, not
+            self-reported. This is what a chatbot can't do.
+          </p>
+          <ul className="mt-3 space-y-1.5">
+            {verified.slice(0, 8).map((v, i) => (
+              <li key={`${v.url}-${v.criterion}-${i}`} className="flex items-start gap-2 text-sm">
+                <Check className="mt-0.5 shrink-0 text-emerald-400" width={13} height={13} />
+                <span className="text-ink-500">
+                  <span className="font-medium text-ink">
+                    {CRITERION_LABEL[v.criterion ?? ""] ?? humanizeToken(v.criterion ?? "Improvement")}
+                  </span>{" "}
+                  on <span className="font-mono text-xs">{pathOf(v.url)}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+          {verified.length > 8 && (
+            <p className="mt-2 text-xs text-ink-300">+{verified.length - 8} more verified.</p>
+          )}
+        </div>
+      )}
+
       {/* Re-crawl readiness bar — fills as the rebuilt site is re-crawled. */}
       <div className="card p-5 sm:p-6">
         <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">

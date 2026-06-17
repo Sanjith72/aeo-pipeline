@@ -577,6 +577,28 @@ def get_plan_state(plan_id: str) -> dict[str, Any]:
     return {k: row.get(k) for k in _PLAN_STATE_PUBLIC}
 
 
+@app.get("/api/recheck-status")
+def recheck_status(domain: str) -> dict[str, Any]:
+    """The 'Verified live' view (Spec #2 Slice C): recommendation outcomes a re-crawl has
+    confirmed implemented for this domain. Honest by construction — only criterion-verified
+    outcomes appear. Best-effort: any failure returns an empty set so the results UI never
+    breaks over it."""
+    from ..storage.repos import outcomes as outcomes_repo
+
+    dom = domain.strip()
+    if not dom:
+        return {"verified": [], "count": 0}
+    try:
+        rows = outcomes_repo.implemented_for_domain(dom)
+    except Exception:  # surfacing verified fixes must never break the results view
+        return {"verified": [], "count": 0}
+    verified = [
+        {"url": r["url_normalized"], "criterion": r.get("criterion"), "detected_at": r.get("detected_at")}
+        for r in rows
+    ]
+    return {"verified": verified, "count": len(verified)}
+
+
 @app.put("/api/plan-state/{plan_id}")
 def update_plan_state(plan_id: str, req: PlanProgressUpdate) -> dict[str, Any]:
     """Save progress (the completed-task set, optionally a refreshed score) for a plan."""

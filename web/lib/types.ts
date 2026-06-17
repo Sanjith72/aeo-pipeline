@@ -219,3 +219,15 @@ export interface ResumeResponse {
   business_name?: string | null;
   domain?: string | null;
 }
+
+// GET /api/recheck-status?domain= — re-crawl-verified outcomes (Spec #2 "Verified live").
+export interface VerifiedOutcome {
+  url: string;
+  criterion: string | null;
+  detected_at: string | null;
+}
+
+export interface RecheckStatusResponse {
+  verified: VerifiedOutcome[];
+  count: number;
+}

@@ -1,7 +1,8 @@
 # AEO Verified Re-crawl Moat — Design (Spec #2 of Approach B / "B3")
 
-**Status:** in progress — Slice A (hardening) + Slice B (honest verifier) landed; Slice C
-(UI surfacing) next. **Date:** 2026-06-17. **Branch:** `feat/aeo-retention-foundation`.
+**Status:** Slices A–C landed (hardening · honest verifier · "Verified live" UI).
+Per-task badges + a provisional/permanent score split are deferred (see Slice C).
+**Date:** 2026-06-17. **Branch:** `feat/aeo-retention-foundation`.
 
 This is the moat: a re-crawl that **proves a recommended fix actually shipped on the live
 site** — the one thing every persona in the teardown said they'd pay for, and the
@@ -81,17 +82,24 @@ deployment should set `AEO__API__AUTH_KEY` / front the API with a reverse proxy.
 - *Deferred refinement:* a re-scorable-but-flaky fallback to `not_detected` (vs. staying
   pending) — current behavior keeps it pending so future re-crawls can still confirm.
 
-## Slice C — surface verified state (NEXT)
+## Slice C — surface verified state (LANDED)
 
-- **Endpoint:** `GET /api/recheck-status?domain=` (or by `run_id`) → per-URL/criterion
-  outcome status (`implemented` / `pending` / `not_detected`).
-- **Frontend:** a "Verified live ✓" badge on plan tasks the re-crawl confirmed — a state
-  the user **cannot** self-toggle (distinct from the manual checkbox). Map plan tasks →
-  outcomes by `url_normalized` (+ criterion where the task carries one).
-- **Score split:** self-checks contribute *provisional* points; only re-crawl-verified
-  outcomes bank *permanent* points and move the headline/score-ring number — so a rising
-  score is always earned. (This is the B-spec-2 upgrade the Spec #1 ring deliberately left
-  out.)
+- **Endpoint:** `GET /api/recheck-status?domain=` → `{verified: [{url, criterion,
+  detected_at}], count}`, backed by `outcomes.implemented_for_domain()` (host-matched,
+  `status='implemented'` only). Best-effort: any failure returns an empty set so the
+  results view never breaks over it.
+- **Frontend:** a **"N fixes verified live"** card at the top of the Strategy tab —
+  "verified by us, not self-reported. This is what a chatbot can't do." Fetched on mount
+  and re-fetched whenever a re-check finishes (`rechecking` flips false), with criteria
+  shown in plain language (`CRITERION_LABEL`). This is the moat made visible.
+- **Scope adaptations (deliberate):**
+  - *Domain-level summary, not per-task badges.* `PlanTask` ids are `page:{slug}` / `vis:*`
+    and carry no URL or criterion, while outcomes are keyed by full `url_normalized` +
+    criterion — so a faithful per-task badge needs the packager to emit url+criterion on
+    each task. Deferred to a follow-up rather than faking the mapping.
+  - *No score split needed.* The Spec #1 ring already moves **only** on a re-audit (it's a
+    pure function of the refreshed `SiteProfile`), so there are no self-checked "provisional
+    points" to separate — the score is already re-crawl-honest.
 
 ## Dependencies & order
 

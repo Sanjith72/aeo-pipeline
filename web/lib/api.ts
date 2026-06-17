@@ -9,6 +9,7 @@ import type {
   DeliverablesResponse,
   PlanStateResponse,
   ProfileResponse,
+  RecheckStatusResponse,
   ResumeResponse,
   SiteProfile,
   SiteReportResponse,
@@ -151,6 +152,20 @@ export const api = {
       }).catch(() => {});
     } catch {
       /* best-effort */
+    }
+  },
+  /** Re-crawl-verified outcomes for a domain — the "Verified live" view (Spec #2).
+   *  Best-effort: any failure resolves to an empty set so results never break over it. */
+  async recheckStatus(domain: string): Promise<RecheckStatusResponse> {
+    if (typeof window === "undefined" || !domain) return { verified: [], count: 0 };
+    try {
+      const res = await fetch(`${BASE}/api/recheck-status?domain=${encodeURIComponent(domain)}`, {
+        headers: headers(),
+      });
+      if (!res.ok) return { verified: [], count: 0 };
+      return (await res.json()) as RecheckStatusResponse;
+    } catch {
+      return { verified: [], count: 0 };
     }
   },
   /** The newest saved plan for this browser's session, for the 'resume your plan' banner.

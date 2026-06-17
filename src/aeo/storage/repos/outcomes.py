@@ -166,3 +166,23 @@ def pending_for_url(url_normalized: str) -> list[dict[str, Any]]:
             (url_normalized, PENDING),
         )
         return [dict(row) for row in cur.fetchall()]
+
+
+def implemented_for_domain(domain: str, limit: int = 200) -> list[dict[str, Any]]:
+    """Re-crawl-VERIFIED outcomes across a domain's pages — drives the 'Verified live'
+    view. Only criterion-confirmed ``implemented`` rows are returned, so what the UI shows
+    is honest by construction. Matched by host so it spans every URL on the site."""
+    from ...utils.url import host_of, normalize
+
+    host = host_of(normalize(domain if "://" in domain else f"https://{domain}"))
+    if not host:
+        return []
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, url_normalized, criterion, detected_at "
+            "FROM recommendation_outcomes "
+            "WHERE status = %s AND (url_normalized LIKE %s OR url_normalized LIKE %s) "
+            "ORDER BY detected_at DESC NULLS LAST LIMIT %s",
+            (IMPLEMENTED, f"https://{host}%", f"http://{host}%", limit),
+        )
+        return [dict(row) for row in cur.fetchall()]

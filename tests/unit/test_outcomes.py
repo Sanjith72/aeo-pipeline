@@ -63,6 +63,7 @@ class TestReposImportable:
         assert callable(outcomes_repo.decide_status)
         assert callable(outcomes_repo.for_page)
         assert callable(outcomes_repo.pending_for_url)
+        assert callable(outcomes_repo.implemented_for_domain)
 
 
 class TestMigration0013:
