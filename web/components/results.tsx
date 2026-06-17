@@ -63,6 +63,17 @@ export function ResultsView({
   ];
   const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
 
+  // R2-6 nav rework: reserve the tallest panel height we've rendered so switching to a
+  // shorter tab never collapses the document and yanks the scroll position. Combined with
+  // the sticky tab bar and an opacity-only (no-translate) panel fade, tab switches stay
+  // put — no section jump, no scroll-to-top.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [minPanelH, setMinPanelH] = useState(0);
+  useEffect(() => {
+    const h = panelRef.current?.offsetHeight ?? 0;
+    if (h > minPanelH) setMinPanelH(h);
+  }, [tab, profile, plan, deliverables, minPanelH]);
+
   return (
     <div className="step-in">
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
@@ -85,7 +96,7 @@ export function ResultsView({
         </button>
       </div>
 
-      <div role="tablist" aria-label="Plan sections" className="mb-6 flex gap-1 overflow-x-auto border-b border-ink/[0.08] pb-px">
+      <div role="tablist" aria-label="Plan sections" className="sticky top-0 z-20 mb-6 flex gap-1 overflow-x-auto border-b border-ink/[0.08] bg-paper/90 pb-px backdrop-blur supports-[backdrop-filter]:bg-paper/75">
         {tabs.map((t) => (
           <button
             key={t.id}
@@ -104,7 +115,15 @@ export function ResultsView({
         ))}
       </div>
 
-      <div key={tab} id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`} className="step-in">
+      <div
+        key={tab}
+        ref={panelRef}
+        id={`panel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`tab-${tab}`}
+        className="animate-fade-in"
+        style={{ minHeight: minPanelH || undefined }}
+      >
         {tab === "overview" && profile && <OverviewPanel profile={profile} auditJob={auditJob} />}
         {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
         {tab === "actions" && profile && <ActionsPanel profile={profile} />}
