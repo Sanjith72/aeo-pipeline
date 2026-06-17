@@ -11,6 +11,7 @@ import type {
   ProfileResponse,
   RecheckStatusResponse,
   ResumeResponse,
+  SiteFreshnessResponse,
   SiteProfile,
   SiteReportResponse,
   StructuredPlan,
@@ -152,6 +153,20 @@ export const api = {
       }).catch(() => {});
     } catch {
       /* best-effort */
+    }
+  },
+  /** Has this domain been audited recently? Powers the "Last reviewed N days ago" /
+   *  use-existing affordance (Task 3, 2b). Best-effort: any failure resolves to not-fresh. */
+  async siteFreshness(domain: string): Promise<SiteFreshnessResponse> {
+    if (typeof window === "undefined" || !domain) return { fresh: false };
+    try {
+      const res = await fetch(`${BASE}/api/site-freshness?domain=${encodeURIComponent(domain)}`, {
+        headers: headers(),
+      });
+      if (!res.ok) return { fresh: false };
+      return (await res.json()) as SiteFreshnessResponse;
+    } catch {
+      return { fresh: false };
     }
   },
   /** Re-crawl-verified outcomes for a domain — the "Verified live" view (Spec #2).

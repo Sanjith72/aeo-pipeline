@@ -231,3 +231,12 @@ export interface RecheckStatusResponse {
   verified: VerifiedOutcome[];
   count: number;
 }
+
+// GET /api/site-freshness?domain= — has this domain been audited recently? (Task 3, 2b)
+export interface SiteFreshnessResponse {
+  fresh: boolean;
+  run_id?: number;
+  last_crawled_at?: string;
+  status?: string;
+  has_report?: boolean;
+}

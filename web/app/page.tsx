@@ -15,6 +15,7 @@ import type {
   CompetitorPick,
   DeliverablesResponse,
   ProfileResponse,
+  SiteFreshnessResponse,
   SiteProfile,
 } from "@/lib/types";
 import { GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
@@ -24,6 +25,15 @@ import { AnalysisProgress, ResultsView, triggerDownload } from "@/components/res
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { Combobox } from "@/components/ui/Combobox";
 import { Check } from "@/components/ui/icons";
+
+// Human "N days ago" for the freshness banner (2b). null when no/invalid timestamp.
+function freshnessLabel(iso?: string): string | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  const days = Math.max(0, Math.floor((Date.now() - then) / 86_400_000));
+  return days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+}
 
 function splitList(value: string): string[] {
   return value
@@ -81,6 +91,10 @@ export default function Page() {
   // crawl-derived intake (#2/#3): the fast profile that runs when leaving step 0
   const [prefilling, setPrefilling] = useState(false);
   const [profileResult, setProfileResult] = useState<ProfileResponse | null>(null);
+
+  // crawl freshness (2b): a prior review of this domain we can reuse instead of re-crawling
+  const [freshness, setFreshness] = useState<SiteFreshnessResponse | null>(null);
+  const [freshDismissed, setFreshDismissed] = useState(false);
 
   // results
   const [loading, setLoading] = useState(false);
@@ -162,6 +176,9 @@ export default function Page() {
     }
     setPrefilling(true);
     setError(null);
+    // Has this domain been reviewed before? Best-effort, in parallel — surfaces the
+    // "Last reviewed N days ago / use that review" affordance (2b).
+    api.siteFreshness(domain.trim()).then(setFreshness, () => {});
     try {
       const res = await api.profile({ domain: domain.trim(), use_llm: useLlm });
       setProfileResult(res);
@@ -229,6 +246,24 @@ export default function Page() {
       // "Build my plan" click or wait. Fire-and-forget so results (score/overview/strategy)
       // show immediately while the plan tab fills in. useLlm defaults OFF → this is the
       // fast deterministic build (seconds, no compute burn); AI personalization is opt-in.
+      void generateDeliverables();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // 2b: reuse a prior persisted review instead of re-crawling — instant results from
+  // cache. The plan still auto-builds from the current brief.
+  async function useCachedReview(runId: number) {
+    api.track("wizard_step_completed", { step: 3, cached: true });
+    setError(null);
+    setLoading(true);
+    try {
+      const rep = await api.siteReport(runId);
+      if (rep.sections?.strategy) setDeepProfile(rep.sections.strategy);
+      setView("results");
       void generateDeliverables();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -405,6 +440,31 @@ export default function Page() {
               </a>
               <button
                 onClick={() => setResumeDismissed(true)}
+                aria-label="Dismiss"
+                className="btn-ghost !px-2 !py-1 text-ink-300"
+              >
+                ✕
+              </button>
+            </span>
+          </div>
+        )}
+
+        {view === "wizard" && freshness?.fresh && freshness.has_report && !freshDismissed && (
+          <div className="step-in mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sky-500/30 bg-sky-500/[0.06] px-4 py-3 text-sm">
+            <span className="text-ink">
+              <span className="font-medium">We reviewed this site {freshnessLabel(freshness.last_crawled_at) ?? "recently"}.</span>{" "}
+              Use that review for instant results, or keep going to refresh it.
+            </span>
+            <span className="flex items-center gap-2">
+              <button
+                onClick={() => freshness.run_id && useCachedReview(freshness.run_id)}
+                disabled={loading}
+                className="btn-accent !px-3 !py-1.5 text-[13px]"
+              >
+                Use that review →
+              </button>
+              <button
+                onClick={() => setFreshDismissed(true)}
                 aria-label="Dismiss"
                 className="btn-ghost !px-2 !py-1 text-ink-300"
               >

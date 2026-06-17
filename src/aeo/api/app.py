@@ -594,6 +594,38 @@ def get_plan_state(plan_id: str) -> dict[str, Any]:
     return {k: row.get(k) for k in _PLAN_STATE_PUBLIC}
 
 
+@app.get("/api/site-freshness")
+def site_freshness(domain: str) -> dict[str, Any]:
+    """Has this domain been audited recently? Powers 'Last reviewed N days ago' + the
+    use-existing/refresh affordance (Task 3, Slice 2b). Best-effort: any miss/error returns
+    ``{fresh: false}`` so the wizard never breaks over it. ``has_report`` says whether a
+    persisted site report exists to load instead of re-crawling."""
+    from ..storage.repos import runs as runs_repo
+    from ..storage.repos import site_reports as site_reports_repo
+
+    dom = domain.strip()
+    if not dom:
+        return {"fresh": False}
+    try:
+        row = runs_repo.latest_for_domain(dom)
+    except Exception:
+        return {"fresh": False}
+    if not row or not row.get("last_crawled_at"):
+        return {"fresh": False}
+    run_id = row["run_id"]
+    try:
+        has_report = site_reports_repo.for_run(run_id) is not None
+    except Exception:
+        has_report = False
+    return {
+        "fresh": True,
+        "run_id": run_id,
+        "last_crawled_at": row["last_crawled_at"],
+        "status": row.get("status"),
+        "has_report": has_report,
+    }
+
+
 @app.get("/api/recheck-status")
 def recheck_status(domain: str) -> dict[str, Any]:
     """The 'Verified live' view (Spec #2 Slice C): recommendation outcomes a re-crawl has
