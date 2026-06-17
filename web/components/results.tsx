@@ -13,13 +13,29 @@ import type {
   BundleAsset,
   DeliverablesResponse,
   PlanPhase,
+  PlanStateResponse,
   PlanTask,
   SiteProfile,
   SitemapNode,
+  StrategyAction,
   StructuredPlan,
+  VerifiedOutcome,
 } from "@/lib/types";
-import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
+import { CRITERION_LABEL, DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
+import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/score";
+import { CountUp } from "./motion/primitives";
 import { ArrowRight, Check } from "./ui/icons";
+
+// Momentum-tier names for the phases — the plan reads as "do now / soon", never a
+// calendar countdown that invites "I'll get to the 30-day thing later" (B2). Keyed on the
+// backend phase.key so the packager stays untouched.
+const PHASE_TITLE: Record<string, string> = {
+  week_1: "Do these now",
+  week_2_4: "This week",
+  later: "Once you're rolling",
+};
+
+const PHASE_RANK: Record<string, number> = { week_1: 0, week_2_4: 1, later: 2 };
 
 const EFFORT_PILL: Record<string, string> = {
   low: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
@@ -37,6 +53,12 @@ export function ResultsView({
   deliverables,
   delivLoading,
   aiPersonalization,
+  planStateId,
+  domain,
+  rechecking,
+  recheckJob,
+  recheckDelta,
+  onRecheck,
   onGenerateDeliverables,
   onDownloadZip,
   onEdit,
@@ -48,6 +70,12 @@ export function ResultsView({
   deliverables: DeliverablesResponse | null;
   delivLoading: boolean;
   aiPersonalization: boolean;
+  planStateId: string | null;
+  domain: string;
+  rechecking: boolean;
+  recheckJob: AuditJob | null;
+  recheckDelta: number | null;
+  onRecheck: () => void;
   onGenerateDeliverables: () => void;
   onDownloadZip: () => void;
   onEdit: () => void;
@@ -58,7 +86,12 @@ export function ResultsView({
     ...(profile && profile.actions.length > 0 ? [{ id: "actions" as const, label: "Strategy" }] : []),
     { id: "kit" as const, label: "Your plan" },
   ];
-  const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
+  // Lead with the do-now plan, not the diagnosis dashboard (B2): once there's a plan to
+  // work, that's the screen that should greet the user.
+  const hasPlan = !!deliverables?.plan && deliverables.plan.total > 0;
+  const [tab, setTab] = useState<TabId>(hasPlan ? "kit" : tabs[0]?.id ?? "kit");
+  // The canonical score that the ring shows and that progress saves persist.
+  const score = profile ? aeoScore(profile) : null;
 
   return (
     <div className="step-in">
@@ -82,6 +115,8 @@ export function ResultsView({
         </button>
       </div>
 
+      {profile && <ScoreRing profile={profile} className="mb-8" />}
+
       <div role="tablist" aria-label="Plan sections" className="mb-6 flex gap-1 overflow-x-auto border-b border-ink/[0.08] pb-px">
         {tabs.map((t) => (
           <button
@@ -104,16 +139,101 @@ export function ResultsView({
       <div key={tab} id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`} className="step-in">
         {tab === "overview" && profile && <OverviewPanel profile={profile} auditJob={auditJob} />}
         {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
-        {tab === "actions" && profile && <ActionsPanel profile={profile} />}
+        {tab === "actions" && profile && (
+          <StrategyPanel
+            profile={profile}
+            domain={domain}
+            rechecking={rechecking}
+            recheckJob={recheckJob}
+            delta={recheckDelta}
+            onRecheck={onRecheck}
+          />
+        )}
         {tab === "kit" && (
           <PlanPanel
             deliverables={deliverables}
             loading={delivLoading}
             slowMode={aiPersonalization}
-            storageKey={`aeo-plan:${businessName.toLowerCase()}`}
+            storageKey={`aeo-plan:${domain || businessName.toLowerCase()}`}
+            planStateId={planStateId}
+            score={score}
             onGenerate={onGenerateDeliverables}
             onDownloadZip={onDownloadZip}
           />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── AEO score ring (B4-lite) ────────────────────────────────────────────────────
+
+// Tone → ring + text colors, keyed by scoreBand().tone. stroke-* utilities color the SVG.
+const RING_TONE: Record<ScoreTone, { stroke: string; text: string; soft: string }> = {
+  rose: { stroke: "stroke-rose-400", text: "text-rose-300", soft: "text-rose-300/30" },
+  amber: { stroke: "stroke-amber-400", text: "text-amber-200", soft: "text-amber-300/30" },
+  sky: { stroke: "stroke-sky-400", text: "text-sky-300", soft: "text-sky-300/30" },
+  emerald: { stroke: "stroke-emerald-400", text: "text-emerald-300", soft: "text-emerald-300/30" },
+};
+
+/** The canonical AEO Score as a gauge: a solid arc for where the site is today and a
+ *  ghosted arc for where finishing the plan gets it. The number only really moves on a
+ *  re-audit — the plan's progress bar handles task-by-task feedback — so the ring stays
+ *  honest (no self-graded climbing; that's a later, re-crawl-verified spec). */
+export function ScoreRing({ profile, className }: { profile: SiteProfile; className?: string }) {
+  const score = aeoScore(profile);
+  const ceiling = aeoScoreCeiling(profile);
+  const band = scoreBand(score);
+  const tone = RING_TONE[band.tone];
+
+  const R = 52;
+  const C = 2 * Math.PI * R;
+  const arc = (pct: number) => `${(C * pct) / 100} ${C}`;
+
+  return (
+    <div className={`card flex flex-col items-center gap-5 p-6 sm:flex-row sm:p-7 ${className ?? ""}`}>
+      <div className="relative h-32 w-32 shrink-0">
+        <svg viewBox="0 0 120 120" className="h-full w-full -rotate-90">
+          <circle cx="60" cy="60" r={R} fill="none" strokeWidth="10" className="stroke-ink/[0.07]" />
+          {/* ghosted target: where the plan gets you */}
+          <circle
+            cx="60"
+            cy="60"
+            r={R}
+            fill="none"
+            strokeWidth="10"
+            strokeLinecap="round"
+            strokeDasharray={arc(ceiling)}
+            className={tone.soft}
+            stroke="currentColor"
+          />
+          {/* current score */}
+          <circle
+            cx="60"
+            cy="60"
+            r={R}
+            fill="none"
+            strokeWidth="10"
+            strokeLinecap="round"
+            strokeDasharray={arc(score)}
+            className={`${tone.stroke} transition-[stroke-dasharray] duration-700 ease-out`}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <CountUp to={score} className={`font-display text-3xl font-semibold ${tone.text}`} />
+          <span className="label-mono mt-0.5 text-[10px]">/ 100</span>
+        </div>
+      </div>
+
+      <div className="text-center sm:text-left">
+        <span className="label-mono">Your AI visibility score</span>
+        <h3 className={`mt-1 text-xl font-semibold ${tone.text}`}>{band.label}</h3>
+        <p className="mt-1 max-w-md text-sm text-ink-500">{band.verdict}</p>
+        {ceiling > score && (
+          <p className="mt-2 text-xs text-ink-300">
+            Finish your plan to reach <span className="font-medium text-ink-500">{ceiling}</span> — that's the ghosted
+            ring.
+          </p>
         )}
       </div>
     </div>
@@ -294,42 +414,269 @@ function Metric({ label, value, sub }: { label: string; value: string; sub: stri
   );
 }
 
-// ── strategy (high-level profile actions) ───────────────────────────────────────
+// ── strategy: priority folders + re-crawl readiness bar ─────────────────────────
 
-function ActionsPanel({ profile }: { profile: SiteProfile }) {
+// Three importance folders, top of the rank to the bottom. Tones echo the score ring.
+const PRIORITY_FOLDERS = [
+  { key: "high", title: "High priority", blurb: "Do these first — biggest impact.", badge: "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30" },
+  { key: "medium", title: "Medium priority", blurb: "Strong follow-ups once the essentials are done.", badge: "bg-amber-500/10 text-amber-200 ring-1 ring-amber-500/30" },
+  { key: "low", title: "Low priority", blurb: "Nice-to-haves that round things out.", badge: "bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/30" },
+] as const;
+
+// Split the priority-ordered actions into three importance bands as evenly as possible
+// (remainder lands on the higher-priority bands first): n=4 → 2/1/1, n=5 → 2/2/1.
+function bucketActions(actions: StrategyAction[]): StrategyAction[][] {
+  const sorted = [...actions].sort((a, b) => a.priority - b.priority);
+  const n = sorted.length;
+  const base = Math.floor(n / 3);
+  const rem = n % 3;
+  const sizes = [base + (rem > 0 ? 1 : 0), base + (rem > 1 ? 1 : 0), base];
+  const out: StrategyAction[][] = [];
+  let i = 0;
+  for (const size of sizes) {
+    out.push(sorted.slice(i, i + size));
+    i += size;
+  }
+  return out;
+}
+
+function ActionRow({ action }: { action: StrategyAction }) {
   return (
-    <div>
-      <p className="mb-4 text-sm text-ink-500">
-        The big moves, in order — each one says how much work to expect. The step-by-step,
-        page-by-page version lives under <span className="font-medium text-ink">Your plan</span>.
-      </p>
-      <div className="space-y-3">
-        {profile.actions.map((a, i) => (
-          <div
-            key={a.priority}
-            className="step-in group flex gap-4 rounded-xl border border-ink/[0.08] bg-paper-100 p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-ink/[0.16] hover:shadow-card"
-            style={{ animationDelay: `${Math.min(i, 8) * 60}ms` }}
-          >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink font-mono text-xs text-paper-100 transition-colors duration-200 group-hover:bg-accent group-hover:text-white">
-              {String(a.priority).padStart(2, "0")}
-            </div>
-            <div className="flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-medium">{a.title}</span>
-                <span className="label-mono rounded bg-ink/[0.04] px-1.5 py-0.5 !tracking-[0.1em]">
-                  {humanizeToken(a.category)}
-                </span>
-                <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${EFFORT_PILL[a.effort] ?? "bg-ink/5 text-ink-500"}`}>
-                  {EFFORT_LABEL[a.effort] ?? humanizeToken(a.effort)}
-                </span>
-              </div>
-              <p className="mt-1 text-sm leading-relaxed text-ink-500">{a.detail}</p>
-              {a.related_slugs.length > 0 && (
-                <p className="mt-1.5 font-mono text-xs text-ink-300">pages: {a.related_slugs.join("  ·  ")}</p>
-              )}
-            </div>
+    <div className="flex gap-4 rounded-xl border border-ink/[0.08] bg-paper-100 p-4">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink font-mono text-xs text-paper-100">
+        {String(action.priority).padStart(2, "0")}
+      </div>
+      <div className="flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">{action.title}</span>
+          <span className="label-mono rounded bg-ink/[0.04] px-1.5 py-0.5 !tracking-[0.1em]">
+            {humanizeToken(action.category)}
+          </span>
+          <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${EFFORT_PILL[action.effort] ?? "bg-ink/5 text-ink-500"}`}>
+            {EFFORT_LABEL[action.effort] ?? humanizeToken(action.effort)}
+          </span>
+        </div>
+        <p className="mt-1 text-sm leading-relaxed text-ink-500">{action.detail}</p>
+        {action.related_slugs.length > 0 && (
+          <p className="mt-1.5 font-mono text-xs text-ink-300">pages: {action.related_slugs.join("  ·  ")}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PriorityFolder({
+  title,
+  blurb,
+  badge,
+  actions,
+  defaultOpen,
+}: {
+  title: string;
+  blurb: string;
+  badge: string;
+  actions: StrategyAction[];
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  return (
+    <div className="overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition-colors hover:bg-paper-200/40"
+      >
+        <span className="flex items-center gap-3">
+          <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg font-mono text-sm font-semibold ${badge}`}>
+            {actions.length}
+          </span>
+          <span>
+            <span className="block font-medium text-ink">{title}</span>
+            <span className="block text-xs text-ink-300">{blurb}</span>
+          </span>
+        </span>
+        <span
+          aria-hidden
+          className={`shrink-0 text-lg text-ink-300 transition-transform duration-200 ${open ? "rotate-90" : ""}`}
+        >
+          ›
+        </span>
+      </button>
+      {open && (
+        <div className="step-in space-y-2 border-t border-ink/[0.06] bg-paper-200/30 p-3">
+          {actions.map((a) => (
+            <ActionRow key={a.priority} action={a} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The path portion of a URL, for the compact "Verified live" list (falls back to the
+// raw value if it isn't a parseable URL).
+function pathOf(url: string): string {
+  try {
+    return new URL(url).pathname || "/";
+  } catch {
+    return url;
+  }
+}
+
+function StrategyPanel({
+  profile,
+  domain,
+  rechecking,
+  recheckJob,
+  delta,
+  onRecheck,
+}: {
+  profile: SiteProfile;
+  domain: string;
+  rechecking: boolean;
+  recheckJob: AuditJob | null;
+  delta: number | null;
+  onRecheck: () => void;
+}) {
+  const score = aeoScore(profile);
+  const ceiling = aeoScoreCeiling(profile);
+  const improved = delta != null && delta > 0;
+  const buckets = bucketActions(profile.actions);
+
+  // Re-crawl-verified fixes (Spec #2 Slice C). Fetched on mount and again whenever a
+  // re-check finishes (rechecking flips false) so newly-confirmed fixes appear.
+  const [verified, setVerified] = useState<VerifiedOutcome[]>([]);
+  useEffect(() => {
+    if (!domain || rechecking) return;
+    let alive = true;
+    api.recheckStatus(domain).then(
+      (r) => {
+        if (alive) setVerified(r.verified);
+      },
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, [domain, rechecking]);
+
+  return (
+    <div className="space-y-6">
+      {verified.length > 0 && (
+        <div className="card border-emerald-500/30 bg-emerald-500/[0.06] p-5 sm:p-6">
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-white">
+              <Check width={11} height={11} />
+            </span>
+            <span className="font-medium text-emerald-300">
+              {verified.length} fix{verified.length === 1 ? "" : "es"} verified live
+            </span>
           </div>
-        ))}
+          <p className="text-sm text-ink-500">
+            We re-crawled your site and confirmed these are actually live — verified by us, not
+            self-reported. This is what a chatbot can't do.
+          </p>
+          <ul className="mt-3 space-y-1.5">
+            {verified.slice(0, 8).map((v, i) => (
+              <li key={`${v.url}-${v.criterion}-${i}`} className="flex items-start gap-2 text-sm">
+                <Check className="mt-0.5 shrink-0 text-emerald-400" width={13} height={13} />
+                <span className="text-ink-500">
+                  <span className="font-medium text-ink">
+                    {CRITERION_LABEL[v.criterion ?? ""] ?? humanizeToken(v.criterion ?? "Improvement")}
+                  </span>{" "}
+                  on <span className="font-mono text-xs">{pathOf(v.url)}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+          {verified.length > 8 && (
+            <p className="mt-2 text-xs text-ink-300">+{verified.length - 8} more verified.</p>
+          )}
+        </div>
+      )}
+
+      {/* Re-crawl readiness bar — fills as the rebuilt site is re-crawled. */}
+      <div className="card p-5 sm:p-6">
+        <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-base font-semibold">Your AI readiness</h3>
+          <span className="font-mono text-xs text-ink-500">{score} / 100</span>
+        </div>
+        <div
+          className="relative mb-3 h-2 overflow-hidden rounded-full bg-ink/[0.07]"
+          role="progressbar"
+          aria-valuenow={score}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label="AI readiness from your latest site re-check"
+        >
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-accent to-accent-600 transition-[width] duration-700 ease-out"
+            style={{ width: `${score}%` }}
+          />
+          {ceiling > score && (
+            <span
+              aria-hidden
+              className="absolute top-1/2 h-3 w-0.5 -translate-y-1/2 rounded bg-ink/30"
+              style={{ left: `${ceiling}%` }}
+              title={`Target: ${ceiling}`}
+            />
+          )}
+        </div>
+        <p className="text-sm text-ink-500">
+          {domain ? (
+            <>
+              Build the changes below, publish them, then <span className="font-medium text-ink">re-check your site</span>{" "}
+              to watch this climb toward <span className="font-medium text-ink">{ceiling}</span>.
+            </>
+          ) : (
+            <>This is your starting point. Once your site is live, re-check it to watch this climb.</>
+          )}
+        </p>
+        {improved && (
+          <p className="step-in mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+            +{delta} since your last check — your changes are landing. 🎉
+          </p>
+        )}
+        {domain && (
+          <button onClick={onRecheck} disabled={rechecking} className="btn-accent mt-4 !py-2 text-[13px]">
+            {rechecking ? (
+              <>
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                Re-checking your site…
+              </>
+            ) : (
+              <>↻ Re-check my site</>
+            )}
+          </button>
+        )}
+        {rechecking && recheckJob && (
+          <div className="mt-4">
+            <AnalysisProgress job={recheckJob} />
+          </div>
+        )}
+      </div>
+
+      {/* Priority folders — open one to see the tasks at that importance. */}
+      <div>
+        <p className="mb-3 text-sm text-ink-500">
+          The big moves, sorted into folders by importance — open a folder to see its tasks. The
+          step-by-step, page-by-page version lives under <span className="font-medium text-ink">Your plan</span>.
+        </p>
+        <div className="space-y-3">
+          {PRIORITY_FOLDERS.map((f, i) =>
+            buckets[i].length > 0 ? (
+              <PriorityFolder
+                key={f.key}
+                title={f.title}
+                blurb={f.blurb}
+                badge={f.badge}
+                actions={buckets[i]}
+                defaultOpen={i === 0}
+              />
+            ) : null,
+          )}
+        </div>
       </div>
     </div>
   );
@@ -506,26 +853,49 @@ function PromptBox({ title, blurb, text, copyLabel }: { title: string; blurb: st
   );
 }
 
-function PhasedPlanView({ plan, storageKey }: { plan: StructuredPlan; storageKey: string }) {
-  const [done, setDone] = useState<Set<string>>(new Set());
-  const planViewed = useRef(false);
+// Progress persistence (B1). Server is the source of truth once a planStateId exists;
+// localStorage is the offline mirror + the fallback when the plan was never persisted
+// (API down, or a no-id session). A failed server write never loses the user's check.
+function usePlanProgress({
+  planStateId,
+  storageKey,
+  initialDone,
+  serverBacked = false,
+  score = null,
+}: {
+  planStateId: string | null;
+  storageKey: string;
+  initialDone?: string[];
+  serverBacked?: boolean;
+  score?: number | null;
+}) {
+  const [done, setDone] = useState<Set<string>>(() => new Set(initialDone ?? []));
+  const hydrated = useRef(false);
 
-  // localStorage only after mount — never during render (prerender has no storage)
+  // Hydrate once after mount (prerender has no storage). Server-backed views (the
+  // /plan/<id> route) trust initialDone even when empty; otherwise read localStorage so an
+  // in-session plan still remembers across reloads.
   useEffect(() => {
+    if (hydrated.current) return;
+    hydrated.current = true;
+    if (serverBacked) return;
     try {
       const raw = localStorage.getItem(storageKey);
-      setDone(raw ? new Set(JSON.parse(raw) as string[]) : new Set());
+      if (raw) setDone(new Set(JSON.parse(raw) as string[]));
     } catch {
       /* private mode / blocked storage — still works, just won't persist */
     }
-  }, [storageKey]);
+  }, [storageKey, serverBacked]);
 
-  // fire plan_viewed once, with the quick-win ids the metrics' completion rate keys on
-  useEffect(() => {
-    if (planViewed.current) return;
-    planViewed.current = true;
-    api.track("plan_viewed", { quick_win_ids: plan.quick_win_ids, total: plan.total });
-  }, [plan]);
+  function persist(next: Set<string>) {
+    const ids = [...next];
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(ids));
+    } catch {
+      /* best-effort offline mirror */
+    }
+    if (planStateId) api.updatePlanState(planStateId, { done_task_ids: ids, score });
+  }
 
   function toggle(task: PlanTask) {
     setDone((prev) => {
@@ -537,20 +907,113 @@ function PhasedPlanView({ plan, storageKey }: { plan: StructuredPlan; storageKey
         // only the act of completing is a signal (uncheck is a correction)
         api.track("task_marked_done", { task_id: task.id, quick_win: task.quick_win, phase: task.phase });
       }
-      try {
-        localStorage.setItem(storageKey, JSON.stringify([...next]));
-      } catch {
-        /* persistence is best-effort */
-      }
+      persist(next);
       return next;
     });
   }
+
+  return { done, toggle };
+}
+
+// The do-now surface (B2): the next ≤3 unfinished tasks as one-tap rows, so the user never
+// faces the whole month at once. Quick wins first, then earliest phase, then priority.
+function TodayTray({
+  tasks,
+  done,
+  onToggle,
+}: {
+  tasks: PlanTask[];
+  done: Set<string>;
+  onToggle: (t: PlanTask) => void;
+}) {
+  const next = tasks
+    .filter((t) => !done.has(t.id))
+    .sort(
+      (a, b) =>
+        Number(b.quick_win) - Number(a.quick_win) ||
+        (PHASE_RANK[a.phase] ?? 9) - (PHASE_RANK[b.phase] ?? 9) ||
+        (b.priority ?? 0) - (a.priority ?? 0),
+    )
+    .slice(0, 3);
+  if (next.length === 0) return null;
+
+  return (
+    <div className="card border-accent/30 bg-accent/[0.04] p-5 sm:p-6">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="label-mono text-accent">Today</span>
+        <span className="text-xs text-ink-300">
+          {next.length} thing{next.length === 1 ? "" : "s"} to knock out now
+        </span>
+      </div>
+      <ul className="space-y-2">
+        {next.map((t) => (
+          <li key={t.id} className="step-in flex items-start gap-3 rounded-xl border border-ink/[0.08] bg-paper-100 p-3.5">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+              checked={false}
+              onChange={() => onToggle(t)}
+              aria-label={`Mark "${t.action_required}" done`}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-ink">{t.label}</span>
+                {t.quick_win && (
+                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300 ring-1 ring-emerald-500/30">
+                    Quick win
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-sm text-ink-500">{t.action_required}</p>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function PhasedPlanView({
+  plan,
+  storageKey,
+  planStateId = null,
+  initialDone,
+  serverBacked = false,
+  score = null,
+}: {
+  plan: StructuredPlan;
+  storageKey: string;
+  planStateId?: string | null;
+  initialDone?: string[];
+  serverBacked?: boolean;
+  score?: number | null;
+}) {
+  const { done, toggle } = usePlanProgress({ planStateId, storageKey, initialDone, serverBacked, score });
+  const [showAll, setShowAll] = useState(false);
+  const planViewed = useRef(false);
+
+  // fire plan_viewed once, with the quick-win ids the metrics' completion rate keys on
+  useEffect(() => {
+    if (planViewed.current) return;
+    planViewed.current = true;
+    api.track("plan_viewed", { quick_win_ids: plan.quick_win_ids, total: plan.total });
+  }, [plan]);
 
   const allTasks = plan.phases.flatMap((p) => p.tasks);
   const doneCount = allTasks.filter((t) => done.has(t.id)).length;
   const pct = allTasks.length ? Math.round((doneCount / allTasks.length) * 100) : 0;
   const quickWins = allTasks.filter((t) => t.quick_win);
   const quickWinsDone = quickWins.filter((t) => done.has(t.id)).length;
+
+  // The active phase is the first with an unfinished task — what "now" means today. Later
+  // phases collapse behind a single "coming up" line so the plan never reads as a 30-day wall.
+  const activeIdx = (() => {
+    const i = plan.phases.findIndex((p) => p.tasks.some((t) => !done.has(t.id)));
+    return i === -1 ? plan.phases.length - 1 : i;
+  })();
+  const visiblePhases = showAll ? plan.phases : plan.phases.slice(0, activeIdx + 1);
+  const hiddenPhases = showAll ? [] : plan.phases.slice(activeIdx + 1);
+  const hiddenTaskCount = hiddenPhases.reduce((n, p) => n + p.tasks.length, 0);
 
   return (
     <div className="space-y-6">
@@ -586,16 +1049,32 @@ function PhasedPlanView({ plan, storageKey }: { plan: StructuredPlan; storageKey
         )}
       </div>
 
-      {plan.phases.map((phase, idx) => (
+      {pct < 100 && <TodayTray tasks={allTasks} done={done} onToggle={toggle} />}
+
+      {visiblePhases.map((phase, idx) => (
         <PhaseBlock
           key={phase.key}
           phase={phase}
           done={done}
           onToggle={toggle}
           locked={idx > 0 && !plan.phases[idx - 1].tasks.every((t) => done.has(t.id))}
-          priorTitle={idx > 0 ? plan.phases[idx - 1].title : undefined}
+          priorTitle={idx > 0 ? PHASE_TITLE[plan.phases[idx - 1].key] ?? plan.phases[idx - 1].title : undefined}
         />
       ))}
+
+      {hiddenPhases.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          className="flex w-full items-center justify-between gap-3 rounded-xl border border-dashed border-ink/15 px-4 py-3 text-left text-sm text-ink-500 transition-colors hover:border-ink/30 hover:text-ink"
+        >
+          <span>
+            <span className="font-medium text-ink">Coming up</span> — {hiddenTaskCount} more task
+            {hiddenTaskCount === 1 ? "" : "s"} once you've cleared this. No rush; you can start anytime.
+          </span>
+          <span aria-hidden className="shrink-0 text-ink-300">Show everything +</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -618,7 +1097,7 @@ function PhaseBlock({
     <div>
       <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <span className="label-mono">{phase.title}</span>
+          <span className="label-mono">{PHASE_TITLE[phase.key] ?? phase.title}</span>
           <span className="ml-2 text-xs text-ink-500">{phase.blurb}</span>
         </div>
         <span className="font-mono text-xs text-ink-300">{phaseDone}/{phase.tasks.length}</span>
@@ -662,6 +1141,8 @@ function PlanPanel({
   loading,
   slowMode,
   storageKey,
+  planStateId = null,
+  score = null,
   onGenerate,
   onDownloadZip,
 }: {
@@ -669,6 +1150,8 @@ function PlanPanel({
   loading: boolean;
   slowMode: boolean;
   storageKey: string;
+  planStateId?: string | null;
+  score?: number | null;
   onGenerate: () => void;
   onDownloadZip: () => void;
 }) {
@@ -708,7 +1191,7 @@ function PlanPanel({
   return (
     <div>
       {deliverables.plan && deliverables.plan.total > 0 ? (
-        <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} />
+        <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} planStateId={planStateId} score={score} />
       ) : (
         <p className="mb-4 text-sm text-ink-500">Your plan is ready — download the files below.</p>
       )}
@@ -769,4 +1252,48 @@ export function triggerDownload(blob: Blob, filename: string) {
   link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+// ── resumed plan (B1, the /plan/<id> link) ──────────────────────────────────────
+
+/** The standalone plan behind a resumable link. Self-contained: it renders from the
+ *  persisted plan + profile snapshot, so the link works on a fresh device with no wizard
+ *  state. Server is the source of truth for progress (serverBacked). */
+export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
+  const hasPlan = !!state.plan && state.plan.total > 0;
+  return (
+    <section className="mx-auto max-w-3xl px-5 py-12 sm:py-16">
+      <div className="mb-6">
+        <span className="label-mono inline-flex items-center gap-2">
+          <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-white">
+            <Check width={10} height={10} />
+          </span>
+          Your saved plan
+        </span>
+        <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">
+          {state.business_name ? `${state.business_name}'s AEO plan` : "Your AEO plan"}
+        </h1>
+        <p className="mt-1 text-ink-500">
+          Pick up where you left off — your progress is saved to this link, on any device.
+        </p>
+      </div>
+
+      {state.profile && <ScoreRing profile={state.profile} className="mb-8" />}
+
+      {hasPlan ? (
+        <PhasedPlanView
+          plan={state.plan}
+          storageKey={`aeo-plan:resumed:${state.id}`}
+          planStateId={state.id}
+          initialDone={state.done_task_ids}
+          serverBacked
+          score={state.score_snapshot}
+        />
+      ) : (
+        <p className="rounded-xl border border-dashed border-ink/15 p-8 text-center text-sm text-ink-500">
+          This plan doesn't have any tasks saved yet.
+        </p>
+      )}
+    </section>
+  );
 }

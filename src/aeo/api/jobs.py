@@ -30,6 +30,10 @@ JOB_RUNNING = "running"
 JOB_SUCCEEDED = "succeeded"
 JOB_FAILED = "failed"
 
+# Bound the in-memory registry so finished jobs can't accumulate for the process
+# lifetime. Active jobs are never evicted; oldest finished ones are dropped first.
+_MAX_JOBS = 500
+
 # Progressive results (#7): the orchestrator reports stage boundaries to this sink so
 # a polling client sees per-stage updates as the audit runs.
 ProgressFn = Callable[[str, dict[str, Any]], None]
@@ -41,6 +45,9 @@ AuditRunner = Callable[[str, str, ProgressFn | None], Awaitable[dict[str, Any]]]
 class Job:
     id: str
     kind: str
+    # Dedupe key (e.g. the audit domain) — lets the registry collapse duplicate
+    # in-flight requests for the same work. Empty = not deduped.
+    key: str = ""
     status: str = JOB_QUEUED
     progress: str = ""
     # #7 — per-stage updates the client polls (stage name + counts), appended as the
@@ -71,14 +78,46 @@ class JobRegistry:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
 
-    def create(self, kind: str) -> Job:
+    def create(self, kind: str, key: str = "") -> Job:
         now = time.time()
-        job = Job(id=uuid.uuid4().hex, kind=kind, created_at=now, updated_at=now)
+        self._evict()
+        job = Job(id=uuid.uuid4().hex, kind=kind, key=key, created_at=now, updated_at=now)
         self._jobs[job.id] = job
         return job
 
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
+
+    def active_for(self, kind: str, key: str) -> Job | None:
+        """The newest in-flight (queued/running) job matching kind+key, or None — for
+        request dedupe so the same domain isn't audited twice concurrently."""
+        matches = [
+            j for j in self._jobs.values()
+            if j.kind == kind and j.key == key and j.status in (JOB_QUEUED, JOB_RUNNING)
+        ]
+        return max(matches, key=lambda j: j.created_at) if matches else None
+
+    def active_count(self, kind: str) -> int:
+        """How many jobs of this kind are queued/running — for the concurrency cap."""
+        return sum(
+            1 for j in self._jobs.values()
+            if j.kind == kind and j.status in (JOB_QUEUED, JOB_RUNNING)
+        )
+
+    def _evict(self) -> None:
+        """Make room before an insert: drop the oldest finished jobs so the registry
+        stays at or below ``_MAX_JOBS`` after the caller adds one. Active jobs are never
+        evicted, so the cap is best-effort under heavy concurrent load."""
+        if len(self._jobs) < _MAX_JOBS:
+            return
+        finished = sorted(
+            (j for j in self._jobs.values() if j.status in (JOB_SUCCEEDED, JOB_FAILED)),
+            key=lambda j: j.updated_at,
+        )
+        for job in finished:
+            if len(self._jobs) < _MAX_JOBS:
+                break
+            self._jobs.pop(job.id, None)
 
     def update(self, job_id: str, **changes: Any) -> Job | None:
         job = self._jobs.get(job_id)

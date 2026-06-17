@@ -114,6 +114,21 @@ export const INTENT_LABEL: Record<string, string> = {
   navigational: "helps people find you",
 };
 
+// Plain-language names for the rubric criteria (recommendation_outcomes.criterion), for
+// the "Verified live" view — owners shouldn't have to decode "schema_markup".
+export const CRITERION_LABEL: Record<string, string> = {
+  schema_markup: "Structured data (schema)",
+  qa_blocks: "Q&A / FAQ content",
+  stats_in_html: "Stats & data on the page",
+  entity_consistency: "Consistent business details",
+  heading_structure: "Clear heading structure",
+  content_depth: "In-depth content",
+  citation_signals: "Trust & citation signals",
+  load_speed: "Page speed",
+  render_accessibility: "Works without JavaScript",
+  answer_readability: "Answer-ready writing",
+};
+
 export function humanizeToken(value: string): string {
   return value.replace(/[_-]+/g, " ").trim();
 }
