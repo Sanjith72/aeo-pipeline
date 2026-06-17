@@ -522,6 +522,23 @@ def metrics() -> dict[str, Any]:
     return events_repo.metrics()
 
 
+@app.get("/api/eval/overrides")
+def eval_overrides() -> dict[str, Any]:
+    """Offline-eval export (Task 7): the captured user overrides of LLM/system suggestions
+    — (suggested → chosen) pairs for fine-tuning/eval. Gated like the rest of /api/* when
+    an auth key is configured; internal-only by intent (no session_id is exposed)."""
+    from ..storage.repos import events as events_repo
+
+    rows = events_repo.export_overrides()
+    return {
+        "count": len(rows),
+        "overrides": [
+            {"metadata": r.get("metadata", {}), "url": r.get("url"), "at": r.get("created_at")}
+            for r in rows
+        ],
+    }
+
+
 # ── persisted, resumable plan (B1) ──────────────────────────────────────────────
 
 

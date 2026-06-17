@@ -171,11 +171,28 @@ export default function Page() {
     setStep((s) => s + 1);
   }
 
+  // Task 7 — capture where the user overrode what the LLM/crawl prefilled, as an eval
+  // signal (the {suggested → chosen} pair). Fired once at plan creation, only for fields
+  // that actually changed from the suggestion.
+  function captureIntakeOverrides() {
+    const checks: Array<[string, string | null, string]> = [
+      ["industry", profileResult?.industry ?? null, category.trim()],
+      ["location", profileResult?.location ?? null, location.trim()],
+      ["name", domain.trim() ? deriveName(domain) : null, name.trim()],
+    ];
+    for (const [field, suggested, chosen] of checks) {
+      if (chosen && chosen !== (suggested ?? "")) {
+        api.trackOverride(field, suggested, chosen, { source: "profile_prefill" });
+      }
+    }
+  }
+
   // Final action: run the comprehensive analysis (always — no mode to choose, #6), then
   // show results. A site gets the full page-by-page audit with live progress (#7); a
   // no-website brief gets the instant blueprint.
   async function createPlan() {
     api.track("wizard_step_completed", { step: 3 });
+    captureIntakeOverrides();
     setError(null);
     setPlan(null);
     setDeliverables(null);

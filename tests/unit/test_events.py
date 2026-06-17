@@ -45,6 +45,27 @@ class TestMigration0011:
         assert "ALTER TABLE" not in sql
 
 
+class TestMigration0014:
+    """Task 7 — the override eval index (reuses the events table, no new table)."""
+
+    def _sql(self) -> str:
+        paths = {v: p for v, _n, p in migrate._discover()}
+        assert "0014" in paths, "migration 0014 not discovered"
+        return paths["0014"].read_text(encoding="utf-8")
+
+    def test_adds_partial_override_index_additively(self):
+        sql = self._sql()
+        assert "idx_events_override_field" in sql
+        assert "user_override" in sql  # partial index scoped to the override events
+        assert "CREATE TABLE" not in sql.upper()  # reuses events, no new table
+
+
+class TestOverrideExportImportable:
+    def test_export_overrides_and_const_exposed(self):
+        assert events_repo.USER_OVERRIDE == "user_override"
+        assert callable(events_repo.export_overrides)
+
+
 class TestReposImportable:
     def test_events_repo_exposes_api(self):
         assert callable(events_repo.record)

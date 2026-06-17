@@ -206,6 +206,23 @@ export const api = {
     }
   },
 
+  /** Capture a user override of an LLM/system suggestion (Task 7) as an eval signal —
+   *  the {suggested → chosen} pair. Fire-and-forget via the events log; only fire when the
+   *  user actually changed the suggestion (the caller diffs). */
+  trackOverride(
+    field: string,
+    suggested: unknown,
+    chosen: unknown,
+    opts?: { source?: string; reason?: string; run_id?: number | null; task_id?: string; rec_id?: number },
+  ): void {
+    this.track("user_override", {
+      field,
+      suggested: suggested ?? null,
+      chosen: chosen ?? null,
+      ...(opts ?? {}),
+    });
+  },
+
   /** Call once on app load: emits `session_start` on a brand-new session and
    *  `return_visit` when an existing session spans a new calendar day — the signal
    *  behind the return-rate metric. */

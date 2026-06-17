@@ -27,6 +27,10 @@ WIZARD_STEP_COMPLETED = "wizard_step_completed"
 PLAN_VIEWED = "plan_viewed"
 TASK_MARKED_DONE = "task_marked_done"
 RETURN_VISIT = "return_visit"
+# Task 7 — a user changed an LLM/system suggestion. metadata carries the standardized
+# envelope {field, suggested, chosen, source, reason?, run_id?, task_id?, rec_id?}; these
+# (suggested -> chosen) pairs are the offline eval/fine-tuning signal.
+USER_OVERRIDE = "user_override"
 
 
 def record(
@@ -170,3 +174,25 @@ def metrics(start: datetime | None = None, end: datetime | None = None) -> dict[
         "quick_win_completion_rate": quick_win_completion_rate(),
         "recommendation_implementation_rate": recommendation_implementation_rate(),
     }
+
+
+def export_overrides(start: datetime | None = None, end: datetime | None = None) -> list[dict[str, Any]]:
+    """Every captured user-override signal (Task 7), newest first — the (suggested →
+    chosen) pairs an offline eval / fine-tuning job consumes. Returns the standardized
+    metadata envelope plus when/where it happened; lives in the same all-in-Postgres
+    store as the rest of the analytics (no third-party sink)."""
+    clauses = ["event_type = %s"]
+    params: list[Any] = [USER_OVERRIDE]
+    if start is not None:
+        clauses.append("created_at >= %s")
+        params.append(start)
+    if end is not None:
+        clauses.append("created_at < %s")
+        params.append(end)
+    where = " AND ".join(clauses)
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT session_id, url, metadata, created_at FROM events WHERE {where} ORDER BY id DESC",
+            tuple(params),
+        )
+        return [dict(row) for row in cur.fetchall()]
