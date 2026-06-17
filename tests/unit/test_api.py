@@ -261,6 +261,27 @@ def test_competitor_suggest_returns_names(monkeypatch) -> None:
     assert domains == ["rapid7.com", "tenable.com"]
 
 
+def test_competitor_suggest_passes_services_into_the_llm_prompt(monkeypatch) -> None:
+    # The crawled offerings sharpen "direct competitor" — they must reach the LLM prompt.
+    seen: dict = {}
+
+    class _CapturingLLM:
+        enabled = True
+
+        def generate_json(self, prompt: str, system: str | None = None) -> dict:
+            seen["prompt"] = prompt
+            return {"competitors": [{"name": "Rapid7", "domain": "rapid7.com"}]}
+
+    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _CapturingLLM())
+    r = client.post(
+        "/api/competitors/suggest",
+        json={"name": "Acme", "domain": "acme.com", "services": ["Penetration Testing", "Attack Surface Management"]},
+    )
+    assert r.status_code == 200
+    assert "Penetration Testing" in seen["prompt"]
+    assert "Attack Surface Management" in seen["prompt"]
+
+
 def test_competitor_suggest_unavailable_without_llm(monkeypatch) -> None:
     class _Disabled:
         enabled = False

@@ -477,6 +477,7 @@ export default function Page() {
                       category={category}
                       location={location}
                       domain={domain}
+                      services={splitList(servicesText)}
                       selected={competitors}
                       onChange={setCompetitors}
                     />

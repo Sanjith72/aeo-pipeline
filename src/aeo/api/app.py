@@ -126,6 +126,7 @@ class CompetitorSuggestRequest(BaseModel):
     domain: str | None = None
     category: str | None = None
     location: str | None = None
+    services: list[str] = []  # crawled offerings sharpen the LLM's "direct competitor" sense
     count: int = 6
     verify: bool = False  # live domain HEAD-checks are slow; the picker only needs names
 
@@ -401,6 +402,7 @@ async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
         (req.domain or "").strip(),
         topic=(req.category or "").strip() or None,
         location=(req.location or "").strip() or None,
+        services=req.services,
         count=req.count,
         llm=llm,
         head_check=None if req.verify else (lambda _domain: True),
