@@ -17,6 +17,10 @@
 
 version: "1"
 topic: PEV
+# Human-readable industry shown in the UI. `topic` above is the taxonomy KEY used for
+# measurement; `display_label` is what users see, so "PEV" never leaks as the industry.
+# Mirrored by `_TOPIC_DISPLAY_LABELS` in src/aeo/intelligence/intake.py.
+display_label: Cybersecurity
 
 # The entity set this topic must cover (the coverage map's required entities).
 # A node may reference only entities from this list (generator guardrail).
