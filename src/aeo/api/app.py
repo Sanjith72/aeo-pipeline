@@ -426,6 +426,9 @@ async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     return {
         "competitors": [{"name": c.name, "domain": c.domain} for c in result.verified],
         "source": "llm",
+        # True when the strict industry+location pass was empty and a broadened pass
+        # supplied these — lets the UI hint "broader matches" instead of implying exactness.
+        "relaxed": result.relaxed,
     }
 
 

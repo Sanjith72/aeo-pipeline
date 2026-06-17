@@ -205,7 +205,9 @@ export interface CompetitorSuggestion {
 
 export interface CompetitorSuggestResponse {
   competitors: CompetitorSuggestion[];
-  source: "llm" | "unavailable" | string;
+  source: "llm" | "onsite" | "unavailable" | string;
+  // True when the strict industry+location ask was empty and broader peers were returned.
+  relaxed?: boolean;
 }
 
 /** A competitor the user picked or typed — names are enough, URLs are optional. */
