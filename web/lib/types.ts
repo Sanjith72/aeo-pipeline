@@ -144,6 +144,10 @@ export interface ProfileResponse {
   discovered: number;
   source: string;
   next?: string;
+  // R2-2 cache age: when this domain's homepage was last crawled, so the UI can show
+  // "data from N hours ago" and offer an explicit re-crawl. Null = never crawled / no DB.
+  last_crawled_at?: string | null;
+  cache_age_hours?: number | null;
 }
 
 // One per-stage progress event the deep audit streams (#7) — see orchestrator.RUN_STAGES.
@@ -161,6 +165,8 @@ export interface AuditJob {
   stages: AuditStage[];
   result: { run?: { run_id?: number }; analysis?: Record<string, number>; site_report_id?: number } | null;
   error: string | null;
+  // R2-2 drop-off safety: true once the client has asked to cancel this run.
+  cancelled?: boolean;
 }
 
 export interface SiteReportResponse {

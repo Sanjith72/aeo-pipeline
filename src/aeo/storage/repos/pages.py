@@ -76,6 +76,20 @@ def last_hash(url_normalized: str) -> str | None:
     return row["content_hash"] if row else None
 
 
+def last_crawled_at(url_normalized: str):
+    """Timestamp this URL was most recently crawled (any run), or None if never.
+    Powers the R2-2 cache-age surface ("data from N hours ago") + the re-crawl prompt."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT crawled_at FROM crawled_pages "
+            "WHERE url_normalized = %s AND crawled_at IS NOT NULL "
+            "ORDER BY crawled_at DESC LIMIT 1",
+            (url_normalized,),
+        )
+        row = cur.fetchone()
+    return row["crawled_at"] if row else None
+
+
 def get(page_id: int) -> dict | None:
     with transaction() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM crawled_pages WHERE id = %s", (page_id,))

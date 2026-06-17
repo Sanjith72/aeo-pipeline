@@ -30,5 +30,6 @@ def test_emit_swallows_a_broken_sink():
 
 
 def test_run_stages_contract():
-    # The documented stage order a client can scaffold against.
-    assert RUN_STAGES == ("discover", "blueprint", "coverage", "crawl", "analyze", "report")
+    # The documented stage order a client can scaffold against. "profile" is the R2-2
+    # homepage-first partial, surfaced right after discovery.
+    assert RUN_STAGES == ("discover", "profile", "blueprint", "coverage", "crawl", "analyze", "report")

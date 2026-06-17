@@ -91,7 +91,7 @@ def test_audit_job_lifecycle_with_fake_runner(monkeypatch) -> None:
 
     from aeo.api import jobs as jobs_mod
 
-    async def fake_runner(domain: str, name: str, progress=None):
+    async def fake_runner(domain: str, name: str, progress=None, **_):
         if progress is not None:  # drive a couple of stage updates through the job
             progress("discover", {"discovered": 5})
             progress("report", {"site_report_id": 1})
@@ -117,6 +117,19 @@ def test_audit_job_lifecycle_with_fake_runner(monkeypatch) -> None:
 
 def test_audit_status_404() -> None:
     assert client.get("/api/audit/does-not-exist").status_code == 404
+
+
+def test_audit_cancel_unknown_job_404() -> None:
+    assert client.post("/api/audit/does-not-exist/cancel").status_code == 404
+
+
+def test_audit_cancel_flags_a_running_job() -> None:
+    from aeo.api.jobs import JOBS
+
+    job = JOBS.create("audit")
+    r = client.post(f"/api/audit/{job.id}/cancel")
+    assert r.status_code == 200
+    assert r.json()["cancelled"] is True
 
 
 def test_event_records_via_repo(monkeypatch) -> None:
