@@ -142,7 +142,10 @@ def compute_and_persist_coverage(
                 domain=domain or stored.blueprint.topic,
                 discovered=scored,
                 coverage=result,
-                topic=topic or stored.blueprint.topic,
+                # Only a per-domain onboarding topic identifies the *site's* industry; the
+                # blueprint topic is the seeded framework topic and must not leak here, or
+                # every site reads as that one topic's industry. None -> business-model label.
+                topic=topic,
                 llm=llm,
             )
             detail["site_profile"] = profile.to_dict()

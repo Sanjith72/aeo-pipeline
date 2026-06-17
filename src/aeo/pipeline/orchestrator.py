@@ -217,6 +217,9 @@ class Orchestrator:
                 compute_and_persist_coverage(
                     run.id, stored_bp, scored, target_id=target.id,
                     reference=load_reference(), domain=domain, llm=self._llm,
+                    # Per-domain onboarding topic only (not the seeded blueprint topic) so
+                    # the site report's industry reflects *this* site, not the PEV seed.
+                    topic=(dc.topic if dc else None),
                 )
                 _emit(progress, "coverage", nodes=len(getattr(stored_bp.blueprint, "sitemap", []) or []))
         except Exception as exc:
@@ -475,6 +478,11 @@ class Orchestrator:
         ra = settings.reference_architecture
         framework = load_framework(domain)  # per-domain override if present
         topic = (dc.topic if dc else None) or framework.topic or ra.topic
+        # The blueprint legitimately falls back to the seeded framework topic (the
+        # generator is built for it), but that global seed must NOT become this site's
+        # industry. Only a per-domain onboarding topic identifies the *site*; otherwise
+        # leave it None so infer_industry falls back to the business-model coarse label.
+        intake_topic = dc.topic if (dc and dc.topic) else None
         engine_target = (dc.engine_target if dc and dc.engine_target else None) or ra.engine_target
         blueprint = generate_blueprint(
             topic=topic, framework=framework, patterns=CompetitorPatterns(),
@@ -492,7 +500,7 @@ class Orchestrator:
         try:
             profile = build_site_profile(
                 domain=domain, discovered=scored, coverage=cov,
-                topic=topic, llm=(self._llm if use_llm else None),
+                topic=intake_topic, llm=(self._llm if use_llm else None),
             )
         except Exception as exc:  # best-effort, mirrors the persisted path's isolation
             log.warning("site_profile_skipped", domain=domain, error=str(exc))

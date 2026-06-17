@@ -63,6 +63,32 @@ def test_dry_run_structural_only_writes_nothing(monkeypatch):
     assert result["pages"] == []  # pages=0 → no crawl
 
 
+def test_configured_domain_industry_uses_its_topic_label(monkeypatch):
+    # securin.io HAS a per-domain config (topic: PEV) → its industry is the human label.
+    _patch_discovery(monkeypatch, [
+        "https://securin.io/what-is-ctem",
+        "https://securin.io/platform",
+        "https://securin.io/blog/some-post",
+    ])
+    result = asyncio.run(Orchestrator(llm=None).dry_run("securin.io", pages=0))
+    assert result["profile"]["industry"] == "Cybersecurity"
+
+
+def test_unconfigured_domain_does_not_inherit_the_seed_industry(monkeypatch):
+    # A domain with NO per-domain config must NOT read as the seeded PEV/Cybersecurity
+    # topic — the global blueprint seed must not leak as every site's industry. It falls
+    # back to the business-model coarse label instead.
+    _patch_discovery(monkeypatch, [
+        "https://acme.com/",
+        "https://acme.com/pricing",
+        "https://acme.com/product/widget",
+        "https://acme.com/docs",
+    ])
+    result = asyncio.run(Orchestrator(llm=None).dry_run("acme.com", pages=0))
+    industry = result["profile"]["industry"]
+    assert industry not in ("Cybersecurity", "PEV")
+
+
 def test_dry_run_scores_pages_in_memory(monkeypatch):
     _patch_discovery(monkeypatch, ["https://securin.io/what-is-ctem"])
     html = (_FIX / "strong_page.html").read_text(encoding="utf-8")
