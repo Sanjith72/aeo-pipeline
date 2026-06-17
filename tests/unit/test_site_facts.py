@@ -16,7 +16,9 @@ from aeo.intelligence.site_facts import (
     location_from_blocks,
     location_from_text,
     services_from_blocks,
+    services_from_headings,
     services_from_links,
+    services_from_nav,
 )
 
 _LD_LOCAL = """
@@ -66,6 +68,46 @@ def test_services_from_service_page_links():
     svcs = services_from_links([FetchedDoc("https://harbor.com/", _LD_LOCAL)], "https://harbor.com/")
     assert "Teeth Whitening" in svcs and "Routine Checkups" in svcs
     assert "About" not in svcs  # /about is not a service link
+
+
+def test_services_from_nav_dropdown():
+    # No schema.org, no /services/<slug> links — offerings live in a nav dropdown.
+    html = """
+    <html><body><nav><ul>
+      <li><a href="/">Home</a></li>
+      <li><a href="#">Services</a>
+        <ul class="dropdown">
+          <li><a href="/managed-it">Managed IT</a></li>
+          <li><a href="/cloud-migration">Cloud Migration</a></li>
+          <li><a href="/contact">Contact</a></li>
+        </ul>
+      </li>
+      <li><a href="/about">About</a></li>
+    </ul></nav></body></html>
+    """
+    svcs = services_from_nav([FetchedDoc("https://acme.com/", html)])
+    assert "Managed IT" in svcs and "Cloud Migration" in svcs
+    assert "Contact" not in svcs  # stopword, even inside the services menu
+
+
+def test_services_from_section_headings():
+    # Offerings listed as sub-headings under an "Our Services" section heading.
+    html = """
+    <html><body><main>
+      <section>
+        <h2>Our Services</h2>
+        <div><h3>Tax Preparation</h3><p>blah</p></div>
+        <div><h3>Bookkeeping</h3><p>blah</p></div>
+      </section>
+      <section>
+        <h2>About Us</h2>
+        <h3>Our Team</h3>
+      </section>
+    </main></body></html>
+    """
+    svcs = services_from_headings([FetchedDoc("https://acme.com/", html)])
+    assert "Tax Preparation" in svcs and "Bookkeeping" in svcs
+    assert "Our Team" not in svcs  # belongs to the next (About) section
 
 
 def test_extract_facts_combines_location_and_services():

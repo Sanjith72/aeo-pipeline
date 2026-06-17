@@ -49,6 +49,18 @@ _CITY_ST_ZIP = re.compile(
 _VS_RE = re.compile(r"(?:^|[/\s\-_])(?:vs\.?|versus)[/\s\-_]+([A-Za-z0-9][A-Za-z0-9.\-_& ]{1,40})", re.I)
 _ALT_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9.\-_& ]{1,40})[\s\-_]+alternatives?\b", re.I)
 
+# A section/menu label that GROUPS the specific offerings beneath it ("Our Services" →
+# the dropdown items or sub-headings that follow). Matched on the whole (whitespace-
+# normalised) label, so it never fires on prose that merely contains the word.
+_SERVICE_MENU_RE = re.compile(
+    r"^(?:our\s+|the\s+)?(?:services?|products?|solutions?|treatments?|offerings?|"
+    r"what\s+we\s+(?:do|offer)|capabilities|expertise|practice\s+areas?|specialt(?:y|ies))$",
+    re.I,
+)
+_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+# Elements that act as a dropdown/menu trigger (the label sitting above a submenu list).
+_MENU_TRIGGER_TAGS = ("a", "button", "span", "summary", "h2", "h3", "h4")
+
 # Nav labels that are never a "service you offer".
 _SERVICE_STOPWORDS = frozenset({
     "home", "about", "about us", "contact", "contact us", "blog", "news", "pricing",
@@ -198,6 +210,59 @@ def services_from_links(docs: list[FetchedDoc], own: str) -> list[str]:
     return out
 
 
+def _menu_label(el: Any) -> str:
+    """Whitespace-normalised text of a menu/heading trigger element."""
+    return re.sub(r"\s+", " ", el.get_text(" ", strip=True)).strip()
+
+
+def services_from_nav(docs: list[FetchedDoc]) -> list[str]:
+    """Submenu items grouped under a "Services"/"Products"/"Solutions"/… dropdown.
+
+    Sites that ship no schema.org offerings and no ``/services/<slug>`` URLs still almost
+    always expose their specific offerings as a nav dropdown: a trigger label ("Services")
+    sitting above a nested ``<ul>`` of links. We collect that list's anchor text."""
+    out: list[str] = []
+    for doc in docs:
+        soup = parse(doc.html)
+        for trigger in soup.find_all(_MENU_TRIGGER_TAGS):
+            if not _SERVICE_MENU_RE.match(_menu_label(trigger)):
+                continue
+            # The submenu is the nested list within the trigger's containing <li> (or its
+            # immediate parent when the markup isn't list-based).
+            container = trigger.find_parent("li") or trigger.parent
+            submenu = container.find(["ul", "ol"]) if container is not None else None
+            if submenu is None:
+                continue
+            for a in submenu.find_all("a"):
+                cleaned = _clean_service(a.get_text(" ", strip=True))
+                if cleaned:
+                    out.append(cleaned)
+    return out
+
+
+def services_from_headings(docs: list[FetchedDoc]) -> list[str]:
+    """Offering titles listed under a section heading like "Our Services" / "What We Offer".
+
+    Collects the sub-headings nested below such a heading (until the section ends at the
+    next same-or-higher-level heading) — the common homepage pattern of an ``<h2>Our
+    Services</h2>`` followed by an ``<h3>`` per offering."""
+    out: list[str] = []
+    for doc in docs:
+        soup = parse(doc.html)
+        headings = soup.find_all(_HEADING_TAGS)
+        for i, h in enumerate(headings):
+            if not _SERVICE_MENU_RE.match(_menu_label(h)):
+                continue
+            level = int(h.name[1])
+            for sub in headings[i + 1:]:
+                if int(sub.name[1]) <= level:
+                    break  # next section at same/higher level closes this one
+                cleaned = _clean_service(sub.get_text(" ", strip=True))
+                if cleaned:
+                    out.append(cleaned)
+    return out
+
+
 def _dedupe_keep_order(items: list[str], limit: int) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -272,9 +337,14 @@ def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
         or location_from_text(" ".join(text_parts))
         or infer_location(to_page_views(_url_views(internal_urls + [d.url for d in docs])))
     )
+    # Highest precision first (schema.org → dedicated service-page links), then the
+    # higher-recall fallbacks (nav dropdowns, section headings) that catch sites which
+    # list offerings inline. Dedupe keeps the earliest, best-sourced label.
     services = _dedupe_keep_order(
         [s for s in (_clean_service(x) for x in services_from_blocks(blocks)) if s]
-        + services_from_links(docs, own),
+        + services_from_links(docs, own)
+        + services_from_nav(docs)
+        + services_from_headings(docs),
         _MAX_SERVICES,
     )
     competitors = competitors_from_docs(docs, own)
