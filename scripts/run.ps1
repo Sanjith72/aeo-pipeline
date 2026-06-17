@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-  One command to run the whole AEO Studio stack locally — backend API + web UI.
+  One command to run the whole AEO Studio stack locally - backend API + web UI.
 
 .DESCRIPTION
   Starts the FastAPI backend (aeo serve, :8000) and the Next.js frontend (:3000) each in
-  its own window, waits for them to come up, and opens the browser. No Docker required —
+  its own window, waits for them to come up, and opens the browser. No Docker required -
   uses the project's existing .venv and web/node_modules. Postgres only matters for the
   Deep-audit feature; everything else (plan / quick analysis / deliverables) runs without it.
 
@@ -29,7 +29,7 @@ if (-not (Test-Path $py)) {
   Write-Error "No virtualenv at $py. First-time setup:  python -m venv .venv ; .\.venv\Scripts\pip install -e `".[api]`""
 }
 if (-not (Test-Path (Join-Path $web "node_modules"))) {
-  Write-Warning "web\node_modules missing — running 'npm install' in web\ first..."
+  Write-Warning "web\node_modules missing - running 'npm install' in web\ first..."
   Push-Location $web; npm install; Pop-Location
 }
 
@@ -47,7 +47,7 @@ Write-Host "Starting AEO Studio..." -ForegroundColor Green
 Write-Host "  API : http://localhost:8000   (interactive docs at /docs)"
 Write-Host "  Web : http://localhost:3000"
 if ($NoLlm) { Write-Host "  LLM : off (deterministic)" }
-else { Write-Host "  LLM : on  (default Ollama is slow on CPU — set AEO__LLM__PROVIDER=cloud for speed)" }
+else { Write-Host "  LLM : on  (default Ollama is slow on CPU - set AEO__LLM__PROVIDER=cloud for speed)" }
 
 if (-not $NoBrowser) {
   $up = $false
@@ -56,5 +56,5 @@ if (-not $NoBrowser) {
     catch { Start-Sleep -Milliseconds 1000 }
   }
   if ($up) { Start-Process "http://localhost:3000"; Write-Host "Opened http://localhost:3000" -ForegroundColor Green }
-  else { Write-Host "Web is still starting — open http://localhost:3000 manually in a moment." -ForegroundColor Yellow }
+  else { Write-Host "Web is still starting - open http://localhost:3000 manually in a moment." -ForegroundColor Yellow }
 }
