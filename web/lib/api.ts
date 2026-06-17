@@ -94,6 +94,7 @@ export const api = {
     domain?: string;
     category?: string;
     location?: string;
+    services?: string[];
     count?: number;
   }): Promise<CompetitorSuggestResponse> {
     return postJson<CompetitorSuggestResponse>("/api/competitors/suggest", req);
