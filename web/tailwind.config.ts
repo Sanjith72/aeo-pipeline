@@ -58,6 +58,9 @@ const config: Config = {
         "fade-up": "fade-up 0.6s cubic-bezier(0.16,1,0.3,1) both",
         "fade-up-slow": "fade-up 0.8s cubic-bezier(0.16,1,0.3,1) both",
         "scale-in": "scale-in 0.18s cubic-bezier(0.16,1,0.3,1) both",
+        // Opacity-only entrance for tab-panel swaps — no translate, so switching tabs
+        // never nudges the page vertically (R2-6 nav rework).
+        "fade-in": "grid-in 0.3s ease both",
         pop: "pop 0.25s cubic-bezier(0.34,1.56,0.64,1) both",
         shimmer: "shimmer 1.6s linear infinite",
         "float-y": "float-y 7s ease-in-out infinite",
