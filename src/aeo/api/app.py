@@ -325,19 +325,26 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     import asyncio
 
     from ..intelligence import DEAD, classify_intake
+    from ..intelligence.industry import resolve_wikidata_industry
     from ..intelligence.site_facts import SiteFacts, gather_site_facts
     from ..pipeline import Orchestrator
     from ..settings import get_settings
 
     cache = _cache_age(req.domain)
     # Crawl the homepage + key pages for Location / what-you-offer / on-site competitors,
-    # concurrently with the structural dry-run profile so the wizard prefills in one round.
+    # and resolve a SPECIFIC industry vertical from Wikidata — all concurrently with the
+    # structural dry-run profile so the wizard prefills in one round.
     facts_task = asyncio.create_task(gather_site_facts(req.domain))
+    wikidata_task = asyncio.create_task(resolve_wikidata_industry(req.domain))
     result = await Orchestrator().dry_run(req.domain, max_urls=req.max_urls, pages=0, use_llm=req.use_llm)
     try:
         facts: SiteFacts = await facts_task
     except Exception:  # facts are best-effort enrichment — never fail the profile over them
         facts = SiteFacts()
+    try:
+        wikidata_industry = await wikidata_task
+    except Exception:
+        wikidata_industry = None
     intake = get_settings().intake
     discovered = int(result.get("discovered") or 0)
     # The live profile path doesn't fetch body text, so the gate is page-count based.
@@ -345,13 +352,21 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
         discovered, None,
         min_pages=intake.thin_site_min_pages, min_words=intake.thin_site_min_words,
     )
+    # Specific industry, best source first: Wikidata vertical → crawl-classified vertical
+    # → the structural profile's coarse label (business-model fallback). This is what
+    # keeps generic "Enterprise" from surfacing whenever a real vertical is knowable.
     prof = result.get("profile")
+    industry = wikidata_industry or facts.industry or (prof.get("industry") if prof else None)
+    industry_source = (
+        "wikidata" if wikidata_industry else "crawl" if facts.industry else "model" if industry else None
+    )
     if prof is None or route == DEAD:
         # Crawl found nothing usable → the no-website brief path is the right flow.
         return {
             "route": DEAD,
             "profile": None,
-            "industry": None,
+            "industry": industry,
+            "industry_source": industry_source,
             "location": facts.location,
             "services": facts.services,
             "competitors": facts.competitors,
@@ -363,7 +378,8 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     return {
         "route": route,  # 'rich' | 'thin'
         "profile": prof,
-        "industry": prof.get("industry"),
+        "industry": industry,
+        "industry_source": industry_source,
         # Prefer the content-derived location (address/footer/schema) over the URL-path guess.
         "location": facts.location or prof.get("location"),
         "services": facts.services,

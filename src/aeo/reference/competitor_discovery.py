@@ -55,8 +55,8 @@ def _discovery_prompt(
     count: int,
     services: list[str] | None = None,
 ) -> str:
-    topic_clause = f' in the "{topic}" space' if topic else ""
-    location_clause = f" based in or serving {location}" if location else ""
+    topic_clause = f' in the {topic} industry' if topic else ""
+    location_clause = f", based in or serving {location}" if location else ""
     company = f"{name} ({domain})" if domain else name
     # The crawled offerings sharpen "direct competitor" — companies selling these same
     # things, not just anyone in the broad category.
@@ -67,8 +67,18 @@ def _discovery_prompt(
         if cleaned_services
         else ""
     )
+    # Strict constraints (R: industry + location) so suggestions are true peers, not just
+    # well-known names in an adjacent space.
+    constraints: list[str] = []
+    if topic:
+        constraints.append(f"be in the SAME industry ({topic})")
+    if location:
+        constraints.append(f"serve the SAME market ({location})")
+    constraint_clause = (
+        "\nEvery competitor MUST " + " and ".join(constraints) + "." if constraints else ""
+    )
     return (
-        f"Company: {company}{topic_clause}{location_clause}{services_clause}\n"
+        f"Company: {company}{topic_clause}{location_clause}{services_clause}{constraint_clause}\n"
         f"List up to {count} of this company's REAL, direct competitors — companies that "
         "actually exist and compete for the same customers today. Do not include the "
         "company itself.\n"

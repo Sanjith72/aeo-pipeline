@@ -359,14 +359,21 @@ def test_profile_returns_inferred_industry_and_location(monkeypatch) -> None:
     assert body["location"] is None
 
 
-def _stub_site_facts(monkeypatch, *, location=None, services=None, competitors=None) -> None:
-    """Stop /api/profile's homepage crawl from hitting the network in tests."""
+def _stub_site_facts(monkeypatch, *, location=None, services=None, competitors=None, industry=None,
+                     wikidata=None) -> None:
+    """Stop /api/profile's homepage crawl AND Wikidata lookup from hitting the network."""
     from aeo.intelligence.site_facts import SiteFacts
 
     async def fake_gather(domain, **_):
-        return SiteFacts(location=location, services=services or [], competitors=competitors or [])
+        return SiteFacts(
+            location=location, services=services or [], competitors=competitors or [], industry=industry
+        )
+
+    async def fake_wikidata(domain, **_):
+        return wikidata
 
     monkeypatch.setattr("aeo.intelligence.site_facts.gather_site_facts", fake_gather)
+    monkeypatch.setattr("aeo.intelligence.industry.resolve_wikidata_industry", fake_wikidata)
 
 
 def test_profile_includes_crawled_services_and_competitors(monkeypatch) -> None:
@@ -393,6 +400,42 @@ def test_profile_includes_crawled_services_and_competitors(monkeypatch) -> None:
     assert body["location"] == "Austin, TX"  # content-derived location wins
     assert body["services"] == ["Teeth Whitening", "Dental Implants"]
     assert body["competitors"] == [{"name": "Globex", "domain": ""}]
+
+
+def test_profile_industry_prefers_wikidata_vertical(monkeypatch) -> None:
+    # Wikidata's specific vertical beats the structural "Enterprise" coarse label.
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+        return {
+            "profile": {"industry": "Enterprise", "location": None, "scenario": "small_site"},
+            "coverage": {"pct": 50.0},
+            "discovered": 20,
+            "source": "sitemap",
+        }
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    _stub_site_facts(monkeypatch, wikidata="Healthcare")
+    body = client.post("/api/profile", json={"domain": "clevelandclinic.org"}).json()
+    assert body["industry"] == "Healthcare"
+    assert body["industry_source"] == "wikidata"
+
+
+def test_profile_industry_falls_back_to_crawl_then_model(monkeypatch) -> None:
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+        return {
+            "profile": {"industry": "Enterprise", "location": None, "scenario": "small_site"},
+            "coverage": {"pct": 50.0}, "discovered": 20, "source": "sitemap",
+        }
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    # No Wikidata match, but the crawl classified a vertical → crawl wins over "Enterprise".
+    _stub_site_facts(monkeypatch, industry="Finance", wikidata=None)
+    body = client.post("/api/profile", json={"domain": "acme.com"}).json()
+    assert body["industry"] == "Finance"
+    assert body["industry_source"] == "crawl"
 
 
 def test_competitor_suggest_falls_back_to_onsite_without_llm(monkeypatch) -> None:
