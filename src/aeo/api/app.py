@@ -141,6 +141,19 @@ class EventRequest(BaseModel):
     metadata: dict[str, Any] = {}
 
 
+class OverrideRequest(BaseModel):
+    """One human override (R2-4): an edited prefilled value, or a rejected
+    recommendation. Captured as eval signal + a human-gated proposal — never auto-applied."""
+
+    session_id: str
+    field: str
+    old_value: Any | None = None
+    new_value: Any | None = None
+    kind: str = "field_override"  # or "recommendation_rejected"
+    url: str | None = None
+    client_id: int | None = None
+
+
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 
@@ -441,6 +454,52 @@ def record_event(req: EventRequest) -> dict[str, Any]:
         get_logger(__name__).warning("event_record_failed", event_type=etype, error=str(exc))
         return {"recorded": False}
     return {"recorded": True, "id": event_id}
+
+
+@app.post("/api/overrides")
+def record_override(req: OverrideRequest) -> dict[str, Any]:
+    """Capture a human override (R2-4) as BOTH an analytics event and a PROPOSED criteria
+    refinement in the human-gated queue. The learning loop is capture → propose →
+    human-validate: this handler only ever creates a ``status='proposed'`` refinement and
+    NEVER accepts/auto-applies one (the v4 circular-validation guard). Best-effort, like
+    ``/api/events`` — a DB hiccup degrades gracefully rather than breaking the flow."""
+    from ..logging import get_logger
+    from ..reference.feedback import propose_refinement_from_override
+    from ..storage.repos import events as events_repo
+    from ..storage.repos import feedback as feedback_repo
+
+    log = get_logger(__name__)
+    field = req.field.strip()
+    sid = req.session_id.strip()
+    if not field or not sid:
+        raise HTTPException(status_code=422, detail="session_id and field are required")
+
+    event_recorded = False
+    refinement_id: int | None = None
+    try:
+        events_repo.record(
+            session_id=sid, event_type=f"override:{req.kind}",
+            client_id=req.client_id, url=req.url,
+            metadata={"field": field, "old": req.old_value, "new": req.new_value},
+        )
+        event_recorded = True
+    except Exception as exc:  # analytics must never break the flow
+        log.warning("override_event_failed", field=field, error=str(exc))
+
+    try:
+        ref = propose_refinement_from_override(
+            field=field, old_value=req.old_value, new_value=req.new_value, kind=req.kind,
+        )
+        refinement_id = feedback_repo.save_refinement(ref)  # always status='proposed'
+    except Exception as exc:
+        log.warning("override_refinement_failed", field=field, error=str(exc))
+
+    return {
+        "captured": event_recorded or refinement_id is not None,
+        "event_recorded": event_recorded,
+        "refinement_id": refinement_id,
+        "refinement_status": "proposed",  # never 'accepted' — human-gated by design
+    }
 
 
 @app.get("/api/metrics")
