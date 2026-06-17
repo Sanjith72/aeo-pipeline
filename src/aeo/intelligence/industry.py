@@ -18,6 +18,7 @@ the SPARQL resolver takes an injectable fetch.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 
 from ..logging import get_logger
@@ -177,17 +178,71 @@ async def _default_sparql_fetch(query: str) -> dict | None:
     return None
 
 
-async def resolve_wikidata_industry(domain: str, *, fetch: SparqlFetch | None = None) -> str | None:
+# ── response cache ───────────────────────────────────────────────────────────────
+# Wikidata changes rarely and WDQS rate-limits, so cache the resolved vertical per
+# registrable domain in-process (consistent with the app's other in-memory registries).
+# Hits live long; misses re-check sooner in case an entity gets added later. Only real
+# SPARQL responses are cached — transient network/non-200 failures are not, so they retry.
+_CACHE: dict[str, tuple[float, str | None]] = {}
+_CACHE_TTL_HIT = 7 * 24 * 3600   # 7 days
+_CACHE_TTL_MISS = 24 * 3600      # 1 day
+_CACHE_MAX = 4096
+
+
+def clear_wikidata_cache() -> None:
+    """Drop all cached Wikidata lookups (used by tests; safe to call anytime)."""
+    _CACHE.clear()
+
+
+def _cache_get(key: str) -> tuple[bool, str | None]:
+    """(hit, value) — ``hit`` is False on a miss or an expired entry."""
+    entry = _CACHE.get(key)
+    if entry is None or entry[0] <= time.monotonic():
+        return False, None
+    return True, entry[1]
+
+
+def _cache_put(key: str, value: str | None) -> None:
+    if len(_CACHE) >= _CACHE_MAX:
+        now = time.monotonic()
+        for k in [k for k, (exp, _) in _CACHE.items() if exp <= now]:
+            del _CACHE[k]
+        if len(_CACHE) >= _CACHE_MAX:  # still full of live entries → reset (internal-tool scale)
+            _CACHE.clear()
+    ttl = _CACHE_TTL_HIT if value else _CACHE_TTL_MISS
+    _CACHE[key] = (time.monotonic() + ttl, value)
+
+
+async def resolve_wikidata_industry(
+    domain: str, *, fetch: SparqlFetch | None = None, use_cache: bool = True
+) -> str | None:
     """Resolve a domain to a specific industry vertical via Wikidata, or None when there's
     no matching entity / only generic classes. Best-effort and offline-safe (injectable
-    ``fetch``); the caller falls back to the crawl classifier and then the coarse label."""
+    ``fetch``); the caller falls back to the crawl classifier and then the coarse label.
+
+    Successful lookups are cached per registrable domain (see the cache constants above).
+    The cache is bypassed when a custom ``fetch`` is injected (tests/custom callers) or
+    when ``use_cache=False``."""
     reg = _registrable(domain)
     if not reg or "." not in reg:
         return None
+
+    cache_on = use_cache and fetch is None
+    if cache_on:
+        hit, value = _cache_get(reg)
+        if hit:
+            return value
+
     fetch = fetch or _default_sparql_fetch
     try:
         data = await fetch(_sparql_query(reg))
     except Exception as exc:
         log.warning("wikidata_resolve_failed", domain=domain, error=str(exc))
         return None
-    return parse_sparql_industry(data)
+
+    vertical = parse_sparql_industry(data)
+    # Cache only a real response — a None ``data`` means a network/non-200 hiccup, which
+    # should retry rather than stick as a cached miss.
+    if cache_on and data is not None:
+        _cache_put(reg, vertical)
+    return vertical
