@@ -89,3 +89,40 @@ def test_resolve_wikidata_industry_no_match_returns_none():
         return {"results": {"bindings": []}}
 
     assert asyncio.run(resolve_wikidata_industry("unknown-biz.example", fetch=empty_fetch)) is None
+
+
+def test_wikidata_lookups_are_cached_per_registrable_domain(monkeypatch):
+    from aeo.intelligence import industry
+
+    industry.clear_wikidata_cache()
+    calls = {"n": 0}
+
+    async def counting_fetch(query: str):
+        calls["n"] += 1
+        return _cleveland_clinic_sparql()
+
+    # Cache is active only on the default-fetch path (no injected fetch).
+    monkeypatch.setattr(industry, "_default_sparql_fetch", counting_fetch)
+    a = asyncio.run(industry.resolve_wikidata_industry("clevelandclinic.org"))
+    b = asyncio.run(industry.resolve_wikidata_industry("https://www.clevelandclinic.org/"))
+    assert a == b == "Healthcare"
+    assert calls["n"] == 1  # second call (same registrable domain) served from cache
+    industry.clear_wikidata_cache()
+
+
+def test_wikidata_transient_failure_is_not_cached(monkeypatch):
+    from aeo.intelligence import industry
+
+    industry.clear_wikidata_cache()
+    calls = {"n": 0}
+
+    async def flaky_fetch(query: str):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else _cleveland_clinic_sparql()
+
+    monkeypatch.setattr(industry, "_default_sparql_fetch", flaky_fetch)
+    assert asyncio.run(industry.resolve_wikidata_industry("clevelandclinic.org")) is None  # network hiccup
+    # A None response is never cached, so the next call retries and now succeeds.
+    assert asyncio.run(industry.resolve_wikidata_industry("clevelandclinic.org")) == "Healthcare"
+    assert calls["n"] == 2
+    industry.clear_wikidata_cache()
