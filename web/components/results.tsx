@@ -15,6 +15,7 @@ import type {
   PlanTask,
   SiteProfile,
   SitemapNode,
+  StrategyView,
   StructuredPlan,
 } from "@/lib/types";
 import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
@@ -26,7 +27,7 @@ const EFFORT_PILL: Record<string, string> = {
   high: "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30",
 };
 
-type TabId = "overview" | "blueprint" | "actions" | "kit";
+type TabId = "overview" | "blueprint" | "actions" | "strategy" | "kit";
 
 export function ResultsView({
   businessName,
@@ -54,7 +55,10 @@ export function ResultsView({
   const tabs: { id: TabId; label: string }[] = [
     ...(profile ? [{ id: "overview" as const, label: "Overview" }] : []),
     ...(plan ? [{ id: "blueprint" as const, label: "Your website plan" }] : []),
-    ...(profile && profile.actions.length > 0 ? [{ id: "actions" as const, label: "Strategy" }] : []),
+    ...(profile && profile.actions.length > 0 ? [{ id: "actions" as const, label: "Big moves" }] : []),
+    ...(deliverables?.strategy && deliverables.strategy.groups.length > 0
+      ? [{ id: "strategy" as const, label: "Strategy" }]
+      : []),
     { id: "kit" as const, label: "Your plan" },
   ];
   const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
@@ -104,6 +108,7 @@ export function ResultsView({
         {tab === "overview" && profile && <OverviewPanel profile={profile} auditJob={auditJob} />}
         {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
         {tab === "actions" && profile && <ActionsPanel profile={profile} />}
+        {tab === "strategy" && deliverables?.strategy && <StrategyPanel strategy={deliverables.strategy} />}
         {tab === "kit" && (
           <PlanPanel
             deliverables={deliverables}
@@ -404,6 +409,62 @@ function ActionsPanel({ profile }: { profile: SiteProfile }) {
                 <p className="mt-1.5 font-mono text-xs text-ink-300">pages: {a.related_slugs.join("  ·  ")}</p>
               )}
             </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── strategy (tasks clustered by difficulty / maturity) — R2-5 ───────────────────
+
+const DIFFICULTY_PILL: Record<string, string> = {
+  foundation: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
+  growth: "bg-amber-500/10 text-amber-200 ring-1 ring-amber-500/30",
+  advanced: "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30",
+};
+
+function StrategyPanel({ strategy }: { strategy: StrategyView }) {
+  return (
+    <div>
+      <p className="mb-4 text-sm text-ink-500">
+        The same work, grouped by how hard it is — start with the foundations, then build up.
+        Each group explains what it is, why it matters, and how to approach it.
+      </p>
+      <div className="space-y-5">
+        {strategy.groups.map((g, i) => (
+          <div
+            key={g.grade}
+            className="step-in overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100"
+            style={{ animationDelay: `${Math.min(i, 4) * 70}ms` }}
+          >
+            <div className="border-b border-ink/[0.06] bg-paper-200/40 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${DIFFICULTY_PILL[g.grade] ?? "bg-ink/5 text-ink-500"}`}>
+                  {g.difficulty}
+                </span>
+                <span className="font-semibold">{g.title}</span>
+                <span className="font-mono text-xs text-ink-300">{g.tasks.length} task{g.tasks.length === 1 ? "" : "s"}</span>
+              </div>
+              <div className="mt-2.5 space-y-2">
+                <Detail label="What" value={g.readme.what} />
+                <Detail label="Why" value={g.readme.why} />
+                <Detail label="How" value={g.readme.how} />
+              </div>
+            </div>
+            <ul className="divide-y divide-ink/[0.06]">
+              {g.tasks.map((t) => (
+                <li key={t.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+                  <span className="min-w-0">
+                    <span className="font-medium">{t.label}</span>
+                    <span className="mt-0.5 block text-xs text-ink-300">{t.action_required}</span>
+                  </span>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${EFFORT_PILL[t.effort] ?? "bg-ink/5 text-ink-500"}`}>
+                    {EFFORT_LABEL[t.effort] ?? humanizeToken(t.effort)}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </div>
         ))}
       </div>

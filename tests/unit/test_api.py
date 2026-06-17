@@ -71,6 +71,24 @@ def test_deliverables_returns_structured_phased_plan() -> None:
     assert r.json()["checklist"]["total"] > 0
 
 
+def test_deliverables_returns_strategy_clusters() -> None:
+    # R2-5: the same tasks clustered by difficulty/maturity grade (the Strategy tab).
+    r = client.post(
+        "/api/deliverables",
+        json={"name": "Acme", "domain": "acme.com", "use_llm": False, "draft_limit": 2, "builder_mode": "ai"},
+    )
+    assert r.status_code == 200
+    strategy = r.json()["strategy"]
+    assert strategy["total"] > 0
+    assert strategy["groups"], "expected at least one difficulty group"
+    for g in strategy["groups"]:
+        assert set(g["readme"]) == {"what", "why", "how"}
+        assert g["task_ids"] == [t["id"] for t in g["tasks"]]
+    # grades follow the maturity ladder (foundation before growth before advanced)
+    grades = strategy["grades"]
+    assert grades == sorted(grades, key=["foundation", "growth", "advanced"].index)
+
+
 def test_deliverables_zip_returns_a_zip() -> None:
     r = client.post("/api/deliverables.zip", json={"name": "Acme", "domain": "acme.com", "draft_limit": 2})
     assert r.status_code == 200

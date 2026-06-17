@@ -125,9 +125,26 @@ export interface StructuredPlan {
   total: number;
 }
 
+// R2-5 — the plan's tasks clustered by difficulty/maturity grade (the Strategy tab).
+export interface StrategyGroup {
+  grade: "foundation" | "growth" | "advanced" | string;
+  title: string;
+  difficulty: string;
+  readme: { what: string; why: string; how: string };
+  task_ids: string[];
+  tasks: PlanTask[];
+}
+
+export interface StrategyView {
+  groups: StrategyGroup[];
+  grades: string[];
+  total: number;
+}
+
 export interface DeliverablesResponse {
   manifest: { bundle: string; asset_count: number; assets: { path: string; kind: string }[] };
   plan?: StructuredPlan; // #10 — the interactive in-app plan
+  strategy?: StrategyView; // R2-5 — tasks clustered by difficulty/maturity
   checklist?: PlanChecklist; // legacy flat-weeks list (zip fallback / back-compat)
   assets: BundleAsset[];
 }
