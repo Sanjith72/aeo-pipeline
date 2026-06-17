@@ -62,6 +62,13 @@ class TestInferIndustry:
         # rather than leaking the routing key as an industry.
         assert infer_industry([], topic="CTEM", business_model="saas") == "Software / SaaS"
 
+    def test_code_like_category_is_also_guarded(self):
+        # The same guard protects the `category` branch — a code-like category (e.g. "PV"
+        # bootstrapped on the brief path) must not leak verbatim as the industry.
+        assert infer_industry([], category="PV", business_model="saas") == "Software / SaaS"
+        # …but a mapped code given as category still resolves to its human label.
+        assert infer_industry([], category="PEV", business_model="saas") == "Cyber Security"
+
     def test_generic_topic_falls_back_to_model_label(self):
         assert infer_industry([], topic="generic", business_model="saas") == "Software / SaaS"
 

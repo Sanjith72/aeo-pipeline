@@ -72,10 +72,27 @@ def classify_intake(
 
 
 def _looks_like_topic_code(value: str) -> bool:
-    """A bare taxonomy code — e.g. "PEV", "CTEM" — vs. a human phrase. Codes are short,
-    all-uppercase, and spaceless; they are internal routing keys, never a user-facing
-    industry, so we must not surface them as one."""
+    """A bare taxonomy code — e.g. "PEV", "CTEM", "PV" — vs. a human phrase. Codes are
+    short, all-uppercase, and spaceless; they are internal routing keys, never a
+    user-facing industry, so we must not surface them as one."""
     return value.isupper() and " " not in value and len(value) <= 8
+
+
+def _resolve_industry_label(value: str, cfg: IntelligenceCfg) -> str | None:
+    """Turn a raw topic/category value into a user-facing industry, or ``None`` when it
+    isn't usable as one. Maps internal codes to human labels (``topic_industries``); keeps
+    genuine human phrases; rejects unmapped codes and generic placeholders — so a routing
+    key like "PEV"/"PV" can never reach the Industry field, no matter which branch it
+    arrives on (this guard applies to the user/brief ``category`` too, not just ``topic``)."""
+    v = value.strip()
+    if not v or v.lower() in _GENERIC_TOPICS:
+        return None
+    mapped = cfg.topic_industries.get(v.lower())
+    if mapped:
+        return mapped
+    if _looks_like_topic_code(v):
+        return None  # an unmapped internal code — not a human industry
+    return v
 
 
 def infer_industry(
@@ -86,24 +103,17 @@ def infer_industry(
     business_model: str | None = None,
     cfg: IntelligenceCfg | None = None,
 ) -> str | None:
-    """Best-effort industry, derived deterministically. An explicit ``category`` (the user
-    override) wins; then the ``topic`` — mapped through ``topic_industries`` when it's an
-    internal taxonomy code (e.g. "PEV" → "Cyber Security"), echoed when it's already a
-    human phrase, and SKIPPED when it's an unmapped code (so a routing key never leaks as
-    an industry); then a coarse label from the inferred ``business_model``. ``None`` only
-    when nothing is known."""
-    if category and category.strip():
-        return category.strip()
-    if topic and topic.strip():
-        t = topic.strip()
-        if t.lower() not in _GENERIC_TOPICS:
-            cfg = cfg or load_intelligence_cfg()
-            mapped = cfg.topic_industries.get(t.lower())
-            if mapped:
-                return mapped
-            if not _looks_like_topic_code(t):
-                return t  # already a human phrase ("Vulnerability Management")
-            # else: an unmapped taxonomy code — fall through to the business-model label.
+    """Best-effort industry, derived deterministically. An explicit ``category`` wins, then
+    the ``topic`` — both run through :func:`_resolve_industry_label` so an internal
+    taxonomy code (e.g. "PEV" → "Cyber Security") is mapped, a human phrase is kept, and an
+    unmapped code is SKIPPED (never surfaced); then a coarse ``business_model`` label.
+    ``None`` only when nothing usable is known."""
+    cfg = cfg or load_intelligence_cfg()
+    for value in (category, topic):
+        if value:
+            label = _resolve_industry_label(value, cfg)
+            if label:
+                return label
     if business_model:
         return _INDUSTRY_BY_MODEL.get(business_model)
     return None
