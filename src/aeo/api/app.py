@@ -321,12 +321,22 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     SiteProfile with the crawl-derived ``industry`` + ``location`` (so the wizard prefills
     instead of asking), while a dead/unreachable crawl returns ``route='dead'`` pointing at
     the no-website brief path (``/api/plan``) — never a 502, so the flow always continues."""
+    import asyncio
+
     from ..intelligence import DEAD, classify_intake
+    from ..intelligence.site_facts import SiteFacts, gather_site_facts
     from ..pipeline import Orchestrator
     from ..settings import get_settings
 
     cache = _cache_age(req.domain)
+    # Crawl the homepage + key pages for Location / what-you-offer / on-site competitors,
+    # concurrently with the structural dry-run profile so the wizard prefills in one round.
+    facts_task = asyncio.create_task(gather_site_facts(req.domain))
     result = await Orchestrator().dry_run(req.domain, max_urls=req.max_urls, pages=0, use_llm=req.use_llm)
+    try:
+        facts: SiteFacts = await facts_task
+    except Exception:  # facts are best-effort enrichment — never fail the profile over them
+        facts = SiteFacts()
     intake = get_settings().intake
     discovered = int(result.get("discovered") or 0)
     # The live profile path doesn't fetch body text, so the gate is page-count based.
@@ -341,7 +351,9 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
             "route": DEAD,
             "profile": None,
             "industry": None,
-            "location": None,
+            "location": facts.location,
+            "services": facts.services,
+            "competitors": facts.competitors,
             "discovered": discovered,
             "source": result.get("source"),
             "next": "/api/plan",
@@ -351,7 +363,10 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
         "route": route,  # 'rich' | 'thin'
         "profile": prof,
         "industry": prof.get("industry"),
-        "location": prof.get("location"),
+        # Prefer the content-derived location (address/footer/schema) over the URL-path guess.
+        "location": facts.location or prof.get("location"),
+        "services": facts.services,
+        "competitors": facts.competitors,
         "coverage": result["coverage"],
         "discovered": discovered,
         "source": result["source"],
@@ -360,11 +375,12 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
 
 
 @app.post("/api/competitors/suggest")
-def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
+async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     """Likely competitors for a business brief (name + category + location), so the UI
-    can offer a pick-list instead of demanding URLs. Source is ``llm`` when suggestions
-    were generated, ``unavailable`` when no LLM is configured — the frontend then falls
-    back to manual entry only."""
+    can offer a pick-list instead of demanding URLs. Source is ``llm`` when the LLM
+    generated suggestions; ``onsite`` when (no LLM) we mined the site's own
+    comparison/alternatives pages; ``unavailable`` when neither yielded anything."""
+    from ..intelligence.site_facts import gather_site_facts
     from ..nlp.llm import get_client
     from ..reference.competitor_discovery import discover_competitors
 
@@ -373,6 +389,12 @@ def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="name is required")
     llm = get_client()
     if not llm.enabled:
+        # No LLM → best-effort on-site signals (comparison / alternatives pages).
+        domain = (req.domain or "").strip()
+        if domain:
+            facts = await gather_site_facts(domain)
+            if facts.competitors:
+                return {"competitors": facts.competitors[: req.count], "source": "onsite"}
         return {"competitors": [], "source": "unavailable"}
     result = discover_competitors(
         name,
