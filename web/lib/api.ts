@@ -98,11 +98,22 @@ export const api = {
   }): Promise<CompetitorSuggestResponse> {
     return postJson<CompetitorSuggestResponse>("/api/competitors/suggest", req);
   },
-  startAudit(req: { domain: string; name?: string }): Promise<{ job_id: string; status: string }> {
+  // `force` (R2-2) bypasses the fingerprint skip gate so unchanged pages are re-read.
+  startAudit(req: { domain: string; name?: string; force?: boolean }): Promise<{ job_id: string; status: string }> {
     return postJson<{ job_id: string; status: string }>("/api/audit", req);
   },
   async auditStatus(jobId: string): Promise<AuditJob> {
     const res = await fetch(`${BASE}/api/audit/${jobId}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as AuditJob;
+  },
+  /** Cooperatively cancel a running audit (R2-2 drop-off safety). Best-effort: the
+   *  audit early-exits between pages, keeping whatever it already analyzed. */
+  async cancelAudit(jobId: string): Promise<AuditJob> {
+    const res = await fetch(`${BASE}/api/audit/${jobId}/cancel`, {
+      method: "POST",
+      headers: headers(),
+    });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as AuditJob;
   },

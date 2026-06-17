@@ -59,9 +59,16 @@ _PSI_MAX_CONCURRENCY = 5
 # None sink is a no-op and the pipeline logic is untouched.
 ProgressFn = Callable[[str, dict[str, Any]], None]
 
+# R2-2 drop-off safety: an optional predicate the run loop polls between pages. When it
+# returns True the run early-exits (finishing as 'partial'), so a user who abandons
+# mid-run doesn't burn the full top-N extract+score+LLM compute. None = never cancel.
+CancelFn = Callable[[], bool]
+
 # The major stages a run reports, in order. Exposed so a client (and the tests) can
-# assert/scaffold against the contract without guessing stage names.
-RUN_STAGES = ("discover", "blueprint", "coverage", "crawl", "analyze", "report")
+# assert/scaffold against the contract without guessing stage names. ``profile`` is the
+# R2-2 homepage-first partial: a structural profile surfaced immediately after discovery
+# so the UI can render findings before the slow top-N crawl/analyze runs.
+RUN_STAGES = ("discover", "profile", "blueprint", "coverage", "crawl", "analyze", "report")
 
 
 def _emit(progress: ProgressFn | None, stage: str, **counts: Any) -> None:
@@ -146,6 +153,8 @@ class Orchestrator:
         do_score: bool = True,
         max_urls: int | None = None,
         progress: ProgressFn | None = None,
+        force_recrawl: bool = False,
+        should_cancel: CancelFn | None = None,
     ) -> RunSummary:
         """Site Discovery → Page Prioritization → crawl+extract(+score) the top-N.
 
@@ -175,6 +184,28 @@ class Orchestrator:
         _emit(progress, "discover", discovered=len(scored), selected=len(selected),
               source=discovery.source)
 
+        # R2-2 homepage-first incremental: surface a structural profile immediately —
+        # the same industry/headline/business-model the fast /api/profile returns — so
+        # the UI can render findings before the slow top-N crawl/analyze that follows.
+        # Best-effort and isolated (mirrors the blueprint block) and only built when a
+        # sink is listening, so the no-progress paths (CLI, tests) pay nothing.
+        if progress is not None:
+            try:
+                from ..intelligence import build_site_profile
+
+                prof = build_site_profile(
+                    domain=domain, discovered=scored,
+                    topic=(dc.topic if dc else None), llm=self._llm,
+                )
+                _emit(
+                    progress, "profile",
+                    industry=prof.industry, headline=prof.headline,
+                    business_model=prof.business_intent.model.value,
+                    scenario=prof.strategy.scenario.value, pages=len(scored),
+                )
+            except Exception as exc:  # a partial preview must never abort the run
+                log.warning("homepage_profile_skipped", run_key=run.run_key, error=str(exc))
+
         # v4 Reference Architecture: generate+pin the versioned blueprint and run
         # the site-level Coverage Diff (over the full discovered inventory, not just
         # the crawled top-N). Best-effort and isolated — a generator/DB hiccup logs
@@ -196,7 +227,10 @@ class Orchestrator:
             _emit(progress, "crawl", total=0, scored=0, unchanged=0, failed=0)
             return RunSummary(run_id=run.id, run_key=run.run_key)
 
-        return await self._run_pages(selected, run=run, target=target, do_score=do_score, progress=progress)
+        return await self._run_pages(
+            selected, run=run, target=target, do_score=do_score, progress=progress,
+            force_recrawl=force_recrawl, should_cancel=should_cancel,
+        )
 
     async def _run_pages(
         self,
@@ -206,13 +240,23 @@ class Orchestrator:
         target: Target,
         do_score: bool,
         progress: ProgressFn | None = None,
+        force_recrawl: bool = False,
+        should_cancel: CancelFn | None = None,
     ) -> RunSummary:
         """Crawl → extract → (score) every URL into ``run``, isolated per page.
-        Shared by ``run_urls`` (explicit list) and ``run_site`` (prioritized top-N)."""
+        Shared by ``run_urls`` (explicit list) and ``run_site`` (prioritized top-N).
+
+        ``force_recrawl`` bypasses the fingerprint skip gate so an explicit re-crawl
+        re-reads unchanged pages. ``should_cancel`` is polled before each page so an
+        abandoned run early-exits (status ``partial``) instead of burning the full
+        top-N extract+score+LLM compute (R2-2 drop-off safety)."""
         client_id, competitor_id = _owner_ids(target)
         summary = RunSummary(run_id=run.id, run_key=run.run_key)
         log.info("run_start", run_key=run.run_key, target=target.name,
-                 do_score=do_score, urls=len(urls))
+                 do_score=do_score, urls=len(urls), force_recrawl=force_recrawl)
+
+        def _cancelled() -> bool:
+            return should_cancel is not None and bool(should_cancel())
 
         try:
             pages = await fetch_many(urls)
@@ -220,17 +264,28 @@ class Orchestrator:
 
             # PageSpeed only matters for the load_speed score; skip it otherwise.
             psi_map: dict[str, dict] = {}
-            if do_score:
+            if do_score and not _cancelled():
                 psi_map = await self._psi_batch([p.url for p in pages if p.success])
 
+            cancelled = False
             for page in pages:
-                self._process_one(page, run.id, client_id, competitor_id, psi_map, summary, do_score)
+                # Drop-off safety: stop before the expensive per-page work if the run
+                # was abandoned. Pages already processed stay; the run is 'partial'.
+                if _cancelled():
+                    cancelled = True
+                    log.info("run_cancelled", run_key=run.run_key,
+                             processed=summary.extracted, total=summary.total)
+                    break
+                self._process_one(page, run.id, client_id, competitor_id, psi_map,
+                                  summary, do_score, force_recrawl=force_recrawl)
 
-            status = "succeeded" if summary.failed == 0 else "partial"
-            runs_repo.finish(run.id, status=status)
-            log.info("run_complete", run_key=run.run_key, **_count_fields(summary))
+            status = "partial" if (cancelled or summary.failed) else "succeeded"
+            runs_repo.finish(run.id, status=status,
+                             notes="cancelled mid-run" if cancelled else None)
+            log.info("run_complete", run_key=run.run_key, cancelled=cancelled,
+                     **_count_fields(summary))
             _emit(progress, "crawl", total=summary.total, scored=summary.scored,
-                  unchanged=summary.unchanged, failed=summary.failed)
+                  unchanged=summary.unchanged, failed=summary.failed, cancelled=cancelled)
         except Exception as exc:  # record the failure on the run row
             runs_repo.finish(run.id, status="failed", notes=str(exc))
             log.error("run_failed", run_key=run.run_key, error=str(exc))
@@ -351,6 +406,8 @@ class Orchestrator:
         label: str | None = None,
         max_urls: int | None = None,
         progress: ProgressFn | None = None,
+        force_recrawl: bool = False,
+        should_cancel: CancelFn | None = None,
     ) -> dict:
         """The v4 Weekly Audit Loop entrypoint: Site Discovery → Page Prioritization
         → blueprint (generate+pin) → Coverage Diff → crawl/score (content-hash
@@ -363,6 +420,7 @@ class Orchestrator:
         run_summary = await self.run_site(
             domain, target=target, label=label or f"audit:{domain}", do_score=True,
             max_urls=max_urls, progress=progress,
+            force_recrawl=force_recrawl, should_cancel=should_cancel,
         )
         analysis = self.analyze_run(run_summary.run_id, progress=progress)
         site_report_id = self._build_and_persist_site_report(run_summary.run_id, target, domain=domain)
@@ -583,6 +641,7 @@ class Orchestrator:
         psi_map: dict[str, dict],
         summary: RunSummary,
         do_score: bool,
+        force_recrawl: bool = False,
     ) -> None:
         if not page.success:
             self.persist.page(page, run_id, client_id, competitor_id)
@@ -597,8 +656,9 @@ class Orchestrator:
         self._detect_completions(page, run_id)
 
         # Fingerprint short-circuit only pays off when scoring (it skips the
-        # LLM). For crawl-only runs, extraction is cheap — just redo it.
-        if do_score and fingerprint.should_skip(page.url_normalized, page.content_hash):
+        # LLM). For crawl-only runs, extraction is cheap — just redo it. An explicit
+        # re-crawl (force_recrawl) bypasses the skip gate entirely (R2-2).
+        if do_score and not force_recrawl and fingerprint.should_skip(page.url_normalized, page.content_hash):
             stored = self.persist.page(page, run_id, client_id, competitor_id)
             if self.persist.copy_unchanged(page.url_normalized, stored.id, run_id):
                 summary.unchanged += 1

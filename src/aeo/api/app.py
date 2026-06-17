@@ -18,6 +18,7 @@ require a matching ``X-API-Key`` header (see :func:`require_api_key`). Unset = o
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -116,6 +117,8 @@ class ProfileRequest(BaseModel):
 class AuditRequest(BaseModel):
     domain: str
     name: str | None = None
+    # R2-2 re-crawl: bypass the fingerprint skip gate so unchanged pages are re-read.
+    force: bool = False
 
 
 class CompetitorSuggestRequest(BaseModel):
@@ -154,6 +157,28 @@ def _business_dict(brief: BusinessInput) -> dict[str, Any]:
         "name": brief.name, "category": brief.category,
         "location": brief.location, "services": brief.services,
     }
+
+
+def _cache_age(domain: str) -> dict[str, Any]:
+    """When the domain's homepage was last crawled, as an ISO timestamp + an age in
+    hours, so the UI can show "data from N hours ago" and offer a re-crawl (R2-2).
+    Best-effort: a down/empty DB returns nulls rather than failing the profile call."""
+    from datetime import datetime
+
+    from ..crawl.discovery import seed_url
+    from ..storage.repos import pages as pages_repo
+    from ..utils.url import normalize
+
+    try:
+        last = pages_repo.last_crawled_at(normalize(seed_url(domain)))
+    except Exception:  # the profile path must work even with no DB
+        last = None
+    if last is None:
+        return {"last_crawled_at": None, "cache_age_hours": None}
+    now = datetime.now(UTC)
+    when = last if last.tzinfo else last.replace(tzinfo=UTC)
+    age_hours = max(0.0, round((now - when).total_seconds() / 3600.0, 1))
+    return {"last_crawled_at": when.isoformat(), "cache_age_hours": age_hours}
 
 
 def _framework_and_llm(brief: BusinessInput, use_llm: bool) -> tuple[Framework, Any]:
@@ -280,6 +305,7 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     from ..pipeline import Orchestrator
     from ..settings import get_settings
 
+    cache = _cache_age(req.domain)
     result = await Orchestrator().dry_run(req.domain, max_urls=req.max_urls, pages=0, use_llm=req.use_llm)
     intake = get_settings().intake
     discovered = int(result.get("discovered") or 0)
@@ -299,6 +325,7 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
             "discovered": discovered,
             "source": result.get("source"),
             "next": "/api/plan",
+            **cache,
         }
     return {
         "route": route,  # 'rich' | 'thin'
@@ -308,6 +335,7 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
         "coverage": result["coverage"],
         "discovered": discovered,
         "source": result["source"],
+        **cache,
     }
 
 
@@ -361,13 +389,25 @@ def start_audit(req: AuditRequest) -> dict[str, Any]:
     if not domain:
         raise HTTPException(status_code=422, detail="domain is required")
     job = JOBS.create("audit")
-    jobs_mod.spawn_audit(job.id, domain=domain, name=(req.name or domain).strip())
+    jobs_mod.spawn_audit(
+        job.id, domain=domain, name=(req.name or domain).strip(), force_recrawl=req.force
+    )
     return {"job_id": job.id, "status": job.status}
 
 
 @app.get("/api/audit/{job_id}")
 def audit_status(job_id: str) -> dict[str, Any]:
     job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no job {job_id}")
+    return job.to_dict()
+
+
+@app.post("/api/audit/{job_id}/cancel")
+def audit_cancel(job_id: str) -> dict[str, Any]:
+    """Cooperatively cancel a running audit (R2-2 drop-off safety). The audit polls the
+    flag between pages and early-exits, so pages already analyzed are kept. Idempotent."""
+    job = JOBS.request_cancel(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"no job {job_id}")
     return job.to_dict()
