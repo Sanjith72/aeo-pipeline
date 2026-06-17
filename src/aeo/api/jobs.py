@@ -48,6 +48,9 @@ class Job:
     stages: list[dict[str, Any]] = field(default_factory=list)
     result: dict[str, Any] | None = None
     error: str | None = None
+    # R2-2 drop-off safety: a cooperative cancel flag the running audit polls between
+    # pages. Set via JobRegistry.request_cancel / POST /api/audit/{id}/cancel.
+    cancelled: bool = False
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -60,6 +63,7 @@ class Job:
             "stages": self.stages,
             "result": self.result,
             "error": self.error,
+            "cancelled": self.cancelled,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -86,6 +90,16 @@ class JobRegistry:
             return None
         for key, value in changes.items():
             setattr(job, key, value)
+        job.updated_at = time.time()
+        return job
+
+    def request_cancel(self, job_id: str) -> Job | None:
+        """Flag a running audit for cooperative cancellation (R2-2). The audit thread
+        polls ``Job.cancelled`` between pages and early-exits. Unknown id → None."""
+        job = self._jobs.get(job_id)
+        if job is None:
+            return None
+        job.cancelled = True
         job.updated_at = time.time()
         return job
 
@@ -128,12 +142,26 @@ async def execute_audit(
         registry.update(job_id, status=JOB_FAILED, progress="failed", error=str(exc))
 
 
-def spawn_audit(job_id: str, *, domain: str, name: str) -> threading.Thread:
+def spawn_audit(
+    job_id: str, *, domain: str, name: str, force_recrawl: bool = False
+) -> threading.Thread:
     """Run an audit on a dedicated daemon thread (with its own event loop) so a long
     crawl/score/analyze never blocks the API's event loop — keeping ``/api/audit/{id}``
     polling and the rest of the server responsive while it runs. Reads the module-level
-    ``default_audit_runner`` at call time so it stays monkeypatchable in tests."""
-    runner = default_audit_runner
+    ``default_audit_runner`` at call time so it stays monkeypatchable in tests.
+
+    ``force_recrawl`` bypasses the fingerprint skip gate for this run; the audit also
+    polls ``Job.cancelled`` between pages so the client can abandon it (R2-2)."""
+    base_runner = default_audit_runner
+
+    def _should_cancel() -> bool:
+        job = JOBS.get(job_id)
+        return bool(job and job.cancelled)
+
+    async def runner(d: str, n: str, progress: ProgressFn | None) -> dict[str, Any]:
+        return await base_runner(
+            d, n, progress, force_recrawl=force_recrawl, should_cancel=_should_cancel
+        )
 
     def _run() -> None:
         asyncio.run(execute_audit(JOBS, job_id, domain=domain, name=name, runner=runner))
@@ -144,14 +172,23 @@ def spawn_audit(job_id: str, *, domain: str, name: str) -> threading.Thread:
 
 
 async def default_audit_runner(
-    domain: str, name: str, progress: ProgressFn | None = None
+    domain: str,
+    name: str,
+    progress: ProgressFn | None = None,
+    *,
+    force_recrawl: bool = False,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """The real deep audit: register the client target, then run the v4 weekly audit cycle
     (discover → blueprint → coverage → crawl → score → analyze → site report). Needs a live
     DB + network — hence the injectable seam so tests use a fake. ``progress`` (optional)
-    is threaded into the orchestrator for per-stage updates."""
+    is threaded into the orchestrator for per-stage updates; ``force_recrawl`` /
+    ``should_cancel`` carry the R2-2 re-crawl + drop-off-safety controls."""
     from ..pipeline import Orchestrator
     from ..storage.repos import targets as targets_repo
 
     target = targets_repo.upsert(name or domain, domain, "client")
-    return await Orchestrator().audit_cycle(domain, target=target, progress=progress)
+    return await Orchestrator().audit_cycle(
+        domain, target=target, progress=progress,
+        force_recrawl=force_recrawl, should_cancel=should_cancel,
+    )

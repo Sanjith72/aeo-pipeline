@@ -125,6 +125,7 @@ export function ResultsView({
 // Maps orchestrator RUN_STAGES → owner-facing copy + a count summary from the event.
 const STAGE_LABEL: Record<string, string> = {
   discover: "Finding your pages",
+  profile: "Sizing up your site",
   blueprint: "Mapping your ideal site",
   coverage: "Spotting the gaps",
   crawl: "Reading your pages",
@@ -132,12 +133,22 @@ const STAGE_LABEL: Record<string, string> = {
   report: "Putting your plan together",
 };
 
+// The canonical stage order (mirrors orchestrator.RUN_STAGES) — drives the overall
+// progress bar so the wait reads as motion toward done, not an open-ended spinner.
+const STAGE_ORDER = ["discover", "profile", "blueprint", "coverage", "crawl", "analyze", "report"] as const;
+
 function stageSummary(stage: string, counts: Record<string, number | string | null>): string {
   const n = (k: string) => (typeof counts[k] === "number" ? (counts[k] as number) : undefined);
+  const s = (k: string) => (typeof counts[k] === "string" ? (counts[k] as string) : undefined);
   switch (stage) {
     case "discover": {
       const d = n("discovered");
       return d != null ? `Found ${d} page${d === 1 ? "" : "s"}` : "";
+    }
+    case "profile": {
+      const industry = s("industry");
+      const headline = s("headline");
+      return headline || (industry ? `Looks like ${industry}` : "");
     }
     case "coverage": {
       const m = n("nodes");
@@ -160,21 +171,87 @@ function stageSummary(stage: string, counts: Record<string, number | string | nu
   }
 }
 
-export function AnalysisProgress({ job }: { job: AuditJob }) {
+export function AnalysisProgress({ job, onCancel }: { job: AuditJob; onCancel?: () => void }) {
   const stages = job.stages ?? [];
   const lastStage = stages.length ? stages[stages.length - 1].stage : null;
   const working = job.status === "queued" || job.status === "running";
+  const cancelling = job.cancelled && working;
+
+  // Homepage-first partial (R2-2): the structural profile that lands right after
+  // discovery, so the owner sees a finding within seconds instead of an empty spinner.
+  const profileStage = stages.find((s) => s.stage === "profile");
+  const profileHeadline =
+    profileStage && typeof profileStage.counts.headline === "string"
+      ? (profileStage.counts.headline as string)
+      : null;
+  const profileIndustry =
+    profileStage && typeof profileStage.counts.industry === "string"
+      ? (profileStage.counts.industry as string)
+      : null;
+
+  // Overall progress: how far through the canonical stage order we've reached. Reads as
+  // motion toward done rather than an open-ended wait.
+  const reachedIdx = lastStage ? STAGE_ORDER.indexOf(lastStage as (typeof STAGE_ORDER)[number]) : -1;
+  const pct =
+    job.status === "succeeded"
+      ? 100
+      : Math.max(6, Math.round(((reachedIdx + 1) / STAGE_ORDER.length) * 100));
+
   return (
     <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-5 text-sm">
-      <div className="flex items-center gap-2.5 text-amber-200">
-        <span className="relative flex h-2.5 w-2.5">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
-          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
-        </span>
-        <span className="font-medium">
-          {job.status === "queued" ? "Getting ready to review your site…" : "Reviewing your website…"}
-        </span>
+      <div className="flex items-center justify-between gap-3 text-amber-200">
+        <div className="flex items-center gap-2.5">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
+          </span>
+          <span className="font-medium">
+            {cancelling
+              ? "Wrapping up early…"
+              : job.status === "queued"
+                ? "Getting ready to review your site…"
+                : "Reviewing your website…"}
+          </span>
+        </div>
+        {working && onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={!!job.cancelled}
+            className="btn-ghost shrink-0 !px-2.5 !py-1 text-[11px] text-amber-200/90"
+            title="Stop the review — we'll keep whatever we've found so far"
+          >
+            {job.cancelled ? "Stopping…" : "Stop review"}
+          </button>
+        )}
       </div>
+
+      {/* overall progress bar — turns the wait into visible motion */}
+      <div
+        className="mt-3 h-1.5 overflow-hidden rounded-full bg-amber-500/15"
+        role="progressbar"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Analysis progress"
+      >
+        <div
+          className="h-full rounded-full bg-amber-400/80 transition-[width] duration-700 ease-out"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      {(profileHeadline || profileIndustry) && (
+        <div className="step-in mt-4 rounded-lg border border-amber-500/20 bg-paper-100/60 px-3.5 py-2.5">
+          <span className="label-mono text-amber-200/80">First look</span>
+          <p className="mt-0.5 text-sm text-ink">
+            {profileHeadline ?? `Looks like a ${profileIndustry} business.`}
+          </p>
+          <p className="mt-0.5 text-xs text-ink-300">
+            Early read from your homepage — the full page-by-page review is still running.
+          </p>
+        </div>
+      )}
 
       <ol className="mt-4 space-y-2">
         {stages.map((s, i) => {

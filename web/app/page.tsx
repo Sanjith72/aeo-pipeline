@@ -47,6 +47,15 @@ function deriveName(domain: string): string {
     .join(" ");
 }
 
+// "data from N hours ago" — a friendly cache-age phrase for the re-crawl prompt (R2-2).
+function formatAge(hours: number): string {
+  if (hours < 1) return "the last few minutes";
+  if (hours < 2) return "about an hour ago";
+  if (hours < 24) return `${Math.round(hours)} hours ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? "yesterday" : `${days} days ago`;
+}
+
 const STEPS = [
   { label: "Your website", blurb: "Pop in your address — we'll take a look." },
   { label: "About you", blurb: "We filled this in from your site. Fix anything that's off." },
@@ -82,6 +91,10 @@ export default function Page() {
   const [delivLoading, setDelivLoading] = useState(false);
   const [auditJob, setAuditJob] = useState<AuditJob | null>(null);
   const [deepProfile, setDeepProfile] = useState<SiteProfile | null>(null);
+  // R2-2 re-crawl: when the homepage was crawled recently, default to reusing that data
+  // (fast) and let the user opt into a fresh re-crawl that bypasses the skip gate.
+  const [forceRecrawl, setForceRecrawl] = useState(false);
+  const auditJobIdRef = useRef<string | null>(null);
 
   const studioRef = useRef<HTMLElement>(null);
 
@@ -177,8 +190,23 @@ export default function Page() {
     }
   }
 
+  async function cancelAudit() {
+    const jobId = auditJobIdRef.current;
+    if (!jobId) return;
+    try {
+      setAuditJob(await api.cancelAudit(jobId));
+    } catch {
+      /* best-effort — the poll loop still resolves the run to a terminal state */
+    }
+  }
+
   async function runDeepAudit(): Promise<boolean> {
-    const { job_id } = await api.startAudit({ domain: domain.trim(), name: name.trim() || deriveName(domain) });
+    const { job_id } = await api.startAudit({
+      domain: domain.trim(),
+      name: name.trim() || deriveName(domain),
+      force: forceRecrawl,
+    });
+    auditJobIdRef.current = job_id;
     let job = await api.auditStatus(job_id);
     setAuditJob(job);
     let tries = 0;
@@ -356,6 +384,23 @@ export default function Page() {
                           the basics below.
                         </p>
                       )}
+                      {!noSite && profileResult?.cache_age_hours != null && (
+                        <label className="step-in flex cursor-pointer items-start gap-3 rounded-lg border border-ink/10 bg-paper-200/50 px-3.5 py-2.5 text-sm">
+                          <input
+                            type="checkbox"
+                            className="toggle mt-0.5"
+                            checked={forceRecrawl}
+                            onChange={(e) => setForceRecrawl(e.target.checked)}
+                          />
+                          <span>
+                            <span className="block font-medium text-ink">Re-crawl my site from scratch</span>
+                            <span className="block text-xs text-ink-300">
+                              We have data from {formatAge(profileResult.cache_age_hours)} — leave this off to
+                              reuse it (faster), or turn it on to read every page fresh.
+                            </span>
+                          </span>
+                        </label>
+                      )}
                       <div className="grid gap-5 sm:grid-cols-2">
                         <Field label="Business name" required>
                           <input
@@ -484,7 +529,7 @@ export default function Page() {
                         )}
                       </div>
 
-                      {loading && !noSite && auditJob && <AnalysisProgress job={auditJob} />}
+                      {loading && !noSite && auditJob && <AnalysisProgress job={auditJob} onCancel={cancelAudit} />}
                       {analyzed && !loading && (
                         <button onClick={() => setView("results")} className="btn-ghost text-[13px]">
                           View my results →
