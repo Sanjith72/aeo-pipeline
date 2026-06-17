@@ -12,7 +12,6 @@ import type {
   BriefPlan,
   BundleAsset,
   DeliverablesResponse,
-  PlanPhase,
   PlanTask,
   SiteProfile,
   SitemapNode,
@@ -519,6 +518,10 @@ function TaskCard({
             <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${EFFORT_PILL[task.effort] ?? "bg-ink/5 text-ink-500"}`}>
               {EFFORT_LABEL[task.effort] ?? humanizeToken(task.effort)}
             </span>
+            {/* time/phase as secondary metadata (R2-3) — priority is the folder now */}
+            <span className="label-mono rounded bg-ink/[0.04] px-1.5 py-0.5 !tracking-[0.1em]">
+              {PHASE_LABEL[task.phase] ?? humanizeToken(task.phase)}
+            </span>
           </div>
           <p className="mt-1 text-sm text-ink-500">{task.action_required}</p>
           <button
@@ -583,6 +586,36 @@ function PromptBox({ title, blurb, text, copyLabel }: { title: string; blurb: st
   );
 }
 
+// R2-3 progressive disclosure: PRIORITY is the primary axis (resolves the R1-vs-R2
+// grouping conflict). Tasks are foldered high/medium/low; time/phase drops to a
+// secondary tag on each card. The numeric `priority` is the truest signal where a task
+// carries one (page tasks); visibility tasks without one fall back to quick-win, then phase.
+type Band = "high" | "medium" | "low";
+
+const BAND_META: Record<Band, { label: string; blurb: string; tag: string }> = {
+  high: { label: "High priority", blurb: "Start here — biggest impact.", tag: "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30" },
+  medium: { label: "Medium priority", blurb: "Strong follow-ups once the big ones land.", tag: "bg-amber-500/10 text-amber-200 ring-1 ring-amber-500/30" },
+  low: { label: "Low priority", blurb: "Nice-to-haves for later.", tag: "bg-ink/[0.05] text-ink-500 ring-1 ring-ink/10" },
+};
+
+// Time/phase, kept as secondary metadata on each task (no longer a competing folder).
+const PHASE_LABEL: Record<string, string> = {
+  week_1: "This week",
+  week_2_4: "Next few weeks",
+  later: "Later",
+};
+
+function priorityBand(t: PlanTask): Band {
+  if (typeof t.priority === "number") {
+    if (t.priority >= 0.6) return "high";
+    if (t.priority >= 0.3) return "medium";
+    return "low";
+  }
+  if (t.quick_win || t.phase === "week_1") return "high";
+  if (t.phase === "week_2_4") return "medium";
+  return "low";
+}
+
 function PhasedPlanView({ plan, storageKey }: { plan: StructuredPlan; storageKey: string }) {
   const [done, setDone] = useState<Set<string>>(new Set());
   const planViewed = useRef(false);
@@ -629,6 +662,17 @@ function PhasedPlanView({ plan, storageKey }: { plan: StructuredPlan; storageKey
   const quickWins = allTasks.filter((t) => t.quick_win);
   const quickWinsDone = quickWins.filter((t) => done.has(t.id)).length;
 
+  // Group by priority band, then compute progressive unlock: a band opens once every
+  // task in the band above it is complete.
+  const banded: Record<Band, PlanTask[]> = { high: [], medium: [], low: [] };
+  for (const t of allTasks) banded[priorityBand(t)].push(t);
+  const bandOrder = (["high", "medium", "low"] as Band[]).filter((b) => banded[b].length > 0);
+  const bandComplete = (b: Band) => banded[b].length > 0 && banded[b].every((t) => done.has(t.id));
+  const bandUnlocked = (b: Band): boolean => {
+    const i = bandOrder.indexOf(b);
+    return i <= 0 || bandOrder.slice(0, i).every(bandComplete);
+  };
+
   return (
     <div className="space-y-6">
       <div className="card p-5 sm:p-6">
@@ -663,53 +707,72 @@ function PhasedPlanView({ plan, storageKey }: { plan: StructuredPlan; storageKey
         )}
       </div>
 
-      {plan.phases.map((phase, idx) => (
-        <PhaseBlock
-          key={phase.key}
-          phase={phase}
+      {bandOrder.map((band, idx) => (
+        <PriorityGroup
+          key={band}
+          band={band}
+          tasks={banded[band]}
           done={done}
           onToggle={toggle}
-          locked={idx > 0 && !plan.phases[idx - 1].tasks.every((t) => done.has(t.id))}
-          priorTitle={idx > 0 ? plan.phases[idx - 1].title : undefined}
+          unlocked={bandUnlocked(band)}
+          priorLabel={idx > 0 ? BAND_META[bandOrder[idx - 1]].label : undefined}
         />
       ))}
     </div>
   );
 }
 
-function PhaseBlock({
-  phase,
+// One priority folder. The first non-empty band is always open; lower bands stay
+// collapsed and reveal progressively as the band above is cleared (Duolingo-style,
+// to cut decision fatigue) — but the user can always open one early.
+function PriorityGroup({
+  band,
+  tasks,
   done,
   onToggle,
-  locked,
-  priorTitle,
+  unlocked,
+  priorLabel,
 }: {
-  phase: PlanPhase;
+  band: Band;
+  tasks: PlanTask[];
   done: Set<string>;
   onToggle: (t: PlanTask) => void;
-  locked: boolean;
-  priorTitle?: string;
+  unlocked: boolean;
+  priorLabel?: string;
 }) {
-  const phaseDone = phase.tasks.filter((t) => done.has(t.id)).length;
+  const [manualOpen, setManualOpen] = useState(false);
+  const open = unlocked || manualOpen;
+  const meta = BAND_META[band];
+  const groupDone = tasks.filter((t) => done.has(t.id)).length;
   return (
     <div>
       <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <span className="label-mono">{phase.title}</span>
-          <span className="ml-2 text-xs text-ink-500">{phase.blurb}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.tag}`}>{meta.label}</span>
+          <span className="text-xs text-ink-500">{meta.blurb}</span>
         </div>
-        <span className="font-mono text-xs text-ink-300">{phaseDone}/{phase.tasks.length}</span>
+        <span className="font-mono text-xs text-ink-300">{groupDone}/{tasks.length}</span>
       </div>
-      {locked && (
-        <p className="mb-2.5 text-xs text-ink-300">
-          Tip: finish <span className="text-ink-500">{priorTitle}</span> first — but you can start anytime.
-        </p>
+      {open ? (
+        <ul className="space-y-2">
+          {tasks.map((t) => (
+            <TaskCard key={t.id} task={t} done={done.has(t.id)} onToggle={() => onToggle(t)} />
+          ))}
+        </ul>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setManualOpen(true)}
+          className="flex w-full items-center justify-between gap-3 rounded-xl border border-dashed border-ink/15 bg-paper-200/40 px-4 py-3 text-left text-sm transition-colors hover:border-ink/25 hover:bg-paper-200/70"
+        >
+          <span className="text-ink-500">
+            <span className="font-medium text-ink">{tasks.length} {meta.label.toLowerCase()}</span> task
+            {tasks.length === 1 ? "" : "s"}
+            {priorLabel ? ` — unlocks as you finish ${priorLabel.toLowerCase()}` : ""}
+          </span>
+          <span aria-hidden className="shrink-0 text-ink-300">Show now →</span>
+        </button>
       )}
-      <ul className={`space-y-2 ${locked ? "opacity-70" : ""}`}>
-        {phase.tasks.map((t) => (
-          <TaskCard key={t.id} task={t} done={done.has(t.id)} onToggle={() => onToggle(t)} />
-        ))}
-      </ul>
     </div>
   );
 }
