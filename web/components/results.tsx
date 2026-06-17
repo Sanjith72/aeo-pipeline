@@ -12,7 +12,6 @@ import type {
   BriefPlan,
   BundleAsset,
   DeliverablesResponse,
-  PlanPhase,
   PlanStateResponse,
   PlanTask,
   SiteProfile,
@@ -26,15 +25,7 @@ import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/scor
 import { CountUp } from "./motion/primitives";
 import { ArrowRight, Check } from "./ui/icons";
 
-// Momentum-tier names for the phases — the plan reads as "do now / soon", never a
-// calendar countdown that invites "I'll get to the 30-day thing later" (B2). Keyed on the
-// backend phase.key so the packager stays untouched.
-const PHASE_TITLE: Record<string, string> = {
-  week_1: "Do these now",
-  week_2_4: "This week",
-  later: "Once you're rolling",
-};
-
+// Phase rank for sorting the "Today" tray (earliest phase first).
 const PHASE_RANK: Record<string, number> = { week_1: 0, week_2_4: 1, later: 2 };
 
 const EFFORT_PILL: Record<string, string> = {
@@ -859,6 +850,19 @@ function TaskCard({
 
       {open && (
         <div className="step-in space-y-3 border-t border-ink/[0.06] bg-paper-200/40 px-4 py-3.5 text-sm">
+          {(task.rationale || task.impact || task.difficulty) && (
+            <div>
+              <span className="label-mono">Why this matters</span>
+              {task.rationale && <p className="mt-0.5 leading-relaxed text-ink-500">{task.rationale}</p>}
+              {(task.impact || task.difficulty) && (
+                <p className="mt-1 font-mono text-[11px] text-ink-300">
+                  {task.impact ? `Impact ${task.impact}/5` : ""}
+                  {task.impact && task.difficulty ? " · " : ""}
+                  {task.difficulty ? `Effort ${task.difficulty}/5` : ""}
+                </p>
+              )}
+            </div>
+          )}
           <Detail label="Where you are now" value={task.current_state} />
           <Detail label="What to do" value={task.action_required} />
           <Detail label="How to do it" value={task.how_to} />
@@ -1044,7 +1048,6 @@ function PhasedPlanView({
   score?: number | null;
 }) {
   const { done, toggle } = usePlanProgress({ planStateId, storageKey, initialDone, serverBacked, score });
-  const [showAll, setShowAll] = useState(false);
   const planViewed = useRef(false);
 
   // fire plan_viewed once, with the quick-win ids the metrics' completion rate keys on
@@ -1059,16 +1062,6 @@ function PhasedPlanView({
   const pct = allTasks.length ? Math.round((doneCount / allTasks.length) * 100) : 0;
   const quickWins = allTasks.filter((t) => t.quick_win);
   const quickWinsDone = quickWins.filter((t) => done.has(t.id)).length;
-
-  // The active phase is the first with an unfinished task — what "now" means today. Later
-  // phases collapse behind a single "coming up" line so the plan never reads as a 30-day wall.
-  const activeIdx = (() => {
-    const i = plan.phases.findIndex((p) => p.tasks.some((t) => !done.has(t.id)));
-    return i === -1 ? plan.phases.length - 1 : i;
-  })();
-  const visiblePhases = showAll ? plan.phases : plan.phases.slice(0, activeIdx + 1);
-  const hiddenPhases = showAll ? [] : plan.phases.slice(activeIdx + 1);
-  const hiddenTaskCount = hiddenPhases.reduce((n, p) => n + p.tasks.length, 0);
 
   return (
     <div className="space-y-6">
@@ -1106,67 +1099,86 @@ function PhasedPlanView({
 
       {pct < 100 && <TodayTray tasks={allTasks} done={done} onToggle={toggle} />}
 
-      {visiblePhases.map((phase, idx) => (
-        <PhaseBlock
-          key={phase.key}
-          phase={phase}
-          done={done}
-          onToggle={toggle}
-          locked={idx > 0 && !plan.phases[idx - 1].tasks.every((t) => done.has(t.id))}
-          priorTitle={idx > 0 ? PHASE_TITLE[plan.phases[idx - 1].key] ?? plan.phases[idx - 1].title : undefined}
-        />
-      ))}
-
-      {hiddenPhases.length > 0 && (
-        <button
-          type="button"
-          onClick={() => setShowAll(true)}
-          className="flex w-full items-center justify-between gap-3 rounded-xl border border-dashed border-ink/15 px-4 py-3 text-left text-sm text-ink-500 transition-colors hover:border-ink/30 hover:text-ink"
-        >
-          <span>
-            <span className="font-medium text-ink">Coming up</span> — {hiddenTaskCount} more task
-            {hiddenTaskCount === 1 ? "" : "s"} once you've cleared this. No rush; you can start anytime.
-          </span>
-          <span aria-hidden className="shrink-0 text-ink-300">Show everything +</span>
-        </button>
-      )}
+      {/* Priority folders (Task 1): grouped by the LLM-refinable priority_band, only High
+          open by default — focus on what matters, not a 30-item wall. */}
+      <div className="space-y-3">
+        {TASK_BANDS.map((band) => {
+          const bandTasks = allTasks.filter((t) => (t.priority_band ?? "low") === band.key);
+          return bandTasks.length ? (
+            <TaskFolder
+              key={band.key}
+              title={band.title}
+              blurb={band.blurb}
+              badge={band.badge}
+              tasks={bandTasks}
+              done={done}
+              onToggle={toggle}
+              defaultOpen={band.key === "high"}
+            />
+          ) : null;
+        })}
+      </div>
     </div>
   );
 }
 
-function PhaseBlock({
-  phase,
+// Priority bands the kit's plan tasks are foldered into (Task 1). Tones echo the Strategy tab.
+const TASK_BANDS: { key: "high" | "med" | "low"; title: string; blurb: string; badge: string }[] = [
+  { key: "high", title: "High priority", blurb: "Do these first — biggest impact.", badge: "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30" },
+  { key: "med", title: "Medium priority", blurb: "Strong follow-ups once the essentials are done.", badge: "bg-amber-500/10 text-amber-200 ring-1 ring-amber-500/30" },
+  { key: "low", title: "Low priority", blurb: "Nice-to-haves that round things out.", badge: "bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/30" },
+];
+
+function TaskFolder({
+  title,
+  blurb,
+  badge,
+  tasks,
   done,
   onToggle,
-  locked,
-  priorTitle,
+  defaultOpen,
 }: {
-  phase: PlanPhase;
+  title: string;
+  blurb: string;
+  badge: string;
+  tasks: PlanTask[];
   done: Set<string>;
   onToggle: (t: PlanTask) => void;
-  locked: boolean;
-  priorTitle?: string;
+  defaultOpen?: boolean;
 }) {
-  const phaseDone = phase.tasks.filter((t) => done.has(t.id)).length;
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  const doneCount = tasks.filter((t) => done.has(t.id)).length;
   return (
-    <div>
-      <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <span className="label-mono">{PHASE_TITLE[phase.key] ?? phase.title}</span>
-          <span className="ml-2 text-xs text-ink-500">{phase.blurb}</span>
-        </div>
-        <span className="font-mono text-xs text-ink-300">{phaseDone}/{phase.tasks.length}</span>
-      </div>
-      {locked && (
-        <p className="mb-2.5 text-xs text-ink-300">
-          Tip: finish <span className="text-ink-500">{priorTitle}</span> first — but you can start anytime.
-        </p>
+    <div className="overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition-colors hover:bg-paper-200/40"
+      >
+        <span className="flex items-center gap-3">
+          <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg font-mono text-sm font-semibold ${badge}`}>
+            {tasks.length}
+          </span>
+          <span>
+            <span className="block font-medium text-ink">{title}</span>
+            <span className="block text-xs text-ink-300">{blurb}</span>
+          </span>
+        </span>
+        <span className="flex items-center gap-3">
+          <span className="font-mono text-xs text-ink-300">{doneCount}/{tasks.length}</span>
+          <span aria-hidden className={`text-lg text-ink-300 transition-transform duration-200 ${open ? "rotate-90" : ""}`}>
+            ›
+          </span>
+        </span>
+      </button>
+      {open && (
+        <ul className="step-in space-y-2 border-t border-ink/[0.06] bg-paper-200/30 p-3">
+          {tasks.map((t) => (
+            <TaskCard key={t.id} task={t} done={done.has(t.id)} onToggle={() => onToggle(t)} />
+          ))}
+        </ul>
       )}
-      <ul className={`space-y-2 ${locked ? "opacity-70" : ""}`}>
-        {phase.tasks.map((t) => (
-          <TaskCard key={t.id} task={t} done={done.has(t.id)} onToggle={() => onToggle(t)} />
-        ))}
-      </ul>
     </div>
   );
 }

@@ -109,6 +109,13 @@ export interface PlanTask {
   action_required: string;
   how_to: string;
   prompts?: { ai: string; human: string };
+  // Task 1/2 — deterministic-first priority signals (LLM-refinable). priority_band groups
+  // the tasks into the High/Med/Low folders.
+  priority_band?: "high" | "med" | "low";
+  impact?: number; // 1–5
+  difficulty?: number; // 1–5
+  rationale?: string;
+  recommended_next_action?: string;
 }
 
 export interface PlanPhase {

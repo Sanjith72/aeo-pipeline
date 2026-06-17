@@ -299,3 +299,20 @@ class TestBuildPlan:
 
     def test_deterministic(self):
         assert build_plan(_twelve_nodes(), "ai", topic="t") == build_plan(_twelve_nodes(), "ai", topic="t")
+
+    def test_tasks_carry_priority_signals(self):
+        # Task 1/2 — every task gets a high/med/low band + 1-5 impact/difficulty + a
+        # rationale + recommended next action (deterministic baseline).
+        plan = build_plan(_twelve_nodes(), "ai", topic="t")
+        tasks = [t for p in plan["phases"] for t in p["tasks"]]
+        assert tasks
+        for t in tasks:
+            assert t["priority_band"] in {"high", "med", "low"}
+            assert 1 <= t["impact"] <= 5
+            assert 1 <= t["difficulty"] <= 5
+            assert t["rationale"]
+            assert t["recommended_next_action"] == t["action_required"]
+        # week_1 tasks are High; quick wins are always High.
+        for t in tasks:
+            if t["phase"] == "week_1" or t["quick_win"]:
+                assert t["priority_band"] == "high"

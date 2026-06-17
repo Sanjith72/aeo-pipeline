@@ -711,6 +711,43 @@ def _is_quick_win(effort: str, priority: float, cfg: dict[str, Any]) -> bool:
     return _EFFORT_RANK.get(effort, 1) <= max_rank and priority >= cfg["quick_win_min_priority"]
 
 
+# Task 1/2 — the deterministic priority signals the UI groups + ranks on. Derived from the
+# fields build_plan already computes (phase, quick_win, effort, priority); an LLM pass can
+# refine them later (deterministic-first, same seam as the recommender/draft).
+_BAND_HIGH, _BAND_MED, _BAND_LOW = "high", "med", "low"
+_PHASE_BAND = {PHASE_WEEK_1: _BAND_HIGH, PHASE_WEEK_2_4: _BAND_MED, PHASE_LATER: _BAND_LOW}
+_DIFFICULTY_BY_EFFORT = {"low": 1, "medium": 3, "high": 5}
+_IMPACT_BY_BAND = {_BAND_HIGH: 5, _BAND_MED: 3, _BAND_LOW: 2}
+
+
+def _rationale_for(task: dict[str, Any], band: str) -> str:
+    if task.get("quick_win"):
+        return "A fast win — low effort, and the kind of signal AI assistants reward."
+    if band == _BAND_HIGH:
+        return "High impact on whether AI assistants can find and recommend you."
+    if band == _BAND_MED:
+        return "Rounds out your coverage so more questions route to you."
+    return "A nice-to-have once the essentials are live."
+
+
+def _enrich_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Attach priority_band (high/med/low), 1-5 impact + difficulty, a short rationale, and
+    the recommended next action — the signals the priority folders + task cards render."""
+    phase = task.get("phase", PHASE_LATER)
+    effort = str(task.get("effort", "medium"))
+    band = _BAND_HIGH if (task.get("quick_win") or phase == PHASE_WEEK_1) else _PHASE_BAND.get(phase, _BAND_LOW)
+    priority = float(task.get("priority", 0.0) or 0.0)
+    impact = max(1, min(5, round(1 + priority * 4))) if priority else _IMPACT_BY_BAND[band]
+    return {
+        **task,
+        "priority_band": band,
+        "impact": impact,
+        "difficulty": _DIFFICULTY_BY_EFFORT.get(effort, 3),
+        "rationale": task.get("rationale") or _rationale_for(task, band),
+        "recommended_next_action": task.get("action_required", ""),
+    }
+
+
 def _page_plan_task(
     node: Any, rank: int, *, business: dict[str, Any] | None, topic: str, cfg: dict[str, Any]
 ) -> dict[str, Any]:
@@ -814,6 +851,10 @@ def build_plan(
     # Visibility wins ride along in the owner-facing modes (no website needed).
     if builder_mode != "dev":
         tasks += [dict(t) for t in _VIS_PLAN_TASKS]
+
+    # Task 1/2: attach the deterministic priority_band + impact/difficulty/rationale the
+    # UI groups (High/Med/Low folders) and ranks on. Still pure → build_plan stays deterministic.
+    tasks = [_enrich_task(t) for t in tasks]
 
     phases = [
         {
