@@ -1,5 +1,5 @@
 // Typed client for the AEO HTTP API (SP-4a). Every call maps to one endpoint;
-// no business logic lives here. Base URL from NEXT_PUBLIC_API_BASE.
+// no business logic lives here. Calls are same-origin to the server proxy (app/api/[...path]).
 
 import type {
   AuditJob,
@@ -17,13 +17,15 @@ import type {
   StructuredPlan,
 } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+// Same-origin: every call goes to this app's server-side proxy (app/api/[...path]/route.ts),
+// which injects the secret X-API-Key and forwards to the real backend. The key never reaches
+// the browser — so there is deliberately no NEXT_PUBLIC_API_KEY here anymore.
+const BASE = "";
 
 function headers(extra?: Record<string, string>): Record<string, string> {
-  const h: Record<string, string> = { ...extra };
-  if (API_KEY) h["X-API-Key"] = API_KEY;
-  return h;
+  // No client-side API key — the server proxy adds X-API-Key. (Auth headers added here would
+  // be pointless and would only re-expose the secret in the bundle.)
+  return { ...extra };
 }
 
 // ── instrumentation (Block F) ──────────────────────────────────────────────

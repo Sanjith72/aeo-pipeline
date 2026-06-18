@@ -40,28 +40,31 @@ UI → Vercel**, **Postgres → Railway's managed plugin**. The UI talks to the 
 
 1. vercel.com → **Add New → Project** → import `Sanjith72/aeo-pipeline`.
 2. **Root Directory → `web`** (important — the app lives in `web/`, not the repo root).
-3. **Environment Variables** (Production):
+3. **Environment Variables** (Production) — **server-side only** (NOT `NEXT_PUBLIC_*`, so the
+   key never reaches the browser; the app's `app/api/[...path]` proxy reads them at request time):
    | Variable | Value |
    |---|---|
-   | `NEXT_PUBLIC_API_BASE` | your Railway URL, e.g. `https://aeo-pipeline-production.up.railway.app` |
-   | `NEXT_PUBLIC_API_KEY` | the **same** value as `AEO__API__AUTH_KEY` |
+   | `API_BASE_URL` | your Railway URL, e.g. `https://aeo-pipeline-production.up.railway.app` |
+   | `API_KEY` | the **same** value as `AEO__API__AUTH_KEY` |
 
-   > `NEXT_PUBLIC_*` are baked at **build time** — set them before the first build (or redeploy after changing).
+   > These are **runtime** vars (read by the server proxy on each request), so you can change them
+   > and redeploy without a rebuild. The browser only ever talks to the Vercel app itself.
 4. **Deploy** → you get `https://<app>.vercel.app`.
 5. **Close the loop:** back on Railway, set `AEO__API__CORS_ORIGINS` to that exact Vercel URL and redeploy
    the API (CORS must allow the browser origin or every fetch fails silently).
 
 ---
 
-## ⚠️ Security — read before going public
+## ✅ Security — the key is server-side
 
-- **`NEXT_PUBLIC_API_KEY` is in the browser bundle.** It's a *filter*, not real auth — anyone viewing the
-  site can read it from the JS and call the API. Combined with the SSRF guard + the `_MAX_CONCURRENT_AUDITS`
-  cap, it's an OK baseline for a demo, but **not** a hardened public service.
-- **Proper fix (follow-up):** proxy API calls through the Next.js server (Route Handlers) so the key stays
-  server-side and never reaches the browser; add per-IP rate limiting in front of the API.
-- The audit endpoint makes your server crawl arbitrary URLs and spend your Gemini quota — keep `AEO__API__AUTH_KEY`
-  set and watch usage.
+- **The API key never reaches the browser.** All calls go through a same-origin server proxy
+  (`web/app/api/[...path]/route.ts`) that injects `X-API-Key` from the **server-only** `API_KEY` var.
+  The old browser-visible-key problem is gone — set `AEO__API__AUTH_KEY` on Railway and the matching
+  `API_KEY` on Vercel, and every `/api/*` route is genuinely gated.
+- **Still recommended (not a blocker):** per-IP rate limiting in front of the API — the audit endpoint
+  crawls arbitrary URLs and spends Gemini quota. Add a rate-limit middleware or front it with Cloudflare.
+  The SSRF guard + `_MAX_CONCURRENT_AUDITS` cap already bound the blast radius.
+- Keep `AEO__API__AUTH_KEY` set and watch usage.
 
 ## Cost / ops notes
 - The backend image is large (bundled Chromium) and audits are CPU-heavy — Railway bills by usage; watch the meter.
