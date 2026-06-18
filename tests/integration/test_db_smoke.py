@@ -256,20 +256,33 @@ def test_recommendation_outcome_lifecycle(db):
         oid = outcomes_repo.open(
             rec_id, page.id, page.url_normalized,
             baseline_run_id=issue.id, baseline_hash=baseline_hash, criterion="schema_markup",
+            baseline_tier=2,  # the criterion scored 2/5 when the rec was issued
         )
 
-        # Re-crawl, content unchanged → no flip, outcome still pending.
-        assert outcomes_repo.mark_from_recrawl(page.url_normalized, recrawl.id, baseline_hash) == 0
+        # Re-crawl, content unchanged → no flip, outcome still pending (tiers ignored).
+        assert outcomes_repo.mark_from_recrawl(
+            page.url_normalized, recrawl.id, baseline_hash, {"schema_markup": 5}
+        ) == 0
         assert any(o["id"] == oid for o in outcomes_repo.pending_for_url(page.url_normalized))
 
-        # Re-crawl, content changed → flips to implemented with the detecting run.
+        # Re-crawl, content changed BUT the targeted criterion didn't improve → still
+        # pending (a hash change alone is not honest proof the fix landed).
         changed_hash = "hashchanged" + "1" * 53
-        assert outcomes_repo.mark_from_recrawl(page.url_normalized, recrawl.id, changed_hash) == 1
+        assert outcomes_repo.mark_from_recrawl(
+            page.url_normalized, recrawl.id, changed_hash, {"schema_markup": 2}
+        ) == 0
+        assert any(o["id"] == oid for o in outcomes_repo.pending_for_url(page.url_normalized))
+
+        # Re-crawl, content changed AND the criterion's tier rose → implemented (verified).
+        better_hash = "hashbetter" + "2" * 54
+        assert outcomes_repo.mark_from_recrawl(
+            page.url_normalized, recrawl.id, better_hash, {"schema_markup": 4}
+        ) == 1
         done = outcomes_repo.for_page(page.id, status="implemented")
         assert len(done) == 1
         assert done[0]["id"] == oid
         assert done[0]["detected_run_id"] == recrawl.id
-        assert done[0]["detection_method"] == "content_hash_changed"
+        assert done[0]["detection_method"] == "criterion_improved"
         assert done[0]["detected_at"] is not None
 
         # No pending outcomes remain for the URL — a second re-crawl is a no-op.
@@ -347,11 +360,15 @@ def test_events_record_and_retention_metrics(db):
         rec_a = recs_repo.create(page_a.id, issue.id, "schema", {"title": "A"}, criterion="schema_markup")
         rec_b = recs_repo.create(page_b.id, issue.id, "schema", {"title": "B"}, criterion="schema_markup")
         outcomes_repo.open(rec_a, page_a.id, page_a.url_normalized,
-                           baseline_run_id=issue.id, baseline_hash="hashimpl_a" + "0" * 54)
+                           baseline_run_id=issue.id, baseline_hash="hashimpl_a" + "0" * 54,
+                           criterion="schema_markup", baseline_tier=2)
         outcomes_repo.open(rec_b, page_b.id, page_b.url_normalized,
-                           baseline_run_id=issue.id, baseline_hash="hashimpl_b" + "0" * 54)
-        # flip A to implemented via a changed hash; B stays pending.
-        assert outcomes_repo.mark_from_recrawl(page_a.url_normalized, recrawl.id, "changed" + "1" * 57) == 1
+                           baseline_run_id=issue.id, baseline_hash="hashimpl_b" + "0" * 54,
+                           criterion="schema_markup", baseline_tier=2)
+        # flip A to implemented via a changed hash + improved criterion tier; B stays pending.
+        assert outcomes_repo.mark_from_recrawl(
+            page_a.url_normalized, recrawl.id, "changed" + "1" * 57, {"schema_markup": 4}
+        ) == 1
 
         with transaction() as conn, conn.cursor() as cur:
             cur.execute(
