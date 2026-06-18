@@ -622,15 +622,18 @@ class Orchestrator:
         )
         return site_reports_repo.put(site)
 
-    def _detect_completions(self, page: FetchedPage, run_id: int) -> None:
+    def _detect_completions(self, page: FetchedPage, run_id: int, page_score: PageScore) -> None:
         """Retention Engine bookkeeping: reconcile this URL's pending recommendation
-        outcomes against the freshly-crawled content hash. Best-effort and isolated —
-        completion detection must never abort the crawl that carries it."""
+        outcomes against the freshly RE-SCORED page — an outcome flips to ``implemented``
+        only when its targeted criterion's tier actually rose (criterion-honest), not on
+        a bare content-hash change. Best-effort and isolated — completion detection must
+        never abort the crawl that carries it."""
         if not get_settings().retention.enabled:
             return
         try:
+            new_tiers = {name: c.value for name, c in page_score.criteria.items()}
             flipped = outcomes_repo.mark_from_recrawl(
-                page.url_normalized, run_id, page.content_hash
+                page.url_normalized, run_id, page.content_hash, new_tiers
             )
             if flipped:
                 log.info(
@@ -656,13 +659,6 @@ class Orchestrator:
             summary.failed += 1
             return
 
-        # Retention Engine (#11): completion detection is SEPARATE from skip-for-cost.
-        # Run it for EVERY successfully-crawled page, BEFORE any fingerprint
-        # short-circuit — a watched page that changed since we recommended an edit is
-        # the most valuable event in the system and must never be silently skipped.
-        # Compares against each pending outcome's BASELINE hash, not last_hash().
-        self._detect_completions(page, run_id)
-
         # Fingerprint short-circuit only pays off when scoring (it skips the
         # LLM). For crawl-only runs, extraction is cheap — just redo it. An explicit
         # re-crawl (force_recrawl) bypasses the skip gate entirely (R2-2).
@@ -684,6 +680,12 @@ class Orchestrator:
             page_score = self.score.run(bundle, run_id)
             self.persist.score(page_score, scored_by=_scored_by(page_score))
             summary.scored += 1
+            # Retention Engine (#11): verify recommendation completions AFTER re-scoring,
+            # so the check is criterion-honest (did the targeted criterion's tier rise?)
+            # rather than a self-grading hash-only signal. A changed page always re-scores
+            # (a changed hash never fingerprint-skips), so the completion is never missed;
+            # an unchanged page can't have a pending outcome that should flip.
+            self._detect_completions(page, run_id, page_score)
 
     async def _psi_batch(self, urls: list[str]) -> dict[str, dict]:
         """Fetch PageSpeed for many URLs concurrently. Empty when no API key —

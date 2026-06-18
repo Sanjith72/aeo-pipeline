@@ -462,3 +462,36 @@ def test_cors_allows_the_web_ui_origin() -> None:
     # fetch fails silently, so it's load-bearing for the whole guided flow
     r = client.get("/api/health", headers={"Origin": "http://localhost:3000"})
     assert r.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+
+# ── retention foundation (Specs #1–#2) endpoint wiring ──────────────────────────
+
+
+def test_resume_plan_blank_session_is_not_an_error() -> None:
+    # the homepage 'resume' banner must read 'nothing to resume' as {id:null} (200),
+    # never an error — a blank session never touches the DB.
+    r = client.get("/api/plan-state")
+    assert r.status_code == 200
+    assert r.json() == {"id": None}
+
+
+def test_site_freshness_is_best_effort_without_db() -> None:
+    # the wizard freshness check (Slice 2b) must never break the flow — any miss/DB error
+    # resolves to {fresh: false}.
+    r = client.get("/api/site-freshness", params={"domain": "no-such-domain.example"})
+    assert r.status_code == 200
+    assert r.json()["fresh"] is False
+
+
+def test_recheck_status_is_best_effort_without_db() -> None:
+    # 'Verified live' (Spec #2) must never break the results view — empty set on any failure.
+    r = client.get("/api/recheck-status", params={"domain": "no-such-domain.example"})
+    assert r.status_code == 200
+    assert r.json() == {"verified": [], "count": 0}
+
+
+def test_create_plan_state_rejects_an_oversized_payload() -> None:
+    # the public plan-state endpoint caps the stored blob so it can't be abused (B1).
+    big = {"x": "y" * 1_100_000}
+    r = client.post("/api/plan-state", json={"plan": big})
+    assert r.status_code == 422  # bounded by _bounded_json before any DB write

@@ -100,7 +100,8 @@ def validate_page(
     max_attempts = max(1, int(max_attempts))
 
     page_id, run_id = gap.page_id, gap.run_id
-    det_before = score_fn(bundle, run_id, llm=_DETERMINISTIC_LLM, rubric=rubric).total
+    baseline_score = score_fn(bundle, run_id, llm=_DETERMINISTIC_LLM, rubric=rubric)
+    det_before = baseline_score.total
 
     # No deficiencies -> nothing to validate or review.
     if not gap.criterion_gaps:
@@ -153,7 +154,13 @@ def validate_page(
 
     rec_ids: list[int] = []
     if persist and best_recs:
-        rec_ids = _persist(page_id, run_id, best_recs, attempts, det_before, det_after, rec_status, improved)
+        # Pin each targeted criterion's baseline tier so a re-crawl can verify the fix
+        # actually landed (not just that the page changed).
+        baseline_tiers = {name: c.value for name, c in baseline_score.criteria.items()}
+        rec_ids = _persist(
+            page_id, run_id, best_recs, attempts, det_before, det_after,
+            rec_status, improved, baseline_tiers,
+        )
 
     return ValidationOutcome(
         page_id=page_id,
@@ -178,6 +185,7 @@ def _persist(
     score_after: int,
     rec_status: str,
     improved: bool,
+    baseline_tiers: dict[str, int],
 ) -> list[int]:
     """Write the proposed recs, then stamp each with its validation outcome."""
     from ..storage.repos import recommendations as recs_repo
@@ -187,12 +195,13 @@ def _persist(
         recs_repo.set_validation(
             rid, status=rec_status, validated=improved, score_after=score_after
         )
-    _open_outcomes(page_id, run_id, rec_ids, recs)
+    _open_outcomes(page_id, run_id, rec_ids, recs, baseline_tiers)
     return rec_ids
 
 
 def _open_outcomes(
-    page_id: int, run_id: int, rec_ids: list[int], recs: list[Recommendation]
+    page_id: int, run_id: int, rec_ids: list[int], recs: list[Recommendation],
+    baseline_tiers: dict[str, int],
 ) -> None:
     """Retention Engine (#11): open a pending outcome per issued recommendation,
     pinning the page's current content hash as the baseline the next re-crawl
@@ -221,6 +230,7 @@ def _open_outcomes(
                 rid, page_id, url_normalized,
                 baseline_run_id=run_id, baseline_hash=baseline_hash,
                 criterion=rec.criterion,
+                baseline_tier=baseline_tiers.get(rec.criterion) if rec.criterion else None,
             )
     except Exception as exc:  # outcome bookkeeping must never break rec issuance
         log.warning("outcome_open_skipped", page_id=page_id, error=str(exc))

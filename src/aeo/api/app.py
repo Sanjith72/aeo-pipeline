@@ -18,11 +18,12 @@ require a matching ``X-API-Key`` header (see :func:`require_api_key`). Unset = o
 
 from __future__ import annotations
 
+import json
 from datetime import UTC
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from ..intelligence.brief import plan_from_brief
 from ..reference.business_input import BusinessInput
@@ -33,6 +34,12 @@ from ..reference.generator import generate_blueprint
 from ..report.packager import build_asset_bundle, checklist_for, plan_for
 from . import jobs as jobs_mod
 from .jobs import JOBS
+
+# Bounds for the persisted-plan payloads (B1) — keep a stored plan/profile blob and its
+# completed-task set from growing unboundedly through the public plan-state endpoints.
+_MAX_JSON_BYTES = 1 * 1024 * 1024
+_MAX_DONE_IDS = 5000
+_MAX_TASK_ID_LEN = 256
 
 
 def current_api_key() -> str | None:
@@ -153,6 +160,59 @@ class OverrideRequest(BaseModel):
     kind: str = "field_override"  # or "recommendation_rejected"
     url: str | None = None
     client_id: int | None = None
+
+
+class PlanStateCreate(BaseModel):
+    """Persist the interactive plan so it survives a device switch and earns a resumable
+    /plan/<id> link (B1). ``plan`` is the StructuredPlan the UI renders; ``profile`` is a
+    SiteProfile snapshot for the score/overview; ``score`` is the canonical AEO score at
+    issue time (seeds the score-over-time delta in a later spec)."""
+
+    session_id: str | None = None
+    run_id: int | None = None
+    business_name: str | None = Field(default=None, max_length=512)
+    domain: str | None = Field(default=None, max_length=2048)
+    plan: dict[str, Any]
+    profile: dict[str, Any] | None = None
+    score: int | None = None
+    done_task_ids: list[str] = Field(default=[], max_length=_MAX_DONE_IDS)
+
+    @field_validator("plan", "profile")
+    @classmethod
+    def _bound_json(cls, v: Any) -> Any:
+        return _bounded_json(v)
+
+    @field_validator("done_task_ids")
+    @classmethod
+    def _bound_ids(cls, v: list[str]) -> list[str]:
+        return _bounded_ids(v)
+
+
+class PlanProgressUpdate(BaseModel):
+    """Save progress for a plan — the set of completed task ids (and optionally a
+    refreshed score). Idempotent; ``score`` is only written when present."""
+
+    done_task_ids: list[str] = Field(default=[], max_length=_MAX_DONE_IDS)
+    score: int | None = None
+
+    @field_validator("done_task_ids")
+    @classmethod
+    def _bound_ids(cls, v: list[str]) -> list[str]:
+        return _bounded_ids(v)
+
+
+def _bounded_json(v: Any) -> Any:
+    """Reject a JSONB payload whose serialized form exceeds the per-field cap."""
+    if v is not None and len(json.dumps(v, default=str)) > _MAX_JSON_BYTES:
+        raise ValueError("payload too large")
+    return v
+
+
+def _bounded_ids(v: list[str]) -> list[str]:
+    """Reject an over-long task-id (the list length is already capped by Field)."""
+    if any(len(x) > _MAX_TASK_ID_LEN for x in v):
+        raise ValueError("task id too long")
+    return v
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -553,3 +613,139 @@ def metrics() -> dict[str, Any]:
     from ..storage.repos import events as events_repo
 
     return events_repo.metrics()
+
+
+@app.get("/api/eval/overrides")
+def eval_overrides() -> dict[str, Any]:
+    """Offline-eval export (Task 7): the captured user overrides of LLM/system suggestions
+    — (suggested → chosen) pairs for fine-tuning/eval. Gated like the rest of /api/* when
+    an auth key is configured; internal-only by intent (no session_id is exposed)."""
+    from ..storage.repos import events as events_repo
+
+    rows = events_repo.export_overrides()
+    return {
+        "count": len(rows),
+        "overrides": [
+            {"metadata": r.get("metadata", {}), "url": r.get("url"), "at": r.get("created_at")}
+            for r in rows
+        ],
+    }
+
+
+# ── persisted, resumable plan (B1) ──────────────────────────────────────────────
+
+
+@app.post("/api/plan-state")
+def create_plan_state(req: PlanStateCreate) -> dict[str, Any]:
+    """Persist the interactive plan so progress survives a device switch and earns a
+    resumable ``/plan/<id>`` link. Returns the minted id."""
+    from ..storage.repos import plan_state as plan_state_repo
+
+    pid = plan_state_repo.create(
+        plan=req.plan, profile=req.profile, session_id=(req.session_id or None),
+        run_id=req.run_id, business_name=req.business_name, domain=req.domain,
+        score_snapshot=req.score, done_task_ids=req.done_task_ids,
+    )
+    return {"id": pid}
+
+
+@app.get("/api/plan-state")
+def resume_plan_state(session_id: str | None = None) -> dict[str, Any]:
+    """The newest saved plan for a returning session — powers the homepage 'resume'
+    banner. Returns ``{"id": null}`` (200) when the session is absent/blank or has no saved
+    plan yet, so the frontend never has to treat 'nothing to resume' as an error."""
+    from ..storage.repos import plan_state as plan_state_repo
+
+    sid = (session_id or "").strip()
+    row = plan_state_repo.latest_for_session(sid) if sid else None
+    if not row:
+        return {"id": None}
+    return {"id": row["id"], "business_name": row.get("business_name"), "domain": row.get("domain")}
+
+
+# The /plan/<id> link is public, so the response is an explicit allowlist — never the
+# raw row — to keep the creator's session_id off the wire.
+_PLAN_STATE_PUBLIC = (
+    "id", "run_id", "business_name", "domain", "plan", "profile",
+    "score_snapshot", "done_task_ids", "created_at", "updated_at",
+)
+
+
+@app.get("/api/plan-state/{plan_id}")
+def get_plan_state(plan_id: str) -> dict[str, Any]:
+    """The saved plan behind a ``/plan/<id>`` link (plan + profile snapshot + progress).
+    Returns an allowlisted view (no session_id) since the link is shareable. A transient
+    DB outage reads as 503 (try again), distinct from a 404 (the plan really is gone)."""
+    from ..storage.repos import plan_state as plan_state_repo
+
+    try:
+        row = plan_state_repo.get(plan_id)
+    except Exception as exc:  # don't tell a user their valid link "expired" on a DB hiccup
+        raise HTTPException(status_code=503, detail="plan store temporarily unavailable") from exc
+    if not row:
+        raise HTTPException(status_code=404, detail=f"no plan {plan_id}")
+    return {k: row.get(k) for k in _PLAN_STATE_PUBLIC}
+
+
+@app.put("/api/plan-state/{plan_id}")
+def update_plan_state(plan_id: str, req: PlanProgressUpdate) -> dict[str, Any]:
+    """Save progress (the completed-task set, optionally a refreshed score) for a plan."""
+    from ..storage.repos import plan_state as plan_state_repo
+
+    if not plan_state_repo.update_progress(plan_id, req.done_task_ids, req.score):
+        raise HTTPException(status_code=404, detail=f"no plan {plan_id}")
+    return {"ok": True}
+
+
+@app.get("/api/site-freshness")
+def site_freshness(domain: str) -> dict[str, Any]:
+    """Has this domain been audited recently? Powers 'Last reviewed N days ago' + the
+    use-existing/refresh affordance (Task 3, Slice 2b). Best-effort: any miss/error returns
+    ``{fresh: false}`` so the wizard never breaks over it. ``has_report`` says whether a
+    persisted site report exists to load instead of re-crawling."""
+    from ..storage.repos import runs as runs_repo
+    from ..storage.repos import site_reports as site_reports_repo
+
+    dom = domain.strip()
+    if not dom:
+        return {"fresh": False}
+    try:
+        row = runs_repo.latest_for_domain(dom)
+    except Exception:
+        return {"fresh": False}
+    if not row or not row.get("last_crawled_at"):
+        return {"fresh": False}
+    run_id = row["run_id"]
+    try:
+        has_report = site_reports_repo.for_run(run_id) is not None
+    except Exception:
+        has_report = False
+    return {
+        "fresh": True,
+        "run_id": run_id,
+        "last_crawled_at": row["last_crawled_at"],
+        "status": row.get("status"),
+        "has_report": has_report,
+    }
+
+
+@app.get("/api/recheck-status")
+def recheck_status(domain: str) -> dict[str, Any]:
+    """The 'Verified live' view (Spec #2 Slice C): recommendation outcomes a re-crawl has
+    confirmed implemented for this domain. Honest by construction — only criterion-verified
+    outcomes appear. Best-effort: any failure returns an empty set so the results UI never
+    breaks over it."""
+    from ..storage.repos import outcomes as outcomes_repo
+
+    dom = domain.strip()
+    if not dom:
+        return {"verified": [], "count": 0}
+    try:
+        rows = outcomes_repo.implemented_for_domain(dom)
+    except Exception:  # surfacing verified fixes must never break the results view
+        return {"verified": [], "count": 0}
+    verified = [
+        {"url": r["url_normalized"], "criterion": r.get("criterion"), "detected_at": r.get("detected_at")}
+        for r in rows
+    ]
+    return {"verified": verified, "count": len(verified)}
