@@ -113,3 +113,17 @@ def test_evict_reclaims_cancelled_jobs_too() -> None:
     active = reg.create("audit")
     assert len(reg._jobs) <= jobs_mod._MAX_JOBS
     assert reg.get(active.id) is active
+
+
+def test_record_stage_coerces_non_serializable_counts() -> None:
+    # regression: a stage emitting a non-primitive (e.g. an uncalled method) must NOT make the
+    # job un-serializable — the /api/audit/{id} poller json-encodes the whole job to_dict().
+    import json
+
+    reg = JobRegistry()
+    job = reg.create("audit")
+    reg.record_stage(job.id, "profile", {"headline": str.upper, "pages": 3, "industry": "SaaS"})
+    counts = reg.get(job.id).stages[0]["counts"]
+    assert counts["pages"] == 3 and counts["industry"] == "SaaS"  # primitives pass through
+    assert isinstance(counts["headline"], str)  # the method was coerced to its repr
+    json.dumps(reg.get(job.id).to_dict())  # must not raise (this is what broke the poller)

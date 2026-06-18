@@ -41,6 +41,13 @@ ProgressFn = Callable[[str, dict[str, Any]], None]
 AuditRunner = Callable[[str, str, ProgressFn | None], Awaitable[dict[str, Any]]]
 
 
+def _json_safe(v: Any) -> Any:
+    """Coerce a progress-count value to a JSON-serializable form: primitives pass through,
+    anything else (a method, an object, a datetime…) becomes its ``str()``. Keeps a buggy
+    stage emit from breaking the polling endpoint that serializes the whole job."""
+    return v if isinstance(v, (str, int, float, bool)) or v is None else str(v)
+
+
 @dataclass(slots=True)
 class Job:
     id: str
@@ -147,11 +154,15 @@ class JobRegistry:
 
     def record_stage(self, job_id: str, stage: str, counts: dict[str, Any]) -> Job | None:
         """Append a per-stage progress event (#7) and surface its name as the live
-        ``progress`` string. Called from the audit thread as each stage completes."""
+        ``progress`` string. Called from the audit thread as each stage completes. Counts are
+        coerced JSON-safe so a stray non-primitive (e.g. a stage emitting an uncalled method)
+        degrades to its repr instead of 500ing the ``/api/audit/{id}`` poller that serializes
+        the job."""
         job = self._jobs.get(job_id)
         if job is None:
             return None
-        job.stages.append({"stage": stage, "counts": dict(counts), "at": time.time()})
+        safe = {k: _json_safe(v) for k, v in counts.items()}
+        job.stages.append({"stage": stage, "counts": safe, "at": time.time()})
         job.progress = stage
         job.updated_at = time.time()
         return job

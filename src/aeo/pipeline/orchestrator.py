@@ -199,7 +199,7 @@ class Orchestrator:
                 )
                 _emit(
                     progress, "profile",
-                    industry=prof.industry, headline=prof.headline,
+                    industry=prof.industry, headline=prof.headline(),  # headline() is a method
                     business_model=prof.business_intent.model.value,
                     scenario=prof.strategy.scenario.value, pages=len(scored),
                 )
