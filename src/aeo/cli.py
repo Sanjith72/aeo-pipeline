@@ -639,6 +639,44 @@ def audit_cycle(
     _print(result)
 
 
+@app.command(name="verify-milestones")
+def verify_milestones(
+    domain: str = typer.Argument(..., help="Client site domain to re-scrape + verify"),
+    target: str = typer.Option(..., "--target", "-t", help="Client name (must own the milestones)"),
+    max_urls: int | None = typer.Option(None, "--max-urls", help="Cap discovery before checking"),
+) -> None:
+    """Re-scrape a client's live site and auto-verify its implementation milestones.
+
+    The standalone form of the weekly verification crawl: discovers the site's current
+    URL inventory, re-reads the homepage + key pages, and flips any pending milestone task
+    whose recommended artifact (a page slug / offering / heading) is now live to
+    'verified_completed'. The same check `aeo audit-cycle` runs at the end of its loop."""
+    _bootstrap()
+    from .crawl.discovery import discover as discover_site
+    from .pipeline.milestone_audit import verify_client_milestones
+    from .storage.repos import milestones as milestones_repo
+
+    tgt = _resolve_target(target)
+    if tgt.kind != "client":
+        typer.secho(f"{target!r} is a competitor — milestones are tracked per client", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if not milestones_repo.has_milestones(tgt.id):
+        typer.secho(f"no milestones for {tgt.name} — generate a plan for {domain} first", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    async def _run() -> dict:
+        discovery = await discover_site(domain, max_urls=max_urls)
+        slugs = [d.url for d in discovery.urls]
+        return await verify_client_milestones(tgt.id, domain, discovered_slugs=slugs)
+
+    result = asyncio.run(_run())
+    _print(result)
+    typer.echo(
+        f"checked {result['checked']} pending task(s); "
+        f"newly verified {result['newly_verified']}"
+    )
+
+
 # ── v4 Reference Architecture blueprint ──────────────────────────────────────
 blueprint_app = typer.Typer(add_completion=False, help="v4 Reference Architecture blueprints.")
 app.add_typer(blueprint_app, name="blueprint")

@@ -327,12 +327,14 @@ export default function Page() {
             {error && <ErrorNote message={error} />}
             <ResultsView
               businessName={name.trim()}
+              domain={hasSite ? domain.trim() || undefined : undefined}
               profile={profile}
               plan={plan}
               auditJob={auditJob}
               deliverables={deliverables}
               delivLoading={delivLoading}
               aiPersonalization={useLlm}
+              cmsType={profileResult?.cms_type ?? null}
               onGenerateDeliverables={generateDeliverables}
               onDownloadZip={downloadZip}
               onEdit={() => setView("wizard")}

@@ -52,6 +52,12 @@ def require_api_key(request: Request) -> None:
     path = request.url.path
     if not path.startswith("/api/") or path == "/api/health":
         return
+    # The Developer Handoff read-only VIEW is public by design — the unguessable share
+    # token in the path IS the credential, so the GET is never gated by the API key (a
+    # developer who got the link has no key). Only the GET: owner-only actions under
+    # /api/share/ (e.g. POST /api/share/rotate, which revokes a link) stay authenticated.
+    if path.startswith("/api/share/") and request.method == "GET":
+        return
     if request.headers.get("x-api-key") != key:
         raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
 
@@ -129,6 +135,32 @@ class CompetitorSuggestRequest(BaseModel):
     services: list[str] = []  # crawled offerings sharpen the LLM's "direct competitor" sense
     count: int = 6
     verify: bool = False  # live domain HEAD-checks are slow; the picker only needs names
+
+
+class MilestoneSyncRequest(BaseModel):
+    """Persist a generated plan as a client's implementation milestones. ``plan`` is the
+    structured plan from ``/api/deliverables`` (report.packager.build_plan output)."""
+
+    domain: str
+    name: str | None = None
+    plan: dict[str, Any]
+    # Detected CMS ('wordpress' | 'shopify' | 'unknown') from /api/profile — persisted on
+    # the client so the dashboard's "I'll do it myself" steps match the platform.
+    cms_type: str | None = None
+
+
+class MilestoneTaskUpdate(BaseModel):
+    domain: str
+    task_key: str
+    status: Literal["pending", "in_progress", "verified_completed"]
+
+
+class MilestoneVerifyRequest(BaseModel):
+    domain: str
+
+
+class ShareRotateRequest(BaseModel):
+    domain: str
 
 
 class EventRequest(BaseModel):
@@ -370,6 +402,7 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
             "location": facts.location,
             "services": facts.services,
             "competitors": facts.competitors,
+            "cms_type": facts.cms_type,
             "discovered": discovered,
             "source": result.get("source"),
             "next": "/api/plan",
@@ -384,6 +417,7 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
         "location": facts.location or prof.get("location"),
         "services": facts.services,
         "competitors": facts.competitors,
+        "cms_type": facts.cms_type,
         "coverage": result["coverage"],
         "discovered": discovered,
         "source": result["source"],
@@ -543,6 +577,120 @@ def record_override(req: OverrideRequest) -> dict[str, Any]:
         "refinement_id": refinement_id,
         "refinement_status": "proposed",  # never 'accepted' — human-gated by design
     }
+
+
+def _owner_dashboard(target: Any, *, dashboard: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The owner-facing dashboard payload: the raw roll-up enriched with a per-task
+    ``dev_brief`` (Developer Handoff) and the client's stable ``share_token`` (so the UI
+    can build the read-only /share/<token> link). ``dashboard`` reuses an already-fetched
+    roll-up (e.g. the one a status update returns) instead of re-reading it."""
+    from ..report.dev_brief import attach_dev_briefs
+    from ..storage.repos import milestones as milestones_repo
+
+    dash = dashboard if dashboard is not None else milestones_repo.get_dashboard(target.id)
+    attach_dev_briefs(dash, origin=target.domain, cms_type=target.cms_type)
+    dash["share_token"] = milestones_repo.ensure_share_token(target.id)
+    return dash
+
+
+@app.post("/api/milestones")
+def sync_milestones(req: MilestoneSyncRequest) -> dict[str, Any]:
+    """Persist a generated plan as the client's implementation milestones and return the
+    dashboard. Idempotent: re-syncing keeps existing per-task progress and any
+    crawl-verified status (stable task ids), only refreshing descriptions."""
+    from ..report.milestones import plan_to_milestones
+    from ..storage.repos import milestones as milestones_repo
+    from ..storage.repos import targets as targets_repo
+
+    domain = req.domain.strip()
+    if not domain:
+        raise HTTPException(status_code=422, detail="domain is required")
+    # Only persist a recognised platform — never overwrite a known CMS with 'unknown'
+    # on a later re-sync (upsert COALESCE-preserves the prior value when this is None).
+    cms = req.cms_type if req.cms_type in ("wordpress", "shopify") else None
+    target = targets_repo.upsert(req.name or domain, domain, "client", cms_type=cms)
+    milestones_repo.sync_plan(target.id, plan_to_milestones(req.plan))
+    return _owner_dashboard(target)
+
+
+@app.get("/api/milestones")
+def get_milestones(domain: str) -> dict[str, Any]:
+    """The implementation dashboard for a domain (milestones + tasks + progress). Returns
+    an empty dashboard when the domain has no plan persisted yet (not a 404), so the UI
+    can show the 'build your plan to start tracking' state."""
+    from ..storage.repos import targets as targets_repo
+
+    target = targets_repo.by_domain(domain)
+    if target is None:
+        return {"milestones": [], "progress": {"total": 0, "verified": 0, "in_progress": 0, "pct": 0}}
+    return _owner_dashboard(target)
+
+
+@app.post("/api/milestones/task")
+def update_milestone_task(req: MilestoneTaskUpdate) -> dict[str, Any]:
+    """Owner's manual status toggle for one task (Pending / In Progress / Verified).
+    Returns the recomputed dashboard."""
+    from ..storage.repos import milestones as milestones_repo
+    from ..storage.repos import targets as targets_repo
+
+    target = targets_repo.by_domain(req.domain)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"no client for domain {req.domain}")
+    dash = milestones_repo.set_task_status(target.id, req.task_key, req.status)
+    if dash is None:
+        raise HTTPException(status_code=404, detail=f"no task {req.task_key}")
+    return _owner_dashboard(target, dashboard=dash)
+
+
+@app.post("/api/milestones/verify")
+async def verify_milestones(req: MilestoneVerifyRequest) -> dict[str, Any]:
+    """Run the verification crawl now ('Check my site') — discover the live site, detect
+    which pending milestone artifacts are now present, auto-verify them, and return the
+    refreshed dashboard + a summary of what flipped. Needs network + a live DB."""
+    from ..crawl.discovery import discover
+    from ..pipeline.milestone_audit import verify_client_milestones
+    from ..storage.repos import targets as targets_repo
+
+    target = targets_repo.by_domain(req.domain)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"no client for domain {req.domain}")
+    discovery = await discover(req.domain)
+    summary = await verify_client_milestones(
+        target.id, req.domain, discovered_slugs=[d.url for d in discovery.urls],
+    )
+    return {"summary": summary, "dashboard": _owner_dashboard(target)}
+
+
+@app.post("/api/share/rotate")
+def rotate_share(req: ShareRotateRequest) -> dict[str, Any]:
+    """Revoke the client's current Developer Handoff link and issue a fresh one (owner
+    action — AUTHENTICATED; the guard only exempts the read-only GET under /api/share/).
+    The old /share/<token> link stops resolving immediately. Returns the new token so the
+    UI can rebuild every handoff link/textarea optimistically."""
+    from ..storage.repos import milestones as milestones_repo
+    from ..storage.repos import targets as targets_repo
+
+    target = targets_repo.by_domain(req.domain)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"no client for domain {req.domain}")
+    return {"share_token": milestones_repo.rotate_share_token(target.id)}
+
+
+@app.get("/api/share/{token}")
+def shared_plan(token: str) -> dict[str, Any]:
+    """Read-only, UNAUTHENTICATED view of a client's implementation plan — the Developer
+    Handoff link. The share token in the path is the only credential (see require_api_key's
+    /api/share/ exemption). Returns the dashboard (with per-task dev briefs) plus the
+    business name/domain for the page header. 404 if the token is unknown or revoked."""
+    from ..report.dev_brief import attach_dev_briefs
+    from ..storage.repos import milestones as milestones_repo
+
+    client = milestones_repo.client_for_token(token)
+    if client is None:
+        raise HTTPException(status_code=404, detail="this share link is invalid or has been revoked")
+    dash = milestones_repo.get_dashboard(client["id"])
+    attach_dev_briefs(dash, origin=client["domain"], cms_type=client.get("cms_type"))
+    return {"business_name": client["name"], "domain": client["domain"], **dash}
 
 
 @app.get("/api/metrics")

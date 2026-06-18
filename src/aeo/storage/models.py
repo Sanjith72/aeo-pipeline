@@ -13,6 +13,9 @@ class Target:
     name: str
     domain: str
     kind: str  # 'client' | 'competitor'
+    # Detected CMS for the site ('wordpress' | 'shopify' | 'unknown' | None). Only the
+    # client-by-domain lookup that feeds the milestone dashboard hydrates this.
+    cms_type: str | None = None
 
 
 @dataclass(slots=True)

@@ -8,5 +8,13 @@
 #
 # Adjust paths, domain, and target. Load secrets/settings from the env file.
 
-# Monday 03:00 — full audit cycle for the primary client.
+# Monday 03:00 — full audit cycle for the primary client. This ALSO auto-verifies the
+# client's implementation milestones at the end of the loop (re-scrapes the live site and
+# flips any task whose recommended page/offering/heading is now present to
+# 'verified_completed', moving the dashboard's progress bar with no owner action).
 0 3 * * 1  cd /opt/aeo && set -a && . /etc/aeo/audit.env && set +a && /opt/aeo/.venv/bin/aeo audit-cycle securin.io --target Securin >> /var/log/aeo/audit.log 2>&1
+
+# Thursday 03:00 — lightweight mid-week milestone re-check (re-scrape + match only, no
+# scoring/LLM), so a customer who shipped changes sees them verified without waiting for
+# the next full audit. Drop this line if weekly verification (above) is enough.
+0 3 * * 4  cd /opt/aeo && set -a && . /etc/aeo/audit.env && set +a && /opt/aeo/.venv/bin/aeo verify-milestones securin.io --target Securin >> /var/log/aeo/verify.log 2>&1

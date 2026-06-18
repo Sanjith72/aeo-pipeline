@@ -72,6 +72,35 @@ _SERVICE_STOPWORDS = frozenset({
 _MAX_SERVICES = 8
 _MAX_COMPETITORS = 6
 
+# CMS fingerprints, checked against the raw page HTML (most-specific first). The detected
+# platform drives the "I'll do it myself" instructions — WordPress and Shopify need very
+# different paste-the-snippet steps, and "unknown" gets a CMS-agnostic fallback.
+CMS_WORDPRESS = "wordpress"
+CMS_SHOPIFY = "shopify"
+CMS_UNKNOWN = "unknown"
+_CMS_FOOTPRINTS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        CMS_WORDPRESS,
+        re.compile(
+            r"wp-content|wp-includes"
+            r"|<meta[^>]+name=[\"']generator[\"'][^>]+content=[\"']\s*wordpress",
+            re.I,
+        ),
+    ),
+    (CMS_SHOPIFY, re.compile(r"cdn\.shopify\.com|Shopify\.theme", re.I)),
+]
+
+
+def detect_cms(html_parts: list[str]) -> str:
+    """Best-effort CMS detection from raw page HTML — ``'wordpress'`` / ``'shopify'`` /
+    ``'unknown'``. Footprint-based (theme asset URLs, generator meta), so it stays cheap and
+    offline; an empty/unrecognised site yields ``'unknown'`` rather than guessing."""
+    blob = "\n".join(p for p in html_parts if p)
+    for name, rx in _CMS_FOOTPRINTS:
+        if rx.search(blob):
+            return name
+    return CMS_UNKNOWN
+
 
 @dataclass(slots=True)
 class SiteFacts:
@@ -81,6 +110,9 @@ class SiteFacts:
     # Crawl-derived specific vertical (Healthcare, Finance, …) — the fallback when
     # Wikidata has no entity for this site. None when the content gives no clear signal.
     industry: str | None = None
+    # Detected publishing platform ('wordpress' | 'shopify' | 'unknown') — drives the
+    # CMS-specific copy-paste instructions in the implementation dashboard.
+    cms_type: str = CMS_UNKNOWN
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +120,7 @@ class SiteFacts:
             "services": self.services,
             "competitors": self.competitors,
             "industry": self.industry,
+            "cms_type": self.cms_type,
         }
 
 
@@ -349,7 +382,11 @@ def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
     )
     competitors = competitors_from_docs(docs, own)
     industry = classify_vertical(" ".join(text_parts), services=services)
-    return SiteFacts(location=location, services=services, competitors=competitors, industry=industry)
+    cms_type = detect_cms([d.html for d in docs])
+    return SiteFacts(
+        location=location, services=services, competitors=competitors,
+        industry=industry, cms_type=cms_type,
+    )
 
 
 def _url_views(urls: list[str]) -> list[Any]:

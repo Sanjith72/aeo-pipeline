@@ -220,6 +220,35 @@ def test_auth_enforced_when_key_configured(monkeypatch) -> None:
     assert client.get("/api/health").status_code == 200
 
 
+def test_share_guard_exempts_only_readonly_get() -> None:
+    """The auth guard must keep the public read-only GET /api/share/{token} open while
+    still gating owner actions under /api/share/ (POST /api/share/rotate). Tests the pure
+    guard so it needs no DB."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from fastapi import HTTPException
+
+    from aeo.api.app import require_api_key
+
+    def req(path: str, method: str, key: str | None = None):
+        return SimpleNamespace(
+            url=SimpleNamespace(path=path),
+            method=method,
+            headers=({"x-api-key": key} if key else {}),
+        )
+
+    with patch("aeo.api.app.current_api_key", lambda: "s3cret"):
+        # public read-only view: exempt regardless of key (no raise)
+        require_api_key(req("/api/share/sometoken", "GET"))
+        # owner rotate: a POST under /api/share/ is NOT exempt → 401 without the key
+        with pytest.raises(HTTPException) as ei:
+            require_api_key(req("/api/share/rotate", "POST"))
+        assert ei.value.status_code == 401
+        # with the right key it passes
+        require_api_key(req("/api/share/rotate", "POST", key="s3cret"))
+
+
 def test_audit_requires_domain() -> None:
     assert client.post("/api/audit", json={"domain": "  "}).status_code == 422
 
@@ -360,13 +389,14 @@ def test_profile_returns_inferred_industry_and_location(monkeypatch) -> None:
 
 
 def _stub_site_facts(monkeypatch, *, location=None, services=None, competitors=None, industry=None,
-                     wikidata=None) -> None:
+                     wikidata=None, cms_type="unknown") -> None:
     """Stop /api/profile's homepage crawl AND Wikidata lookup from hitting the network."""
     from aeo.intelligence.site_facts import SiteFacts
 
     async def fake_gather(domain, **_):
         return SiteFacts(
-            location=location, services=services or [], competitors=competitors or [], industry=industry
+            location=location, services=services or [], competitors=competitors or [],
+            industry=industry, cms_type=cms_type,
         )
 
     async def fake_wikidata(domain, **_):
@@ -395,11 +425,13 @@ def test_profile_includes_crawled_services_and_competitors(monkeypatch) -> None:
         location="Austin, TX",
         services=["Teeth Whitening", "Dental Implants"],
         competitors=[{"name": "Globex", "domain": ""}],
+        cms_type="wordpress",
     )
     body = client.post("/api/profile", json={"domain": "harbor.com"}).json()
     assert body["location"] == "Austin, TX"  # content-derived location wins
     assert body["services"] == ["Teeth Whitening", "Dental Implants"]
     assert body["competitors"] == [{"name": "Globex", "domain": ""}]
+    assert body["cms_type"] == "wordpress"  # threaded down to the dashboard's DIY steps
 
 
 def test_profile_industry_prefers_wikidata_vertical(monkeypatch) -> None:

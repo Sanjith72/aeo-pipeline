@@ -11,6 +11,7 @@ import asyncio
 from aeo.intelligence.site_facts import (
     FetchedDoc,
     competitors_from_docs,
+    detect_cms,
     extract_facts,
     gather_site_facts,
     location_from_blocks,
@@ -47,6 +48,33 @@ def test_location_from_jsonld_address():
 def test_location_from_text_fallback():
     assert location_from_text("Come by our shop at Austin, TX 78701 today") == "Austin, TX"
     assert location_from_text("no address here") is None
+
+
+def test_detect_cms_wordpress_from_asset_paths():
+    html = '<link rel="stylesheet" href="/wp-content/themes/x/style.css">'
+    assert detect_cms([html]) == "wordpress"
+
+
+def test_detect_cms_wordpress_from_generator_meta():
+    html = '<meta name="generator" content="WordPress 6.5.2" />'
+    assert detect_cms([html]) == "wordpress"
+
+
+def test_detect_cms_shopify_from_footprints():
+    assert detect_cms(['<img src="https://cdn.shopify.com/s/files/x.png">']) == "shopify"
+    assert detect_cms(["<script>var t = Shopify.theme;</script>"]) == "shopify"
+
+
+def test_detect_cms_unknown_when_no_footprint():
+    assert detect_cms(["<html><body>just a site</body></html>"]) == "unknown"
+    assert detect_cms([]) == "unknown"
+
+
+def test_extract_facts_sets_cms_type():
+    html = _LD_LOCAL + '<script src="/wp-includes/js/jquery.js"></script>'
+    facts = extract_facts([FetchedDoc("https://harbor.com/", html)], domain="harbor.com")
+    assert facts.cms_type == "wordpress"
+    assert facts.to_dict()["cms_type"] == "wordpress"
 
 
 def test_location_blocks_prefers_address_then_area_served():

@@ -20,6 +20,7 @@ import type {
 } from "@/lib/types";
 import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
 import { ArrowRight, Check } from "./ui/icons";
+import { MilestoneDashboard } from "./MilestoneDashboard";
 
 const EFFORT_PILL: Record<string, string> = {
   low: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
@@ -31,23 +32,28 @@ type TabId = "overview" | "blueprint" | "actions" | "strategy" | "kit";
 
 export function ResultsView({
   businessName,
+  domain,
   profile,
   plan,
   auditJob,
   deliverables,
   delivLoading,
   aiPersonalization,
+  cmsType,
   onGenerateDeliverables,
   onDownloadZip,
   onEdit,
 }: {
   businessName: string;
+  domain?: string;
   profile: SiteProfile | null;
   plan: BriefPlan | null;
   auditJob: AuditJob | null;
   deliverables: DeliverablesResponse | null;
   delivLoading: boolean;
   aiPersonalization: boolean;
+  // Detected CMS, threaded down to the milestone dashboard's "I'll do it myself" steps.
+  cmsType?: string | null;
   onGenerateDeliverables: () => void;
   onDownloadZip: () => void;
   onEdit: () => void;
@@ -133,6 +139,9 @@ export function ResultsView({
             deliverables={deliverables}
             loading={delivLoading}
             slowMode={aiPersonalization}
+            domain={domain?.trim() || undefined}
+            businessName={businessName}
+            cmsType={cmsType}
             storageKey={`aeo-plan:${businessName.toLowerCase()}`}
             onGenerate={onGenerateDeliverables}
             onDownloadZip={onDownloadZip}
@@ -881,6 +890,9 @@ function PlanPanel({
   deliverables,
   loading,
   slowMode,
+  domain,
+  businessName,
+  cmsType,
   storageKey,
   onGenerate,
   onDownloadZip,
@@ -888,6 +900,9 @@ function PlanPanel({
   deliverables: DeliverablesResponse | null;
   loading: boolean;
   slowMode: boolean;
+  domain?: string;
+  businessName: string;
+  cmsType?: string | null;
   storageKey: string;
   onGenerate: () => void;
   onDownloadZip: () => void;
@@ -925,10 +940,18 @@ function PlanPanel({
     );
   }
 
+  const hasPlan = deliverables.plan && deliverables.plan.total > 0;
   return (
     <div>
-      {deliverables.plan && deliverables.plan.total > 0 ? (
-        <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} />
+      {hasPlan && deliverables.plan ? (
+        // With a real site, the plan becomes a persisted, server-tracked roadmap that the
+        // weekly crawl auto-verifies. Without one (brief-only flow), fall back to the
+        // local, offline checklist so the experience still works with no DB/site.
+        domain ? (
+          <MilestoneDashboard domain={domain} plan={deliverables.plan} businessName={businessName} cmsType={cmsType} />
+        ) : (
+          <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} />
+        )
       ) : (
         <p className="mb-4 text-sm text-ink-500">Your plan is ready — download the files below.</p>
       )}
