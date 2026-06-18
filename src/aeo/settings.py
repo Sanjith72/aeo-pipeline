@@ -83,6 +83,11 @@ class CrawlerCfg(BaseModel):
 class LLMCfg(BaseModel):
     enabled: bool = True          # off → scorers fall back to deterministic-only
     provider: str = "ollama"      # "ollama" (local) | "cloud" (OpenAI-compatible)
+    # Hybrid routing: the BURST path — the async deep audit's per-page scoring/analysis fires
+    # dozens of calls and trips cloud free-tier rate limits. Set AEO__LLM__BULK_PROVIDER=ollama
+    # to run it on the local model (slower but un-throttled; fine since the audit is async)
+    # while the fast synchronous endpoints stay on the primary `provider`. Empty = use primary.
+    bulk_provider: str = ""
     # Ollama (local) backend
     host: str = "http://localhost:11434"
     model: str = "phi3"

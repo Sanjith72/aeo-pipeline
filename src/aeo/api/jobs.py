@@ -236,12 +236,18 @@ async def default_audit_runner(
     (discover → blueprint → coverage → crawl → score → analyze → site report). Needs a live
     DB + network — hence the injectable seam so tests use a fake. ``progress`` (optional)
     is threaded into the orchestrator for per-stage updates; ``force_recrawl`` /
-    ``should_cancel`` carry the R2-2 re-crawl + drop-off-safety controls."""
+    ``should_cancel`` carry the R2-2 re-crawl + drop-off-safety controls.
+
+    The deep audit is the BURST path (per-page scoring + analysis = dozens of LLM calls), so it
+    runs on the ``bulk`` client — routed to the local model via ``AEO__LLM__BULK_PROVIDER`` to
+    dodge cloud free-tier rate limits. It's async, so the slower local model is fine here; the
+    fast synchronous endpoints keep using the primary (cloud) client."""
+    from ..nlp.llm import get_bulk_client
     from ..pipeline import Orchestrator
     from ..storage.repos import targets as targets_repo
 
     target = targets_repo.upsert(name or domain, domain, "client")
-    return await Orchestrator().audit_cycle(
+    return await Orchestrator(llm=get_bulk_client()).audit_cycle(
         domain, target=target, progress=progress,
         force_recrawl=force_recrawl, should_cancel=should_cancel,
     )
