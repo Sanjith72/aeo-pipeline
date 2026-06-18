@@ -18,9 +18,12 @@ require a matching ``X-API-Key`` header (see :func:`require_api_key`). Unset = o
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 from datetime import UTC
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
@@ -40,6 +43,31 @@ from .jobs import JOBS
 _MAX_JSON_BYTES = 1 * 1024 * 1024
 _MAX_DONE_IDS = 5000
 _MAX_TASK_ID_LEN = 256
+# Bound concurrent deep audits — each spawns a crawl worker thread, so cap the blast radius.
+_MAX_CONCURRENT_AUDITS = 4
+
+
+def _assert_crawlable_host(domain: str) -> None:
+    """SSRF guard: resolve the target host and reject private/loopback/link-local/
+    reserved addresses so an attacker can't point a crawl at internal infrastructure
+    (e.g. cloud metadata at 169.254.169.254). Best-effort at the entry point — a
+    deeper defense also revalidates each redirect hop in the crawler."""
+    raw = domain.strip()
+    host = urlparse(raw if "://" in raw else f"//{raw}").hostname or raw
+    host = host.split(":")[0].strip()
+    if not host:
+        raise HTTPException(status_code=400, detail="invalid domain")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        raise HTTPException(status_code=400, detail="domain does not resolve") from None
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+        ):
+            raise HTTPException(status_code=400, detail="domain resolves to a non-public address")
 
 
 def current_api_key() -> str | None:
@@ -511,7 +539,16 @@ def start_audit(req: AuditRequest) -> dict[str, Any]:
     domain = req.domain.strip()
     if not domain:
         raise HTTPException(status_code=422, detail="domain is required")
-    job = JOBS.create("audit")
+    _assert_crawlable_host(domain)  # SSRF guard — reject internal/loopback targets
+    # Dedupe: an audit already in flight for this domain → return it rather than spawn
+    # another (collapses double-clicks and overlapping wizard + re-check requests).
+    existing = JOBS.active_for("audit", domain)
+    if existing is not None:
+        return {"job_id": existing.id, "status": existing.status}
+    # Concurrency cap: each audit spawns a crawl worker thread, so bound the blast radius.
+    if JOBS.active_count("audit") >= _MAX_CONCURRENT_AUDITS:
+        raise HTTPException(status_code=429, detail="too many audits in progress; please try again shortly")
+    job = JOBS.create("audit", key=domain)
     jobs_mod.spawn_audit(
         job.id, domain=domain, name=(req.name or domain).strip(), force_recrawl=req.force
     )

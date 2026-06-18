@@ -495,3 +495,32 @@ def test_create_plan_state_rejects_an_oversized_payload() -> None:
     big = {"x": "y" * 1_100_000}
     r = client.post("/api/plan-state", json={"plan": big})
     assert r.status_code == 422  # bounded by _bounded_json before any DB write
+
+
+# ── audit endpoint hardening (SSRF guard + dedupe) ──────────────────────────────
+
+
+def test_audit_rejects_an_internal_host() -> None:
+    # SSRF guard: a domain resolving to loopback/internal must be rejected (400), so a crawl
+    # can't be pointed at internal infra (e.g. cloud metadata).
+    assert client.post("/api/audit", json={"domain": "localhost"}).status_code == 400
+
+
+def test_audit_dedupes_an_in_flight_domain(monkeypatch) -> None:
+    # double-clicks / overlapping requests for the same domain collapse onto one job.
+    import asyncio
+
+    from aeo.api import jobs as jobs_mod
+
+    async def slow_runner(domain, name, progress=None, should_cancel=None, **kw):
+        for _ in range(500):
+            if should_cancel and should_cancel():
+                return {"run": {"run_id": 1}, "cancelled": True}
+            await asyncio.sleep(0.01)
+        return {"run": {"run_id": 1}}
+
+    monkeypatch.setattr(jobs_mod, "default_audit_runner", slow_runner)
+    a = client.post("/api/audit", json={"domain": "acme.com"}).json()["job_id"]
+    b = client.post("/api/audit", json={"domain": "acme.com"}).json()["job_id"]
+    assert a == b  # the second request found the in-flight job
+    jobs_mod.JOBS.request_cancel(a)  # let the slow runner wind down

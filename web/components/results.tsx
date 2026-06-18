@@ -32,6 +32,9 @@ const EFFORT_PILL: Record<string, string> = {
   high: "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30",
 };
 
+// Phase rank for sorting the "Today" tray (earliest phase first).
+const PHASE_RANK: Record<string, number> = { week_1: 0, week_2_4: 1, later: 2 };
+
 type TabId = "overview" | "blueprint" | "actions" | "strategy" | "kit";
 
 // ── canonical AEO score ring (Spec #1) ──────────────────────────────────────────
@@ -813,6 +816,65 @@ function priorityBand(t: PlanTask): Band {
   return "low";
 }
 
+// Spec #1 "Today" tray: the 1–3 highest-leverage tasks to do right now (quick-wins first,
+// then earliest phase, then priority). A focused "do this next" surface that sits above the
+// full priority-band folders (R2-3) without competing — it shrinks as items get checked off.
+function TodayTray({
+  tasks,
+  done,
+  onToggle,
+}: {
+  tasks: PlanTask[];
+  done: Set<string>;
+  onToggle: (t: PlanTask) => void;
+}) {
+  const next = tasks
+    .filter((t) => !done.has(t.id))
+    .sort(
+      (a, b) =>
+        Number(b.quick_win) - Number(a.quick_win) ||
+        (PHASE_RANK[a.phase] ?? 9) - (PHASE_RANK[b.phase] ?? 9) ||
+        (b.priority ?? 0) - (a.priority ?? 0),
+    )
+    .slice(0, 3);
+  if (next.length === 0) return null;
+
+  return (
+    <div className="card border-accent/30 bg-accent/[0.04] p-5 sm:p-6">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="label-mono text-accent">Today</span>
+        <span className="text-xs text-ink-300">
+          {next.length} thing{next.length === 1 ? "" : "s"} to knock out now
+        </span>
+      </div>
+      <ul className="space-y-2">
+        {next.map((t) => (
+          <li key={t.id} className="step-in flex items-start gap-3 rounded-xl border border-ink/[0.08] bg-paper-100 p-3.5">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+              checked={false}
+              onChange={() => onToggle(t)}
+              aria-label={`Mark "${t.action_required}" done`}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-ink">{t.label}</span>
+                {t.quick_win && (
+                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300 ring-1 ring-emerald-500/30">
+                    Quick win
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-sm text-ink-500">{t.action_required}</p>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function PhasedPlanView({
   plan,
   storageKey,
@@ -930,6 +992,8 @@ function PhasedPlanView({
           </p>
         )}
       </div>
+
+      {pct < 100 && <TodayTray tasks={allTasks} done={done} onToggle={toggle} />}
 
       {bandOrder.map((band, idx) => (
         <PriorityGroup
