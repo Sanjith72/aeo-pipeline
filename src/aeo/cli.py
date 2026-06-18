@@ -471,8 +471,10 @@ def deliverables(
 
 @app.command()
 def serve(
-    host: str = typer.Option("127.0.0.1", "--host", help="Bind host"),
-    port: int = typer.Option(8000, "--port", help="Bind port"),
+    host: str = typer.Option("127.0.0.1", "--host", envvar="AEO_SERVE_HOST", help="Bind host"),
+    # PORT env so PaaS hosts (Railway, Render, Cloud Run) that inject $PORT work with a
+    # bare `aeo serve` start command — no shell expansion needed. Defaults to 8000 locally.
+    port: int = typer.Option(8000, "--port", envvar="PORT", help="Bind port"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev)"),
 ) -> None:
     """Run the HTTP API (FastAPI) — the SP-4 backend the guided UI calls.

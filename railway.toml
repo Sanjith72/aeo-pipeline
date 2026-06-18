@@ -1,0 +1,19 @@
+# Railway config-as-code for the AEO backend (FastAPI + crawler).
+# Builds the SAME root Dockerfile docker-compose uses (Crawl4AI + headless Chromium
+# bundled), so the deep audit / crawl works on Railway where it can't on Vercel serverless.
+# The web/ UI deploys separately to Vercel — Railway runs only the API.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# The image ENTRYPOINT is `aeo`, so these strings append to it (→ `aeo migrate`, `aeo serve …`).
+# preDeployCommand applies pending migrations before each release goes live.
+# `aeo serve` reads $PORT (Railway injects it) via the typer envvar — no shell expansion needed.
+preDeployCommand = "migrate"
+startCommand = "serve --host 0.0.0.0"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
