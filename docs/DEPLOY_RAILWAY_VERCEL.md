@@ -29,6 +29,7 @@ UI → Vercel**, **Postgres → Railway's managed plugin**. The UI talks to the 
    | `AEO__LLM__CLOUD_API_KEY` | *(your Gemini key)* |
    | `AEO__API__AUTH_KEY` | *(generate a long random string — gates every `/api/*` route)* |
    | `AEO__API__CORS_ORIGINS` | `https://<your-vercel-app>.vercel.app` *(fill in after Part 2)* |
+   | `AEO__API__RATE_LIMIT` | `120` *(per-IP requests/min; `/api/health` exempt. 0 = off)* |
 
 4. **Deploy** → Railway gives a public URL like `https://aeo-pipeline-production.up.railway.app`.
    Verify: open `…/api/health` → `{"status":"ok","db":"ok"}`. (Migrations ran via `preDeployCommand`;
@@ -61,9 +62,11 @@ UI → Vercel**, **Postgres → Railway's managed plugin**. The UI talks to the 
   (`web/app/api/[...path]/route.ts`) that injects `X-API-Key` from the **server-only** `API_KEY` var.
   The old browser-visible-key problem is gone — set `AEO__API__AUTH_KEY` on Railway and the matching
   `API_KEY` on Vercel, and every `/api/*` route is genuinely gated.
-- **Still recommended (not a blocker):** per-IP rate limiting in front of the API — the audit endpoint
-  crawls arbitrary URLs and spends Gemini quota. Add a rate-limit middleware or front it with Cloudflare.
-  The SSRF guard + `_MAX_CONCURRENT_AUDITS` cap already bound the blast radius.
+- **Per-IP rate limiting is built in** — set `AEO__API__RATE_LIMIT` (e.g. `120` req/min/IP; `/api/health`
+  exempt). It reads the client IP from `X-Forwarded-For`, so it sees the real browser IP through the
+  Vercel→Railway proxy chain. Combined with the SSRF guard + the `_MAX_CONCURRENT_AUDITS` cap, the
+  abuse/cost blast radius is bounded. (It's in-memory/single-process; a multi-replica API would want a
+  shared store like Redis — not needed at this scale.)
 - Keep `AEO__API__AUTH_KEY` set and watch usage.
 
 ## Cost / ops notes

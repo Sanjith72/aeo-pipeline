@@ -21,11 +21,13 @@ from __future__ import annotations
 import ipaddress
 import json
 import socket
+import time
 from datetime import UTC
 from typing import Any, Literal
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from ..intelligence.brief import plan_from_brief
@@ -92,6 +94,60 @@ def require_api_key(request: Request) -> None:
 
 
 app = FastAPI(title="AEO Pipeline API", version="0.2.0", dependencies=[Depends(require_api_key)])
+
+
+# ── per-IP rate limiting (in-memory; single-process scale, mirrors the job registry) ──
+
+
+class _RateLimiter:
+    """Fixed-window per-key counter. In-memory — right for the single-process API; a
+    multi-worker deployment would need a shared store (Redis). Bounds its own memory by
+    dropping expired keys once the map grows large."""
+
+    def __init__(self) -> None:
+        self._hits: dict[str, tuple[float, int]] = {}
+
+    def over_limit(self, key: str, limit: int, window: float) -> bool:
+        now = time.time()
+        start, count = self._hits.get(key, (now, 0))
+        if now - start >= window:  # window elapsed → reset
+            start, count = now, 0
+        count += 1
+        self._hits[key] = (start, count)
+        if len(self._hits) > 10_000:  # cheap eviction so the map can't grow unbounded
+            self._hits = {k: v for k, v in self._hits.items() if now - v[0] < window}
+        return count > limit
+
+
+_RATE = _RateLimiter()
+
+
+def _client_ip(request: Request) -> str:
+    """The caller's IP — the left-most ``X-Forwarded-For`` entry when behind a proxy
+    (Vercel/Railway/the web proxy), else the socket peer."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def _rate_limit(request: Request, call_next):
+    """Throttle each client IP on ``/api/*`` (``/api/health`` excluded so liveness probes are
+    never limited). No-op when ``AEO__API__RATE_LIMIT`` is 0 (the dev default). Runs before
+    auth, so an attacker can't hammer the key check either."""
+    from ..settings import get_settings
+
+    cfg = get_settings().api
+    path = request.url.path
+    limited = cfg.rate_limit > 0 and path.startswith("/api/") and path != "/api/health"
+    if limited and _RATE.over_limit(_client_ip(request), cfg.rate_limit, cfg.rate_window_sec):
+        return JSONResponse(
+            {"detail": "rate limit exceeded — slow down"},
+            status_code=429,
+            headers={"Retry-After": str(cfg.rate_window_sec)},
+        )
+    return await call_next(request)
 
 
 def _install_cors(application: FastAPI) -> None:

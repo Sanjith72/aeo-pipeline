@@ -524,3 +524,39 @@ def test_audit_dedupes_an_in_flight_domain(monkeypatch) -> None:
     b = client.post("/api/audit", json={"domain": "acme.com"}).json()["job_id"]
     assert a == b  # the second request found the in-flight job
     jobs_mod.JOBS.request_cancel(a)  # let the slow runner wind down
+
+
+# ── per-IP rate limiting ────────────────────────────────────────────────────────
+
+
+def test_rate_limit_throttles_over_the_cap_but_exempts_health(monkeypatch) -> None:
+    import sys
+
+    app_mod = sys.modules["aeo.api.app"]  # the module, not the re-exported FastAPI instance
+    from aeo.settings import get_settings
+
+    # tiny cap on the live (cached) settings; fresh limiter so the test is isolated
+    monkeypatch.setattr(get_settings().api, "rate_limit", 3)
+    monkeypatch.setattr(get_settings().api, "rate_window_sec", 60)
+    monkeypatch.setattr(app_mod, "_RATE", app_mod._RateLimiter())
+
+    # /api/health is never limited (liveness probes must always pass)
+    assert all(client.get("/api/health").status_code == 200 for _ in range(8))
+
+    # a limited route: first 3 pass, the rest get 429 + Retry-After
+    codes = [client.get("/api/plan-state").status_code for _ in range(5)]
+    assert codes[:3] == [200, 200, 200]
+    assert codes[3:] == [429, 429]
+    blocked = client.get("/api/plan-state")
+    assert blocked.status_code == 429 and "Retry-After" in blocked.headers
+
+
+def test_rate_limit_disabled_by_default(monkeypatch) -> None:
+    import sys
+
+    app_mod = sys.modules["aeo.api.app"]  # the module, not the re-exported FastAPI instance
+    from aeo.settings import get_settings
+
+    monkeypatch.setattr(get_settings().api, "rate_limit", 0)  # the default
+    monkeypatch.setattr(app_mod, "_RATE", app_mod._RateLimiter())
+    assert all(client.get("/api/plan-state").status_code == 200 for _ in range(10))

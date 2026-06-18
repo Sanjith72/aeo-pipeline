@@ -189,6 +189,11 @@ class ApiCfg(BaseModel):
     # Browser origins allowed to call the API (the SP-4b web UI runs on another port,
     # so every fetch is cross-origin). Comma-separated via AEO__API__CORS_ORIGINS.
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    # Per-client-IP rate limit on /api/* (except /api/health): at most `rate_limit` requests
+    # per `rate_window_sec`. 0 = disabled (the local-dev default); set AEO__API__RATE_LIMIT in
+    # any public deployment. Client IP = left-most X-Forwarded-For (behind a proxy) or the peer.
+    rate_limit: int = 0
+    rate_window_sec: int = 60
 
 
 class ReferenceArchitectureCfg(BaseModel):
