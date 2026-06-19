@@ -75,7 +75,7 @@ up the exact configs/CI for that path.
 | `DATABASE_URL` | Postgres connection (deep audit + reports) | `postgresql://aeo:aeo@localhost:5432/aeo` |
 | `AEO__LLM__ENABLED` | use the LLM (else deterministic) | `true` |
 | `AEO__LLM__PROVIDER` | `ollama` (local) or `cloud` (OpenAI-compatible) | `ollama` |
-| `AEO__LLM__CLOUD_API_KEY` / `AEO__LLM__CLOUD_MODEL` | cloud LLM (faster/better than local phi3) | — |
+| `AEO__LLM__CLOUD_API_KEY` / `AEO__LLM__CLOUD_MODEL` | cloud LLM (faster/better than local qwen2.5:3b) | — |
 | `AEO__API__AUTH_KEY` | require `X-API-Key` on `/api/*` (set in any public deploy) | unset (open) |
 | `NEXT_PUBLIC_API_BASE` | (web build) URL the browser calls | `http://localhost:8000` |
 | `NEXT_PUBLIC_API_KEY` | (web build) key sent as `X-API-Key` | unset |

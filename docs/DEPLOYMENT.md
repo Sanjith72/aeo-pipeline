@@ -101,7 +101,7 @@ set. Common ones:
 | `DATABASE_URL` | Postgres DSN (`postgresql://…`) | local default |
 | `AEO__CONFIG_DIR` | Path to `config/` — **required for installed wheel / container** | `<repo>/config` |
 | `AEO__LLM__ENABLED` | Turn the LLM on/off | `true` (set `false` for deterministic) |
-| `AEO__LLM__HOST` / `__MODEL` | Ollama endpoint / model | `localhost:11434` / `phi3` |
+| `AEO__LLM__HOST` / `__MODEL` | Ollama endpoint / model | `localhost:11434` / `qwen2.5:3b` |
 | `AEO__CRAWLER__CONCURRENCY` | Parallel fetches per worker | `4` |
 | `AEO__PSI_API_KEY` | PageSpeed Insights key | unset → neutral score |
 | `AEO__LOG_LEVEL` / `AEO__LOG_FORMAT` | `INFO` / `json`\|`console` | `INFO` / `console` |
@@ -135,7 +135,7 @@ docker compose run --rm app status
 
 # Opt into the local LLM
 docker compose --profile llm up -d ollama
-docker compose --profile llm exec ollama ollama pull phi3
+docker compose --profile llm exec ollama ollama pull qwen2.5:3b
 #   …then set AEO__LLM__ENABLED=true in .env and recreate the worker.
 ```
 
@@ -332,7 +332,7 @@ AEO__REFERENCE_ARCHITECTURE__TOPIC=PEV
 AEO__LLM__ENABLED=true
 AEO__LLM__PROVIDER=cloud
 AEO__LLM__CLOUD_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-AEO__LLM__CLOUD_MODEL=gemini-2.0-flash
+AEO__LLM__CLOUD_MODEL=gemini-2.5-flash
 AEO__LLM__CLOUD_API_KEY=…          # secret
 
 # Independent Validator real-world signal (optional; deterministic checks always run)

@@ -98,7 +98,7 @@ services:
     profiles: ["cli"]
 
   # Local LLM, part of the default stack. Pull a model once:
-  #   docker compose exec ollama ollama pull phi3
+  #   docker compose exec ollama ollama pull qwen2.5:3b
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped

@@ -90,11 +90,11 @@ class LLMCfg(BaseModel):
     bulk_provider: str = ""
     # Ollama (local) backend
     host: str = "http://localhost:11434"
-    model: str = "phi3"
+    model: str = "qwen2.5:3b"
     # Cloud backend: any OpenAI-compatible /chat/completions endpoint (OpenAI,
     # Gemini's compat endpoint, Together, …). Key via AEO__LLM__CLOUD_API_KEY.
-    cloud_base_url: str = "https://api.openai.com/v1"
-    cloud_model: str = "gpt-4o-mini"
+    cloud_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    cloud_model: str = "gemini-2.5-flash"
     cloud_api_key: str | None = None
     # Shared generation params
     timeout_sec: int = 120

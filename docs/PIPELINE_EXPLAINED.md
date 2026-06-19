@@ -384,7 +384,7 @@ env_file=".env", env_file_encoding="utf-8",
 env_nested_delimiter="__", env_prefix="AEO__", extra="ignore",
 ```
 
-So a nested field is set via **`AEO__SECTION__KEY`** — e.g. `AEO__LLM__MODEL=phi3`, `AEO__CRAWLER__CONCURRENCY=8`. `extra="ignore"` means unknown env keys are silently dropped. `.env` is auto-loaded.
+So a nested field is set via **`AEO__SECTION__KEY`** — e.g. `AEO__LLM__MODEL=qwen2.5:3b`, `AEO__CRAWLER__CONCURRENCY=8`. `extra="ignore"` means unknown env keys are silently dropped. `.env` is auto-loaded.
 
 > Subtlety: pydantic-settings parses nested env at construction. The loader (`get_settings`) then **re-merges YAML over the crawler section and re-applies `AEO__CRAWLER__*` env on top** (`settings.py:201-209`) so that env still beats YAML even after the YAML overwrite. Other sections (`llm`, `validation`, …) rely on pydantic's native env parsing only.
 
@@ -429,9 +429,9 @@ So a nested field is set via **`AEO__SECTION__KEY`** — e.g. `AEO__LLM__MODEL=p
 | `enabled` | `True` | off → scorers fall back to deterministic-only |
 | `provider` | `"ollama"` | `"ollama"` (local) or `"cloud"` (OpenAI-compatible) |
 | `host` | `"http://localhost:11434"` | Ollama endpoint |
-| `model` | `"phi3"` | Ollama model |
-| `cloud_base_url` | `"https://api.openai.com/v1"` | any OpenAI-compatible `/chat/completions` (OpenAI, Gemini compat, Together…) |
-| `cloud_model` | `"gpt-4o-mini"` | cloud model |
+| `model` | `"qwen2.5:3b"` | Ollama model |
+| `cloud_base_url` | `"https://generativelanguage.googleapis.com/v1beta/openai"` | any OpenAI-compatible `/chat/completions` (Gemini compat, OpenAI, Together…) |
+| `cloud_model` | `"gemini-2.5-flash"` | cloud model |
 | `cloud_api_key` | `None` | set via `AEO__LLM__CLOUD_API_KEY` |
 | `timeout_sec` | `120` | generation timeout |
 | `temperature` | `0.1` | near-deterministic generation |
