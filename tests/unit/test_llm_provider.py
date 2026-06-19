@@ -60,7 +60,7 @@ class TestProviderSelection:
         client = LLMClient(LLMCfg())
         assert client.enabled is True
         assert client.provider == "ollama"
-        assert client.model == "phi3"
+        assert client.model == "qwen2.5:3b"
 
     def test_cloud_provider_uses_cloud_model(self):
         client = LLMClient(LLMCfg(provider="cloud", cloud_model="gpt-4o-mini"))
@@ -77,12 +77,12 @@ class TestProviderSelection:
 class TestOllamaBackend:
     def test_builds_generate_request(self, monkeypatch):
         _patch_httpx(monkeypatch, {"response": "hello"})
-        client = LLMClient(LLMCfg(provider="ollama", model="phi3"))
+        client = LLMClient(LLMCfg(provider="ollama", model="qwen2.5:3b"))
         out = client.generate("Q?", system="sys", json_mode=True)
         assert out == "hello"
         sent = _FakeClient.last
         assert sent["url"].endswith("/api/generate")
-        assert sent["json"]["model"] == "phi3"
+        assert sent["json"]["model"] == "qwen2.5:3b"
         assert sent["json"]["system"] == "sys"
         assert sent["json"]["format"] == "json"
 

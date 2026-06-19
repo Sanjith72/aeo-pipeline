@@ -352,7 +352,7 @@ def test_profile_routes_dead_crawl_to_no_website(monkeypatch) -> None:
     # the URL-first flow always continues.
     from aeo.pipeline import Orchestrator
 
-    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True, draft_samples=True, **_):
         return {"profile": None, "coverage": {}, "discovered": 0, "source": "none"}
 
     monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
@@ -370,7 +370,7 @@ def test_profile_returns_inferred_industry_and_location(monkeypatch) -> None:
     # prefills them instead of asking.
     from aeo.pipeline import Orchestrator
 
-    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True, draft_samples=True, **_):
         return {
             "profile": {"industry": "Software / SaaS", "location": None, "scenario": "small_site"},
             "coverage": {"pct": 50.0},
@@ -411,7 +411,7 @@ def test_profile_includes_crawled_services_and_competitors(monkeypatch) -> None:
     # wizard's "About you" step arrives prefilled.
     from aeo.pipeline import Orchestrator
 
-    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True, draft_samples=True, **_):
         return {
             "profile": {"industry": "Dentistry", "location": None, "scenario": "small_site"},
             "coverage": {"pct": 40.0},
@@ -438,7 +438,7 @@ def test_profile_industry_prefers_wikidata_vertical(monkeypatch) -> None:
     # Wikidata's specific vertical beats the structural "Enterprise" coarse label.
     from aeo.pipeline import Orchestrator
 
-    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True, draft_samples=True, **_):
         return {
             "profile": {"industry": "Enterprise", "location": None, "scenario": "small_site"},
             "coverage": {"pct": 50.0},
@@ -456,7 +456,7 @@ def test_profile_industry_prefers_wikidata_vertical(monkeypatch) -> None:
 def test_profile_industry_falls_back_to_crawl_then_model(monkeypatch) -> None:
     from aeo.pipeline import Orchestrator
 
-    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True):
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True, draft_samples=True, **_):
         return {
             "profile": {"industry": "Enterprise", "location": None, "scenario": "small_site"},
             "coverage": {"pct": 50.0}, "discovered": 20, "source": "sitemap",

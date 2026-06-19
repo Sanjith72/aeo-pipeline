@@ -15,7 +15,7 @@ from aeo.settings import get_settings
 
 
 class FakeLLM:
-    def __init__(self, payload, *, enabled=True, model="phi3"):
+    def __init__(self, payload, *, enabled=True, model="qwen2.5:3b"):
         self._payload = payload
         self.enabled = enabled
         self.model = model
@@ -77,7 +77,7 @@ def test_llm_tailors_and_drops_invalid_vocab():
     data = bootstrap_framework("stripe.com", llm=FakeLLM(payload))
     assert data["topic"] == "Payments"
     assert "Stripe" in data["required_entities"]
-    assert data["_generated_by"] == "bootstrap:phi3"
+    assert data["_generated_by"] == "bootstrap:qwen2.5:3b"
 
     cluster = data["clusters"][0]
     assert cluster["pillar"]["slug"] == "/what-is-online-payments"
@@ -123,7 +123,7 @@ def test_bootstrap_unions_ceiling_even_when_llm_omits_it():
     ents = data["required_entities"]
     assert "SEC regulations" in ents and "CFPB guidelines" in ents  # ceiling unioned in
     assert "Acme Loans" in ents                                     # LLM entities preserved
-    assert data["_generated_by"] == "bootstrap:phi3"
+    assert data["_generated_by"] == "bootstrap:qwen2.5:3b"
 
 
 def test_bootstrap_unknown_category_no_ceiling_seed():

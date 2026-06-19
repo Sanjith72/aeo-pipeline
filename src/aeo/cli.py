@@ -488,7 +488,13 @@ def serve(
         typer.secho('the API needs the optional [api] extra:  pip install -e ".[api]"', fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc
     typer.echo(f"AEO API on http://{host}:{port}  (interactive docs at /docs)")
-    uvicorn.run("aeo.api.app:app", host=host, port=port, reload=reload)
+    # Hold idle keep-alive connections open well past the default 5s. The web proxy (Node's
+    # undici) pools keep-alive sockets; if the server closes one mid-reuse the proxy's fetch
+    # rejects with "fetch failed" -> an intermittent 502. 30s comfortably outlives the UI's
+    # poll interval, so the proxy reuses live sockets instead of racing the server's close.
+    uvicorn.run(
+        "aeo.api.app:app", host=host, port=port, reload=reload, timeout_keep_alive=30
+    )
 
 
 @app.command()

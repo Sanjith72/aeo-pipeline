@@ -266,6 +266,41 @@ export function CountUp({
   );
 }
 
+/** A live integer that springs to its new value every time `value` changes — the reward
+ *  for an action (checking a task ticks the counter up). Unlike <CountUp>, it isn't gated
+ *  by entering the viewport; it re-tweens on each change. Reduced motion jumps instantly.
+ *  Accessibility is handled internally: the tween is aria-hidden and the settled target
+ *  value sits in a polite live region, so screen readers hear each new count once (never the
+ *  intermediate frames) and always read the true value on navigation. */
+export function Tally({ value, className }: { value: number; className?: string }) {
+  const reduced = useReducedMotion();
+  const [shown, setShown] = useState(value);
+  const prev = useRef(value);
+  useEffect(() => {
+    if (prev.current === value) return;
+    if (reduced) {
+      setShown(value);
+      prev.current = value;
+      return;
+    }
+    const controls = animate(prev.current, value, {
+      duration: 0.5,
+      ease: EASE_OUT as unknown as [number, number, number, number],
+      onUpdate: (v) => setShown(v),
+    });
+    prev.current = value;
+    return () => controls.stop();
+  }, [value, reduced]);
+  return (
+    <span className={className}>
+      <span aria-hidden="true">{Math.round(shown)}</span>
+      <span className="sr-only" aria-live="polite">
+        {value}
+      </span>
+    </span>
+  );
+}
+
 // ── depth ─────────────────────────────────────────────────────────────────────
 
 /** Scroll parallax: drifts children vertically as the section crosses the

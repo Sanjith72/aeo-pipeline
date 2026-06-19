@@ -472,6 +472,7 @@ class Orchestrator:
         max_urls: int | None = None,
         pages: int = 5,
         use_llm: bool = False,
+        draft_samples: bool = True,
     ) -> dict:
         """In-memory preview — discover → blueprint → site coverage diff [→ score top
         pages], writing NOTHING to the database. The demo/onboarding path (ported
@@ -481,7 +482,10 @@ class Orchestrator:
 
         ``use_llm=False`` (default) keeps it fast + offline-friendly with a
         deterministic blueprint. ``pages`` caps how many top URLs are crawled+scored
-        in memory (0 = structural preview only)."""
+        in memory (0 = structural preview only). ``draft_samples=False`` skips drafting
+        sample copy for the top missing pages — a single full-prose draft on a local model
+        is multi-second, so the fast ``/api/profile`` intake (which never renders these
+        drafts) turns it off to stay in the seconds-not-minutes range."""
         from ..processor.coverage_diff import coverage_diff
         from ..recommender.draft import draft_missing_page
         from ..reference.competitor_patterns import CompetitorPatterns
@@ -540,7 +544,7 @@ class Orchestrator:
         top_missing: list[dict] = []
         for i, m in enumerate(cov.missing_by_priority()[:10]):
             entry = {"slug": m.slug, "priority": m.priority, "page_type": m.page_type, "title": m.title}
-            if i < 3:
+            if draft_samples and i < 3:
                 payload = draft_missing_page(
                     m, topic=topic, llm=(self._llm if use_llm else None),
                     reference=reference, origin=domain,

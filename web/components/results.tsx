@@ -23,7 +23,7 @@ import type {
 } from "@/lib/types";
 import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
 import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/score";
-import { CountUp } from "./motion/primitives";
+import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
 import { ArrowRight, Check } from "./ui/icons";
 import { MilestoneDashboard } from "./MilestoneDashboard";
 
@@ -50,8 +50,22 @@ const RING_TONE: Record<ScoreTone, { stroke: string; text: string; soft: string 
 /** The canonical AEO Score as a gauge: a solid arc for where the site is today and a
  *  ghosted arc for where finishing the plan gets it. The number only really moves on a
  *  re-audit — the plan's progress bar handles task-by-task feedback — so the ring stays
- *  honest (no self-graded climbing; that's the re-crawl-verified Spec #2). */
-export function ScoreRing({ profile, className }: { profile: SiteProfile; className?: string }) {
+ *  honest (no self-graded climbing; that's the re-crawl-verified Spec #2).
+ *
+ *  `provisional` (Critical #1): the same honest score, computed from the *fast* homepage
+ *  crawl and shown the instant it lands (step 1) — the credit-score/speed-test moment that
+ *  converts skepticism into "show me how", long before the 5–15 min deep audit. aeoScore()
+ *  runs on the fast and the deep profile alike (see lib/score.ts), so the number refines
+ *  rather than contradicting itself — we just label it as an early read. */
+export function ScoreRing({
+  profile,
+  className,
+  provisional = false,
+}: {
+  profile: SiteProfile;
+  className?: string;
+  provisional?: boolean;
+}) {
   const score = aeoScore(profile);
   const ceiling = aeoScoreCeiling(profile);
   const band = scoreBand(score);
@@ -97,14 +111,28 @@ export function ScoreRing({ profile, className }: { profile: SiteProfile; classN
       </div>
 
       <div className="text-center sm:text-left">
-        <span className="label-mono">Your AI visibility score</span>
+        <span className="label-mono inline-flex flex-wrap items-center gap-2">
+          {provisional ? "Your score — first look" : "Your AI visibility score"}
+          {provisional && (
+            <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-accent ring-1 ring-accent/30">
+              Provisional
+            </span>
+          )}
+        </span>
         <h3 className={`mt-1 text-xl font-semibold ${tone.text}`}>{band.label}</h3>
         <p className="mt-1 max-w-md text-sm text-ink-500">{band.verdict}</p>
-        {ceiling > score && (
-          <p className="mt-2 text-xs text-ink-300">
-            Finish your plan to reach <span className="font-medium text-ink-500">{ceiling}</span> — that's the ghosted
-            ring.
+        {provisional ? (
+          <p className="mt-2 max-w-md text-xs text-ink-300">
+            An early read from a quick look at your homepage{ceiling > score ? <> — with a ceiling of <span className="font-medium text-ink-500">{ceiling}</span> once your plan is done</> : null}. The full
+            page-by-page review checks every page to confirm it — the number stays honest either way.
           </p>
+        ) : (
+          ceiling > score && (
+            <p className="mt-2 text-xs text-ink-300">
+              Finish your plan to reach <span className="font-medium text-ink-500">{ceiling}</span> — that's the ghosted
+              ring.
+            </p>
+          )
         )}
       </div>
     </div>
@@ -385,6 +413,7 @@ export function AnalysisProgress({ job, onCancel }: { job: AuditJob; onCancel?: 
         aria-valuenow={pct}
         aria-valuemin={0}
         aria-valuemax={100}
+        aria-busy={working}
         aria-label="Analysis progress"
       >
         <div
@@ -432,8 +461,8 @@ export function AnalysisProgress({ job, onCancel }: { job: AuditJob; onCancel?: 
         )}
       </ol>
       <p className="mt-4 border-t border-amber-500/15 pt-3 text-xs text-amber-200/80">
-        The thorough review takes a few minutes — findings appear above as they come in. You can leave
-        this tab open.
+        The thorough review usually takes around 10 minutes — findings appear above as they come in. You
+        can leave this tab open.
       </p>
     </div>
   );
@@ -706,14 +735,29 @@ function TaskCard({
   onToggle: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Critical #3: completing a task is a rewarded micro-moment — a one-shot emerald flash +
+  // spring on the row, fired only on check (never on an uncheck, which is a correction).
+  const [flash, setFlash] = useState(false);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
+
+  function handleToggle() {
+    if (!done) {
+      setFlash(true);
+      if (flashTimer.current) clearTimeout(flashTimer.current);
+      flashTimer.current = setTimeout(() => setFlash(false), 700);
+    }
+    onToggle();
+  }
+
   return (
-    <li className="overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100">
+    <li className={`overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100 ${flash ? "task-done-flash" : ""}`}>
       <div className="flex items-start gap-3 p-3.5">
         <input
           type="checkbox"
-          className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+          className="mt-0.5 h-4 w-4 shrink-0 accent-accent transition-transform duration-200 ease-out checked:scale-110"
           checked={done}
-          onChange={onToggle}
+          onChange={handleToggle}
           aria-label={`Mark "${task.action_required}" done`}
         />
         <div className="min-w-0 flex-1">
@@ -861,8 +905,8 @@ function TodayTray({
           <li key={t.id} className="step-in flex items-start gap-3 rounded-xl border border-ink/[0.08] bg-paper-100 p-3.5">
             <input
               type="checkbox"
-              className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
-              checked={false}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-accent transition-transform duration-200 ease-out checked:scale-110"
+              checked={done.has(t.id)}
               onChange={() => onToggle(t)}
               aria-label={`Mark "${t.action_required}" done`}
             />
@@ -973,7 +1017,10 @@ function PhasedPlanView({
       <div className="card p-5 sm:p-6">
         <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
           <h3 className="text-base font-semibold">Your step-by-step plan</h3>
-          <span className="font-mono text-xs text-ink-500">{doneCount} / {allTasks.length} done</span>
+          {/* Critical #3: the counter springs up on every check — the running tally of progress. */}
+          <span className="font-mono text-xs text-ink-500">
+            <Tally value={doneCount} className="text-ink" /> / {allTasks.length} done
+          </span>
         </div>
         <div
           className="mb-4 h-1.5 overflow-hidden rounded-full bg-ink/[0.07]"
@@ -988,13 +1035,27 @@ function PhasedPlanView({
             style={{ width: `${pct}%` }}
           />
         </div>
-        {quickWins.length > 0 && (
-          <p className="text-sm text-ink-500">
-            <span className="font-medium text-emerald-300">Start here:</span> {quickWins.length} quick win
-            {quickWins.length === 1 ? "" : "s"} you can knock out fast
-            <span className="text-ink-300"> — {quickWinsDone}/{quickWins.length} done.</span>
-          </p>
-        )}
+        {quickWins.length > 0 &&
+          pct < 100 &&
+          (quickWinsDone === quickWins.length ? (
+            // Threshold celebration: all quick wins banked — the first big milestone.
+            <p className="step-in flex items-center gap-2 text-sm text-emerald-300">
+              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white">
+                <Check className="animate-pop" width={10} height={10} />
+              </span>
+              All {quickWins.length} quick win{quickWins.length === 1 ? "" : "s"} cleared — your biggest early
+              gains are banked. 🎉
+            </p>
+          ) : (
+            <p className="text-sm text-ink-500">
+              <span className="font-medium text-emerald-300">Start here:</span> {quickWins.length} quick win
+              {quickWins.length === 1 ? "" : "s"} you can knock out fast
+              <span className="text-ink-300">
+                {" "}
+                — <Tally value={quickWinsDone} />/{quickWins.length} done.
+              </span>
+            </p>
+          ))}
         {pct === 100 && (
           <p className="step-in mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
             That's everything — your business is set up to be the one AI recommends. 🎉
@@ -1094,6 +1155,101 @@ const KIND_LABEL: Record<string, string> = {
   strategy: "action plan",
 };
 
+// Critical #4: the "Build my plan" wait used to be a naked spinner. /api/deliverables is a
+// single (slow, AI-personalized) call with no server stream, so we drive an *honest*
+// determinate bar client-side: an asymptotic trickle toward a ceiling it never quite reaches
+// (so it always reads as motion, never falsely completes) plus rotating, insight-bearing
+// labels. The bar unmounts the instant the real plan lands and replaces this view.
+const BUILD_STEPS_SLOW = [
+  "Reading your strategy…",
+  "Drafting each page — custom-written for you…",
+  "Writing your ready-to-paste AI prompts…",
+  "Putting your launch kit together…",
+];
+const BUILD_STEPS_FAST = [
+  "Reading your strategy…",
+  "Laying out your tasks in order…",
+  "Putting your plan together…",
+];
+
+function BuildProgress({ slowMode }: { slowMode: boolean }) {
+  const reduced = useReducedMotion();
+  const steps = slowMode ? BUILD_STEPS_SLOW : BUILD_STEPS_FAST;
+  const [pct, setPct] = useState(4);
+  const [stepIdx, setStepIdx] = useState(0);
+
+  // A steady, near-linear climb paced to the expected wait and capped below 100 — so the bar
+  // keeps visibly moving the whole time (never an early plateau on a long AI build) and never
+  // falsely completes; the real plan replacing this view is the only thing that finishes it.
+  // Gated on reduced-motion: a JS interval is still motion, so honor the preference (the CSS
+  // media query can't reach setInterval).
+  useEffect(() => {
+    if (reduced) return;
+    const ceiling = 94;
+    const step = slowMode ? 0.067 : 4.5; // ~9 min to near-ceiling vs ~8s
+    const tick = setInterval(() => setPct((p) => Math.min(ceiling, p + step)), 400);
+    return () => clearInterval(tick);
+  }, [slowMode, reduced]);
+
+  useEffect(() => {
+    if (reduced) return;
+    const every = slowMode ? 9000 : 2500;
+    const rot = setInterval(() => setStepIdx((i) => Math.min(i + 1, steps.length - 1)), every);
+    return () => clearInterval(rot);
+  }, [slowMode, steps.length, reduced]);
+
+  const slowNote = "Custom-writing every page — usually around 10 minutes. You can leave this tab open.";
+  const fastNote = "Putting your plan together — just a few seconds.";
+
+  // Reduced motion: a calm, static "in progress" state — no creeping bar, no number churn, no
+  // label rotation. Still not a naked spinner: a labeled, steady, determinate-looking indicator.
+  if (reduced) {
+    return (
+      <div className="mx-auto mt-6 max-w-sm text-left">
+        <p className="mb-2 text-xs font-medium text-ink">{steps[0]}</p>
+        <div
+          className="h-1.5 overflow-hidden rounded-full bg-ink/[0.07]"
+          role="progressbar"
+          aria-valuetext="Building your plan"
+          aria-label="Building your plan"
+        >
+          <div className="h-full w-1/3 rounded-full bg-gradient-to-r from-accent to-accent-600" />
+        </div>
+        <p className="mt-2 text-[11px] text-ink-300">{slowMode ? slowNote : fastNote}</p>
+      </div>
+    );
+  }
+
+  // Near the ceiling the climb slows; swap to an honest "final touches" note so a long tail
+  // never reads as a stuck bar contradicting the "~10 minutes" promise.
+  const note = pct >= 88 ? "Almost there — putting the final touches on your plan." : slowMode ? slowNote : fastNote;
+  const rounded = Math.round(pct);
+  return (
+    <div className="mx-auto mt-6 max-w-sm text-left">
+      <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+        <span className="step-in font-medium text-ink" key={stepIdx}>
+          {steps[stepIdx]}
+        </span>
+        <span className="font-mono text-ink-300 tabular-nums">{rounded}%</span>
+      </div>
+      <div
+        className="h-1.5 overflow-hidden rounded-full bg-ink/[0.07]"
+        role="progressbar"
+        aria-valuenow={rounded}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Building your plan"
+      >
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-accent to-accent-600 transition-[width] duration-500 ease-out"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="mt-2 text-[11px] text-ink-300">{note}</p>
+    </div>
+  );
+}
+
 function PlanPanel({
   deliverables,
   loading,
@@ -1130,7 +1286,7 @@ function PlanPanel({
           {loading ? (
             <>
               <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-              {slowMode ? "Writing your plan with AI — this takes a while…" : "Preparing your plan…"}
+              {slowMode ? "Writing your plan with AI…" : "Building your plan…"}
             </>
           ) : (
             <>
@@ -1139,11 +1295,15 @@ function PlanPanel({
             </>
           )}
         </button>
-        <p className="mx-auto mt-3 max-w-sm text-xs text-ink-300">
-          {slowMode
-            ? "AI personalization is on, so every page is custom-written — expect several minutes. Want it instantly? Turn off “Personalize the wording with AI” under Your goals and rebuild."
-            : "Takes a few seconds."}
-        </p>
+        {loading ? (
+          <BuildProgress slowMode={slowMode} />
+        ) : (
+          <p className="mx-auto mt-3 max-w-sm text-xs text-ink-300">
+            {slowMode
+              ? "AI personalization is on, so every page is custom-written — around 10 minutes. Want it instantly? Turn off “Personalize the wording with AI” under Your goals and rebuild."
+              : "Takes a few seconds."}
+          </p>
+        )}
       </div>
     );
   }
