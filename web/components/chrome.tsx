@@ -89,10 +89,11 @@ export function Hero() {
   // line-box (a y:110% start inside overflow-hidden must never be the fallback).
   const reduced = useReducedMotion();
   const stats: [ReactNode, string][] = [
+    // The honest two-phase promise: a score the moment we crawl, the full plan in ~10 min.
     // The one number on the page earns a count-up; the other stats stay still.
-    [<CountUp key="min" to={5} suffix=" min" />, "from questions to plan"],
+    ["Seconds", "to your AI visibility score"],
+    [<CountUp key="min" to={10} suffix=" min" />, "for your full action plan"],
     ["Plain English", "no tech background needed"],
-    ["Ready to use", "checklists your team can run with"],
   ];
   return (
     <section className="grain relative overflow-hidden border-b border-ink/[0.06]">

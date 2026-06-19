@@ -20,7 +20,7 @@ import type {
 import { GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
 import { aeoScore } from "@/lib/score";
 import { Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/components/chrome";
-import { AnalysisProgress, ResultsView, triggerDownload } from "@/components/results";
+import { AnalysisProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { Combobox } from "@/components/ui/Combobox";
 import { Check } from "@/components/ui/icons";
@@ -448,7 +448,7 @@ export default function Page() {
 
                       <p className="text-xs text-ink-300">
                         {hasSite
-                          ? "We take a quick look so the next steps come pre-filled — usually a few seconds."
+                          ? "We take a quick look and show your AI visibility score in seconds — then pre-fill the next steps for you."
                           : "No website yet? No problem — we'll plan your ideal one from scratch."}
                       </p>
                     </div>
@@ -456,6 +456,11 @@ export default function Page() {
 
                   {step === 1 && (
                     <div className="space-y-5">
+                      {/* Critical #1: the score lands the instant the fast crawl finishes — a
+                          credit-score moment on step 1, not gated behind the 5–15 min audit. */}
+                      {profileResult?.profile && !noSite && (
+                        <ScoreRing profile={profileResult.profile} provisional className="step-in" />
+                      )}
                       {profileResult && profileResult.route !== "dead" && (
                         <p className="step-in rounded-lg border border-emerald-500/25 bg-emerald-500/[0.08] px-3.5 py-2.5 text-sm text-emerald-300">
                           <Check className="mr-1.5 inline" width={13} height={13} />
@@ -589,7 +594,10 @@ export default function Page() {
                         />
                         <span>
                           <span className="block font-medium text-ink">Personalize the wording with AI</span>
-                          <span className="block text-xs text-ink-300">Recommended — takes a little longer but reads like it was written for you.</span>
+                          <span className="block text-xs text-ink-300">
+                            Recommended — reads like it was written for you. Adds a build step (around 10 minutes)
+                            after the review; leave it off for an instant plan.
+                          </span>
                         </span>
                       </label>
 
@@ -610,7 +618,7 @@ export default function Page() {
                           <p className="mt-2 text-xs text-ink-300">
                             {noSite
                               ? "Usually under a minute."
-                              : "We review your site page by page — usually 5–15 minutes. You'll see progress as it goes, and you can leave this tab open."}
+                              : "You already have your score — this is the full page-by-page review, usually around 10 minutes. You'll see progress as it goes, and you can leave this tab open."}
                           </p>
                         )}
                       </div>

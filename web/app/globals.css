@@ -142,6 +142,14 @@
     animation: fade-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
+  /* The reward for checking off a task: a one-shot emerald wash + a tiny spring in scale.
+     Applied transiently (~0.7s) only when a task is newly *completed* (never on uncheck),
+     so the act of finishing something feels acknowledged. Reduced-motion users get a flat
+     no-op via the global block below. */
+  .task-done-flash {
+    animation: task-done 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
   /* Hero headline underline draws in after the copy lands. */
   .hero-underline {
     transform: scaleX(0);
@@ -232,6 +240,22 @@
 @keyframes underline-grow {
   to {
     transform: scaleX(1);
+  }
+}
+
+/* Task-completion reward — emerald wash + a subtle spring. emerald-500 = rgb(16,185,129). */
+@keyframes task-done {
+  0% {
+    background-color: rgba(16, 185, 129, 0);
+    transform: scale(1);
+  }
+  22% {
+    background-color: rgba(16, 185, 129, 0.16);
+    transform: scale(1.012);
+  }
+  100% {
+    background-color: rgba(16, 185, 129, 0);
+    transform: scale(1);
   }
 }
 
