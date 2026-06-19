@@ -480,7 +480,15 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     # structural dry-run profile so the wizard prefills in one round.
     facts_task = asyncio.create_task(gather_site_facts(req.domain))
     wikidata_task = asyncio.create_task(resolve_wikidata_industry(req.domain))
-    result = await Orchestrator().dry_run(req.domain, max_urls=req.max_urls, pages=0, use_llm=req.use_llm)
+    # The fast intake must return in seconds — the wizard shows a provisional score the
+    # instant this lands. So it runs the STRUCTURAL profile deterministically: no sample
+    # page drafts and no LLM blueprint/profile synthesis (dozens of slow calls on a local
+    # model). LLM personalization belongs to the async deep audit (the bulk client, with
+    # live progress) and the deliverables build — never this synchronous request. We accept
+    # ``use_llm`` on the request for API compatibility but deliberately don't block on it here.
+    result = await Orchestrator().dry_run(
+        req.domain, max_urls=req.max_urls, pages=0, use_llm=False, draft_samples=False
+    )
     try:
         facts: SiteFacts = await facts_task
     except Exception:  # facts are best-effort enrichment — never fail the profile over them
