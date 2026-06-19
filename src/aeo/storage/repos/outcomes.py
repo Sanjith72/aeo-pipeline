@@ -25,27 +25,44 @@ IMPLEMENTED = "implemented"
 REGRESSED = "regressed"
 NOT_DETECTED = "not_detected"
 
-# detection_method values — how an 'implemented' verdict was reached.
-METHOD_HASH_CHANGED = "content_hash_changed"
+# detection_method values — how a verdict was reached.
+METHOD_HASH_CHANGED = "content_hash_changed"        # legacy; no longer yields a verdict
+METHOD_CRITERION_IMPROVED = "criterion_improved"    # the targeted criterion's tier rose
+METHOD_CRITERION_REGRESSED = "criterion_regressed"  # the targeted criterion's tier fell
 
 
-def decide_status(baseline_hash: str | None, current_hash: str | None) -> str | None:
-    """Pure completion decision for one pending outcome.
+def decide_status(
+    baseline_hash: str | None,
+    current_hash: str | None,
+    *,
+    criterion: str | None = None,
+    baseline_tier: int | None = None,
+    new_tier: int | None = None,
+) -> tuple[str | None, str | None]:
+    """Pure, honest completion decision for one pending outcome.
 
-    Returns the NEW status, or ``None`` to mean "no change — leave it pending".
+    Returns ``(new_status, detection_method)``, or ``(None, None)`` to mean "no verdict
+    yet — leave it pending".
 
-    A differing content hash means the watched page changed since we recommended
-    the edit → ``implemented``. We deliberately stop here: a hash change proves the
-    page MOVED, not that this specific criterion was satisfied. Confirming the
-    latter from the hash alone is the circular self-grading the v4 validator exists
-    to avoid, so the criterion-plausibility check is left as a TODO hook in
-    ``mark_from_recrawl`` rather than folded in here.
+    A differing content hash proves the page MOVED, not that the recommended fix landed.
+    So ``implemented`` is returned ONLY when the targeted criterion's freshly re-scored
+    tier is strictly higher than the tier pinned at issue time (``regressed`` when it
+    fell). A hash change we can't tie to a criterion improvement — no criterion, no pinned
+    tier, the criterion couldn't be re-scored, or the tier didn't move — keeps the outcome
+    pending rather than claiming a verification we can't stand behind. This is the
+    criterion-plausibility check that replaces the old self-grading hash-only signal.
     """
     if not baseline_hash or not current_hash:
-        return None  # can't compare → keep watching
+        return (None, None)  # can't compare → keep watching
     if current_hash == baseline_hash:
-        return None  # unchanged → still pending
-    return IMPLEMENTED
+        return (None, None)  # unchanged since issue → still pending
+    if criterion and baseline_tier is not None and new_tier is not None:
+        if new_tier > baseline_tier:
+            return (IMPLEMENTED, METHOD_CRITERION_IMPROVED)
+        if new_tier < baseline_tier:
+            return (REGRESSED, METHOD_CRITERION_REGRESSED)
+        return (None, None)  # page changed, but this criterion didn't move → keep watching
+    return (None, None)  # a hash-only change is not honest proof the fix landed
 
 
 def open(
@@ -55,20 +72,25 @@ def open(
     baseline_run_id: int | None,
     baseline_hash: str | None,
     criterion: str | None = None,
+    baseline_tier: int | None = None,
 ) -> int:
-    """Open a pending outcome for a freshly-issued recommendation. Returns its id."""
+    """Open a pending outcome for a freshly-issued recommendation. Returns its id.
+
+    ``baseline_tier`` pins the targeted criterion's score tier at issue time, so a later
+    re-crawl can confirm the criterion actually improved (not just that the page changed).
+    """
     with transaction() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO recommendation_outcomes (
                 rec_id, page_id, url_normalized, criterion,
-                baseline_run_id, baseline_hash, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                baseline_run_id, baseline_hash, baseline_tier, status
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
                 rec_id, page_id, url_normalized, criterion,
-                baseline_run_id, baseline_hash, PENDING,
+                baseline_run_id, baseline_hash, baseline_tier, PENDING,
             ),
         )
         return cur.fetchone()["id"]
@@ -78,27 +100,35 @@ def mark_from_recrawl(
     url_normalized: str,
     current_run_id: int,
     current_hash: str | None,
+    new_tiers: dict[str, int | None] | None = None,
 ) -> int:
-    """Re-crawl bookkeeping: for every PENDING outcome on this URL, compare the
-    current content hash against the pinned baseline. A change flips the outcome to
-    ``implemented`` with the detecting run + timestamp. Returns how many flipped.
+    """Re-crawl bookkeeping: for every PENDING outcome on this URL, decide its verdict
+    from the freshly re-scored criterion tiers. ``new_tiers`` maps rubric criterion →
+    current tier (from the re-scored page); an outcome flips to ``implemented`` only when
+    its targeted criterion's tier rose above the pinned baseline (``regressed`` if it
+    fell). Returns how many flipped to a terminal verdict.
 
     Keyed on ``url_normalized`` (stable across runs), not the per-run page id.
     """
+    tiers = new_tiers or {}
     flipped = 0
     with transaction() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT id, baseline_hash FROM recommendation_outcomes "
-            "WHERE url_normalized = %s AND status = %s",
+            "SELECT id, baseline_hash, criterion, baseline_tier "
+            "FROM recommendation_outcomes WHERE url_normalized = %s AND status = %s",
             (url_normalized, PENDING),
         )
         rows = cur.fetchall()
         for row in rows:
-            new_status = decide_status(row["baseline_hash"], current_hash)
+            criterion = row.get("criterion")
+            new_status, method = decide_status(
+                row["baseline_hash"], current_hash,
+                criterion=criterion,
+                baseline_tier=row.get("baseline_tier"),
+                new_tier=tiers.get(criterion) if criterion else None,
+            )
             if new_status is None:
                 continue
-            # TODO(retention): gate this on a criterion-plausibility verifier before
-            # claiming the criterion was actually satisfied (avoid self-grading).
             cur.execute(
                 """
                 UPDATE recommendation_outcomes
@@ -108,7 +138,7 @@ def mark_from_recrawl(
                     detected_at = NOW()
                 WHERE id = %s
                 """,
-                (new_status, METHOD_HASH_CHANGED, current_run_id, row["id"]),
+                (new_status, method, current_run_id, row["id"]),
             )
             flipped += 1
     return flipped
@@ -134,5 +164,25 @@ def pending_for_url(url_normalized: str) -> list[dict[str, Any]]:
             "SELECT * FROM recommendation_outcomes "
             "WHERE url_normalized = %s AND status = %s ORDER BY id",
             (url_normalized, PENDING),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def implemented_for_domain(domain: str, limit: int = 200) -> list[dict[str, Any]]:
+    """Re-crawl-VERIFIED outcomes across a domain's pages — drives the 'Verified live'
+    view. Only criterion-confirmed ``implemented`` rows are returned, so what the UI shows
+    is honest by construction. Matched by host so it spans every URL on the site."""
+    from ...utils.url import host_of, normalize
+
+    host = host_of(normalize(domain if "://" in domain else f"https://{domain}"))
+    if not host:
+        return []
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, url_normalized, criterion, detected_at "
+            "FROM recommendation_outcomes "
+            "WHERE status = %s AND (url_normalized LIKE %s OR url_normalized LIKE %s) "
+            "ORDER BY detected_at DESC NULLS LAST LIMIT %s",
+            (IMPLEMENTED, f"https://{host}%", f"http://{host}%", limit),
         )
         return [dict(row) for row in cur.fetchall()]

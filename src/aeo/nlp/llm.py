@@ -201,3 +201,15 @@ def _extract_json(text: str) -> dict[str, Any] | None:
 @lru_cache(maxsize=1)
 def get_client() -> LLMClient:
     return LLMClient(get_settings().llm)
+
+
+@lru_cache(maxsize=1)
+def get_bulk_client() -> LLMClient:
+    """The client for BURST paths — the async deep audit's per-page scoring/analysis, which
+    fires many calls and trips cloud rate limits. Routed to ``AEO__LLM__BULK_PROVIDER`` (e.g.
+    local ``ollama``, using the existing ``host``/``model``) so the audit runs un-throttled.
+    Falls back to the primary ``get_client()`` when unset or equal to the primary provider."""
+    cfg = get_settings().llm
+    if not cfg.bulk_provider or cfg.bulk_provider == cfg.provider:
+        return get_client()
+    return LLMClient(cfg.model_copy(update={"provider": cfg.bulk_provider}))

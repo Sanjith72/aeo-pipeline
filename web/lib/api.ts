@@ -1,5 +1,5 @@
 // Typed client for the AEO HTTP API (SP-4a). Every call maps to one endpoint;
-// no business logic lives here. Base URL from NEXT_PUBLIC_API_BASE.
+// no business logic lives here. Calls are same-origin to the server proxy (app/api/[...path]).
 
 import type {
   AuditJob,
@@ -10,19 +10,26 @@ import type {
   MilestoneDashboard,
   MilestoneStatus,
   MilestoneVerifyResult,
+  PlanStateResponse,
   ProfileResponse,
+  RecheckStatusResponse,
+  ResumeResponse,
   SharedPlanResponse,
+  SiteFreshnessResponse,
+  SiteProfile,
   SiteReportResponse,
   StructuredPlan,
 } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+// Same-origin: every call goes to this app's server-side proxy (app/api/[...path]/route.ts),
+// which injects the secret X-API-Key and forwards to the real backend. The key never reaches
+// the browser — so there is deliberately no NEXT_PUBLIC_API_KEY here anymore.
+const BASE = "";
 
 function headers(extra?: Record<string, string>): Record<string, string> {
-  const h: Record<string, string> = { ...extra };
-  if (API_KEY) h["X-API-Key"] = API_KEY;
-  return h;
+  // No client-side API key — the server proxy adds X-API-Key. (Auth headers added here would
+  // be pointless and would only re-expose the secret in the bundle.)
+  return { ...extra };
 }
 
 // ── instrumentation (Block F) ──────────────────────────────────────────────
@@ -173,6 +180,85 @@ export const api = {
     return (await res.json()) as SharedPlanResponse;
   },
 
+  // ── persisted, resumable plan (B1, Spec #1) ───────────────────────────────
+  /** Persist the interactive plan so progress survives a device switch and earns a
+   *  resumable /plan/<id> link. The session id is attached so the homepage can
+   *  auto-offer a resume on return. */
+  createPlanState(req: {
+    plan: StructuredPlan;
+    profile?: SiteProfile | null;
+    run_id?: number | null;
+    business_name?: string | null;
+    domain?: string | null;
+    score?: number | null;
+    done_task_ids?: string[];
+  }): Promise<{ id: string }> {
+    return postJson<{ id: string }>("/api/plan-state", { session_id: getSessionId(), ...req });
+  },
+  async getPlanState(id: string): Promise<PlanStateResponse> {
+    const res = await fetch(`${BASE}/api/plan-state/${encodeURIComponent(id)}`, { headers: headers() });
+    // Attach the status so the caller can tell 404 (gone) from 5xx/network (retry).
+    if (!res.ok) throw Object.assign(new Error(`API ${res.status} ${res.statusText}`), { status: res.status });
+    return (await res.json()) as PlanStateResponse;
+  },
+  /** Fire-and-forget progress save: a failed write must never lose the user's check, so
+   *  callers also mirror to localStorage. `keepalive` lets the last toggle survive unload. */
+  updatePlanState(id: string, body: { done_task_ids: string[]; score?: number | null }): void {
+    if (typeof window === "undefined") return;
+    try {
+      void fetch(`${BASE}/api/plan-state/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: headers({ "Content-Type": "application/json" }),
+        body: JSON.stringify(body),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      /* best-effort */
+    }
+  },
+  /** The newest saved plan for this browser's session, for the 'resume your plan' banner.
+   *  Best-effort: any failure resolves to {id:null} so the homepage never shows an error. */
+  async resumePlan(): Promise<ResumeResponse> {
+    if (typeof window === "undefined") return { id: null };
+    try {
+      const res = await fetch(`${BASE}/api/plan-state?session_id=${encodeURIComponent(getSessionId())}`, {
+        headers: headers(),
+      });
+      if (!res.ok) return { id: null };
+      return (await res.json()) as ResumeResponse;
+    } catch {
+      return { id: null };
+    }
+  },
+  /** Has this domain been audited recently? Powers the "Last reviewed N days ago" /
+   *  use-existing affordance (Slice 2b). Best-effort: any failure resolves to not-fresh. */
+  async siteFreshness(domain: string): Promise<SiteFreshnessResponse> {
+    if (typeof window === "undefined" || !domain) return { fresh: false };
+    try {
+      const res = await fetch(`${BASE}/api/site-freshness?domain=${encodeURIComponent(domain)}`, {
+        headers: headers(),
+      });
+      if (!res.ok) return { fresh: false };
+      return (await res.json()) as SiteFreshnessResponse;
+    } catch {
+      return { fresh: false };
+    }
+  },
+  /** Re-crawl-verified outcomes for a domain — the "Verified live" view (Spec #2).
+   *  Best-effort: any failure resolves to an empty set so results never break over it. */
+  async recheckStatus(domain: string): Promise<RecheckStatusResponse> {
+    if (typeof window === "undefined" || !domain) return { verified: [], count: 0 };
+    try {
+      const res = await fetch(`${BASE}/api/recheck-status?domain=${encodeURIComponent(domain)}`, {
+        headers: headers(),
+      });
+      if (!res.ok) return { verified: [], count: 0 };
+      return (await res.json()) as RecheckStatusResponse;
+    } catch {
+      return { verified: [], count: 0 };
+    }
+  },
+
   // ── instrumentation (Block F) ─────────────────────────────────────────────
   /** Fire-and-forget a product-analytics event. Best-effort: failures are swallowed
    *  so analytics can never break the user's flow. `keepalive` lets it survive an
@@ -194,6 +280,24 @@ export const api = {
     } catch {
       /* best-effort */
     }
+  },
+
+  /** Capture a user override of an LLM/system suggestion (Task 7) as an eval signal —
+   *  the {suggested → chosen} pair, logged via the events stream so /api/eval/overrides
+   *  can export it. Coexists with the R2-4 captureOverride proposal flow. Fire-and-forget;
+   *  only call when the user actually changed the suggestion (the caller diffs). */
+  trackOverride(
+    field: string,
+    suggested: unknown,
+    chosen: unknown,
+    opts?: { source?: string; reason?: string; run_id?: number | null; task_id?: string; rec_id?: number },
+  ): void {
+    this.track("user_override", {
+      field,
+      suggested: suggested ?? null,
+      chosen: chosen ?? null,
+      ...(opts ?? {}),
+    });
   },
 
   /** Capture a human override (R2-4) — an edited prefill or a rejected recommendation.

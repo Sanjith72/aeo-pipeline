@@ -30,6 +30,10 @@ JOB_RUNNING = "running"
 JOB_SUCCEEDED = "succeeded"
 JOB_FAILED = "failed"
 
+# Bound the in-memory registry so finished jobs can't accumulate for the process lifetime.
+# Active jobs are never evicted; oldest finished ones are dropped first.
+_MAX_JOBS = 500
+
 # Progressive results (#7): the orchestrator reports stage boundaries to this sink so
 # a polling client sees per-stage updates as the audit runs.
 ProgressFn = Callable[[str, dict[str, Any]], None]
@@ -37,10 +41,20 @@ ProgressFn = Callable[[str, dict[str, Any]], None]
 AuditRunner = Callable[[str, str, ProgressFn | None], Awaitable[dict[str, Any]]]
 
 
+def _json_safe(v: Any) -> Any:
+    """Coerce a progress-count value to a JSON-serializable form: primitives pass through,
+    anything else (a method, an object, a datetime…) becomes its ``str()``. Keeps a buggy
+    stage emit from breaking the polling endpoint that serializes the whole job."""
+    return v if isinstance(v, (str, int, float, bool)) or v is None else str(v)
+
+
 @dataclass(slots=True)
 class Job:
     id: str
     kind: str
+    # Dedupe key (e.g. the audit domain) — lets the registry collapse duplicate in-flight
+    # requests for the same work. Empty = not deduped.
+    key: str = ""
     status: str = JOB_QUEUED
     progress: str = ""
     # #7 — per-stage updates the client polls (stage name + counts), appended as the
@@ -75,14 +89,49 @@ class JobRegistry:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
 
-    def create(self, kind: str) -> Job:
+    def create(self, kind: str, key: str = "") -> Job:
         now = time.time()
-        job = Job(id=uuid.uuid4().hex, kind=kind, created_at=now, updated_at=now)
+        self._evict()
+        job = Job(id=uuid.uuid4().hex, kind=kind, key=key, created_at=now, updated_at=now)
         self._jobs[job.id] = job
         return job
 
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
+
+    def active_for(self, kind: str, key: str) -> Job | None:
+        """The newest in-flight (queued/running) job matching kind+key, or None — for
+        request dedupe so the same domain isn't audited twice concurrently."""
+        matches = [
+            j for j in self._jobs.values()
+            if j.kind == kind and j.key == key and j.status in (JOB_QUEUED, JOB_RUNNING)
+        ]
+        return max(matches, key=lambda j: j.created_at) if matches else None
+
+    def active_count(self, kind: str) -> int:
+        """How many jobs of this kind are queued/running — for the concurrency cap."""
+        return sum(
+            1 for j in self._jobs.values()
+            if j.kind == kind and j.status in (JOB_QUEUED, JOB_RUNNING)
+        )
+
+    def _evict(self) -> None:
+        """Make room before an insert: drop the oldest finished jobs so the registry stays
+        at or below ``_MAX_JOBS`` after the caller adds one. Active jobs are never evicted,
+        so the cap is best-effort under heavy concurrent load. ``cancelled`` is terminal too,
+        so cancelled jobs are evictable (they don't pin slots)."""
+        if len(self._jobs) < _MAX_JOBS:
+            return
+        terminal = (JOB_SUCCEEDED, JOB_FAILED)
+        finished = sorted(
+            (j for j in self._jobs.values()
+             if j.status in terminal or j.cancelled),
+            key=lambda j: j.updated_at,
+        )
+        for job in finished:
+            if len(self._jobs) < _MAX_JOBS:
+                break
+            self._jobs.pop(job.id, None)
 
     def update(self, job_id: str, **changes: Any) -> Job | None:
         job = self._jobs.get(job_id)
@@ -105,11 +154,15 @@ class JobRegistry:
 
     def record_stage(self, job_id: str, stage: str, counts: dict[str, Any]) -> Job | None:
         """Append a per-stage progress event (#7) and surface its name as the live
-        ``progress`` string. Called from the audit thread as each stage completes."""
+        ``progress`` string. Called from the audit thread as each stage completes. Counts are
+        coerced JSON-safe so a stray non-primitive (e.g. a stage emitting an uncalled method)
+        degrades to its repr instead of 500ing the ``/api/audit/{id}`` poller that serializes
+        the job."""
         job = self._jobs.get(job_id)
         if job is None:
             return None
-        job.stages.append({"stage": stage, "counts": dict(counts), "at": time.time()})
+        safe = {k: _json_safe(v) for k, v in counts.items()}
+        job.stages.append({"stage": stage, "counts": safe, "at": time.time()})
         job.progress = stage
         job.updated_at = time.time()
         return job
@@ -183,12 +236,18 @@ async def default_audit_runner(
     (discover → blueprint → coverage → crawl → score → analyze → site report). Needs a live
     DB + network — hence the injectable seam so tests use a fake. ``progress`` (optional)
     is threaded into the orchestrator for per-stage updates; ``force_recrawl`` /
-    ``should_cancel`` carry the R2-2 re-crawl + drop-off-safety controls."""
+    ``should_cancel`` carry the R2-2 re-crawl + drop-off-safety controls.
+
+    The deep audit is the BURST path (per-page scoring + analysis = dozens of LLM calls), so it
+    runs on the ``bulk`` client — routed to the local model via ``AEO__LLM__BULK_PROVIDER`` to
+    dodge cloud free-tier rate limits. It's async, so the slower local model is fine here; the
+    fast synchronous endpoints keep using the primary (cloud) client."""
+    from ..nlp.llm import get_bulk_client
     from ..pipeline import Orchestrator
     from ..storage.repos import targets as targets_repo
 
     target = targets_repo.upsert(name or domain, domain, "client")
-    return await Orchestrator().audit_cycle(
+    return await Orchestrator(llm=get_bulk_client()).audit_cycle(
         domain, target=target, progress=progress,
         force_recrawl=force_recrawl, should_cancel=should_cancel,
     )

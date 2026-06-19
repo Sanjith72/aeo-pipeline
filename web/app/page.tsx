@@ -18,6 +18,7 @@ import type {
   SiteProfile,
 } from "@/lib/types";
 import { GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
+import { aeoScore } from "@/lib/score";
 import { Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/components/chrome";
 import { AnalysisProgress, ResultsView, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
@@ -94,6 +95,20 @@ export default function Page() {
   // R2-2 re-crawl: when the homepage was crawled recently, default to reusing that data
   // (fast) and let the user opt into a fresh re-crawl that bypasses the skip gate.
   const [forceRecrawl, setForceRecrawl] = useState(false);
+
+  // Spec #1 (retention): the persisted, resumable plan. `planStateId` is the id behind the
+  // shareable /plan/<id> link minted when the plan is generated; `resume` is a prior saved
+  // plan for this browser, offered as a 'pick up where you left off' banner on return.
+  const [planStateId, setPlanStateId] = useState<string | null>(null);
+  const [resume, setResume] = useState<{ id: string; label: string } | null>(null);
+  useEffect(() => {
+    api
+      .resumePlan()
+      .then((r) => {
+        if (r.id) setResume({ id: r.id, label: r.business_name || r.domain || "your plan" });
+      })
+      .catch(() => {});
+  }, []);
   const auditJobIdRef = useRef<string | null>(null);
 
   const studioRef = useRef<HTMLElement>(null);
@@ -185,9 +200,11 @@ export default function Page() {
     const loc = location.trim();
     if (inf.industry && cat && cat !== inf.industry) {
       api.captureOverride("industry", inf.industry, cat, "field_override", domain.trim() || undefined);
+      api.trackOverride("industry", inf.industry, cat, { source: "intake" }); // Task-7 eval stream
     }
     if (inf.location && loc && loc !== inf.location) {
       api.captureOverride("location", inf.location, loc, "field_override", domain.trim() || undefined);
+      api.trackOverride("location", inf.location, loc, { source: "intake" }); // Task-7 eval stream
     }
   }
 
@@ -268,7 +285,25 @@ export default function Page() {
     setDelivLoading(true);
     setError(null);
     try {
-      setDeliverables(await api.deliverables({ ...briefFromForm(), draft_limit: 10 }));
+      const deliv = await api.deliverables({ ...briefFromForm(), draft_limit: 10 });
+      setDeliverables(deliv);
+      // Spec #1: persist the interactive plan so progress survives a device switch and
+      // earns a resumable /plan/<id> link. Best-effort — the in-app plan works without it.
+      if (deliv.plan && !planStateId) {
+        const prof = deepProfile ?? profileResult?.profile ?? plan?.profile ?? null;
+        try {
+          const { id } = await api.createPlanState({
+            plan: deliv.plan,
+            profile: prof,
+            business_name: name.trim() || null,
+            domain: domain.trim() || null,
+            score: prof ? aeoScore(prof) : null,
+          });
+          setPlanStateId(id);
+        } catch {
+          /* best-effort — no shareable link, but the plan still works in-app */
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -322,9 +357,31 @@ export default function Page() {
           )}
         </div>
 
+        {view === "wizard" && resume && (
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/[0.06] p-4 animate-fade-up">
+            <p className="text-sm text-ink-500">
+              Welcome back — you have a saved plan for{" "}
+              <span className="font-medium text-ink">{resume.label}</span>.
+            </p>
+            <a href={`/plan/${resume.id}`} className="btn-ghost shrink-0 text-[13px]">
+              Resume your plan →
+            </a>
+          </div>
+        )}
+
         {view === "results" ? (
           <>
             {error && <ErrorNote message={error} />}
+            {planStateId && (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-500/25 bg-emerald-500/[0.06] px-4 py-3">
+                <p className="text-sm text-ink-500">
+                  Your plan is saved — open it on any device, or come back to this link later.
+                </p>
+                <a href={`/plan/${planStateId}`} className="btn-ghost shrink-0 text-[13px]">
+                  Open shareable link →
+                </a>
+              </div>
+            )}
             <ResultsView
               businessName={name.trim()}
               domain={hasSite ? domain.trim() || undefined : undefined}

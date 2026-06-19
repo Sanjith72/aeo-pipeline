@@ -12,13 +12,18 @@ import type {
   BriefPlan,
   BundleAsset,
   DeliverablesResponse,
+  PlanStateResponse,
   PlanTask,
+  RecheckStatusResponse,
   SiteProfile,
   SitemapNode,
   StrategyView,
   StructuredPlan,
+  VerifiedOutcome,
 } from "@/lib/types";
 import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
+import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/score";
+import { CountUp } from "./motion/primitives";
 import { ArrowRight, Check } from "./ui/icons";
 import { MilestoneDashboard } from "./MilestoneDashboard";
 
@@ -28,7 +33,107 @@ const EFFORT_PILL: Record<string, string> = {
   high: "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30",
 };
 
+// Phase rank for sorting the "Today" tray (earliest phase first).
+const PHASE_RANK: Record<string, number> = { week_1: 0, week_2_4: 1, later: 2 };
+
 type TabId = "overview" | "blueprint" | "actions" | "strategy" | "kit";
+
+// ── canonical AEO score ring (Spec #1) ──────────────────────────────────────────
+
+const RING_TONE: Record<ScoreTone, { stroke: string; text: string; soft: string }> = {
+  rose: { stroke: "stroke-rose-400", text: "text-rose-300", soft: "text-rose-300/30" },
+  amber: { stroke: "stroke-amber-400", text: "text-amber-200", soft: "text-amber-300/30" },
+  sky: { stroke: "stroke-sky-400", text: "text-sky-300", soft: "text-sky-300/30" },
+  emerald: { stroke: "stroke-emerald-400", text: "text-emerald-300", soft: "text-emerald-300/30" },
+};
+
+/** The canonical AEO Score as a gauge: a solid arc for where the site is today and a
+ *  ghosted arc for where finishing the plan gets it. The number only really moves on a
+ *  re-audit — the plan's progress bar handles task-by-task feedback — so the ring stays
+ *  honest (no self-graded climbing; that's the re-crawl-verified Spec #2). */
+export function ScoreRing({ profile, className }: { profile: SiteProfile; className?: string }) {
+  const score = aeoScore(profile);
+  const ceiling = aeoScoreCeiling(profile);
+  const band = scoreBand(score);
+  const tone = RING_TONE[band.tone];
+
+  const R = 52;
+  const C = 2 * Math.PI * R;
+  const arc = (pct: number) => `${(C * pct) / 100} ${C}`;
+
+  return (
+    <div className={`card flex flex-col items-center gap-5 p-6 sm:flex-row sm:p-7 ${className ?? ""}`}>
+      <div className="relative h-32 w-32 shrink-0">
+        <svg viewBox="0 0 120 120" className="h-full w-full -rotate-90">
+          <circle cx="60" cy="60" r={R} fill="none" strokeWidth="10" className="stroke-ink/[0.07]" />
+          {/* ghosted target: where the plan gets you */}
+          <circle
+            cx="60"
+            cy="60"
+            r={R}
+            fill="none"
+            strokeWidth="10"
+            strokeLinecap="round"
+            strokeDasharray={arc(ceiling)}
+            className={tone.soft}
+            stroke="currentColor"
+          />
+          {/* current score */}
+          <circle
+            cx="60"
+            cy="60"
+            r={R}
+            fill="none"
+            strokeWidth="10"
+            strokeLinecap="round"
+            strokeDasharray={arc(score)}
+            className={`${tone.stroke} transition-[stroke-dasharray] duration-700 ease-out`}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <CountUp to={score} className={`font-display text-3xl font-semibold ${tone.text}`} />
+          <span className="label-mono mt-0.5 text-[10px]">/ 100</span>
+        </div>
+      </div>
+
+      <div className="text-center sm:text-left">
+        <span className="label-mono">Your AI visibility score</span>
+        <h3 className={`mt-1 text-xl font-semibold ${tone.text}`}>{band.label}</h3>
+        <p className="mt-1 max-w-md text-sm text-ink-500">{band.verdict}</p>
+        {ceiling > score && (
+          <p className="mt-2 text-xs text-ink-300">
+            Finish your plan to reach <span className="font-medium text-ink-500">{ceiling}</span> — that's the ghosted
+            ring.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Spec #2 "Verified live": fixes a re-crawl has confirmed actually landed (criterion-honest).
+function VerifiedLive({ verified }: { verified: VerifiedOutcome[] }) {
+  return (
+    <div className="mb-6 rounded-xl border border-emerald-500/30 bg-emerald-500/[0.07] p-5">
+      <div className="mb-2 flex items-center gap-2 text-emerald-300">
+        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-white">
+          <Check width={10} height={10} />
+        </span>
+        <span className="text-sm font-medium">
+          Verified live — {verified.length} fix{verified.length === 1 ? "" : "es"} confirmed by a re-crawl
+        </span>
+      </div>
+      <ul className="space-y-1 text-xs text-ink-400">
+        {verified.slice(0, 6).map((v, i) => (
+          <li key={`${v.url}-${i}`} className="truncate">
+            <span className="text-emerald-300/80">✓</span> {v.criterion ? `${v.criterion} — ` : ""}
+            {v.url}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 export function ResultsView({
   businessName,
@@ -68,6 +173,15 @@ export function ResultsView({
     { id: "kit" as const, label: "Your plan" },
   ];
   const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
+
+  // Spec #2 "Verified live": a re-crawl can confirm a recommended fix actually landed
+  // (criterion-honest). Surface any confirmed-implemented outcomes for this domain in the
+  // overview. Best-effort — the API resolves to an empty set on any miss, so this never
+  // breaks the results view.
+  const [verified, setVerified] = useState<RecheckStatusResponse>({ verified: [], count: 0 });
+  useEffect(() => {
+    if (profile?.domain) api.recheckStatus(profile.domain).then(setVerified).catch(() => {});
+  }, [profile?.domain]);
 
   // R2-6 nav rework: reserve the tallest panel height we've rendered so switching to a
   // shorter tab never collapses the document and yanks the scroll position. Combined with
@@ -130,7 +244,13 @@ export function ResultsView({
         className="animate-fade-in"
         style={{ minHeight: minPanelH || undefined }}
       >
-        {tab === "overview" && profile && <OverviewPanel profile={profile} auditJob={auditJob} />}
+        {tab === "overview" && profile && (
+          <>
+            <ScoreRing profile={profile} className="mb-6" />
+            {verified.count > 0 && <VerifiedLive verified={verified.verified} />}
+            <OverviewPanel profile={profile} auditJob={auditJob} />
+          </>
+        )}
         {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
         {tab === "actions" && profile && <ActionsPanel profile={profile} />}
         {tab === "strategy" && deliverables?.strategy && <StrategyPanel strategy={deliverables.strategy} />}
@@ -705,19 +825,100 @@ function priorityBand(t: PlanTask): Band {
   return "low";
 }
 
-function PhasedPlanView({ plan, storageKey }: { plan: StructuredPlan; storageKey: string }) {
+// Spec #1 "Today" tray: the 1–3 highest-leverage tasks to do right now (quick-wins first,
+// then earliest phase, then priority). A focused "do this next" surface that sits above the
+// full priority-band folders (R2-3) without competing — it shrinks as items get checked off.
+function TodayTray({
+  tasks,
+  done,
+  onToggle,
+}: {
+  tasks: PlanTask[];
+  done: Set<string>;
+  onToggle: (t: PlanTask) => void;
+}) {
+  const next = tasks
+    .filter((t) => !done.has(t.id))
+    .sort(
+      (a, b) =>
+        Number(b.quick_win) - Number(a.quick_win) ||
+        (PHASE_RANK[a.phase] ?? 9) - (PHASE_RANK[b.phase] ?? 9) ||
+        (b.priority ?? 0) - (a.priority ?? 0),
+    )
+    .slice(0, 3);
+  if (next.length === 0) return null;
+
+  return (
+    <div className="card border-accent/30 bg-accent/[0.04] p-5 sm:p-6">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="label-mono text-accent">Today</span>
+        <span className="text-xs text-ink-300">
+          {next.length} thing{next.length === 1 ? "" : "s"} to knock out now
+        </span>
+      </div>
+      <ul className="space-y-2">
+        {next.map((t) => (
+          <li key={t.id} className="step-in flex items-start gap-3 rounded-xl border border-ink/[0.08] bg-paper-100 p-3.5">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+              checked={false}
+              onChange={() => onToggle(t)}
+              aria-label={`Mark "${t.action_required}" done`}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-ink">{t.label}</span>
+                {t.quick_win && (
+                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300 ring-1 ring-emerald-500/30">
+                    Quick win
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-sm text-ink-500">{t.action_required}</p>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function PhasedPlanView({
+  plan,
+  storageKey,
+  planStateId,
+  initialDone,
+  serverBacked = false,
+  score = null,
+}: {
+  plan: StructuredPlan;
+  storageKey: string;
+  // Spec #1 (resumable plan): when server-backed, progress is seeded from and mirrored to
+  // the persisted plan_state behind a /plan/<id> link, so it survives a device switch.
+  planStateId?: string;
+  initialDone?: string[];
+  serverBacked?: boolean;
+  score?: number | null;
+}) {
   const [done, setDone] = useState<Set<string>>(new Set());
   const planViewed = useRef(false);
 
-  // localStorage only after mount — never during render (prerender has no storage)
+  // Seed progress after mount (never during render — prerender has no storage). A
+  // server-backed (resumed) plan seeds from the persisted set; otherwise fall back to
+  // this browser's localStorage so progress still survives a refresh.
   useEffect(() => {
+    if (serverBacked && initialDone) {
+      setDone(new Set(initialDone));
+      return;
+    }
     try {
       const raw = localStorage.getItem(storageKey);
       setDone(raw ? new Set(JSON.parse(raw) as string[]) : new Set());
     } catch {
       /* private mode / blocked storage — still works, just won't persist */
     }
-  }, [storageKey]);
+  }, [storageKey, serverBacked, initialDone]);
 
   // fire plan_viewed once, with the quick-win ids the metrics' completion rate keys on
   useEffect(() => {
@@ -740,6 +941,11 @@ function PhasedPlanView({ plan, storageKey }: { plan: StructuredPlan; storageKey
         localStorage.setItem(storageKey, JSON.stringify([...next]));
       } catch {
         /* persistence is best-effort */
+      }
+      // Spec #1: mirror progress to the server so a resumable /plan/<id> link stays in
+      // sync across devices (best-effort; the localStorage write above is the fallback).
+      if (serverBacked && planStateId) {
+        api.updatePlanState(planStateId, { done_task_ids: [...next], score });
       }
       return next;
     });
@@ -795,6 +1001,8 @@ function PhasedPlanView({ plan, storageKey }: { plan: StructuredPlan; storageKey
           </p>
         )}
       </div>
+
+      {pct < 100 && <TodayTray tasks={allTasks} done={done} onToggle={toggle} />}
 
       {bandOrder.map((band, idx) => (
         <PriorityGroup
@@ -1012,4 +1220,45 @@ export function triggerDownload(blob: Blob, filename: string) {
   link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+// ── resumable plan view (Spec #1) — what /plan/<id> renders ──────────────────────
+
+export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
+  const hasPlan = !!state.plan && state.plan.total > 0;
+  return (
+    <section className="mx-auto max-w-3xl px-5 py-12 sm:py-16">
+      <div className="mb-6">
+        <span className="label-mono inline-flex items-center gap-2">
+          <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-white">
+            <Check width={10} height={10} />
+          </span>
+          Your saved plan
+        </span>
+        <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">
+          {state.business_name ? `${state.business_name}'s AEO plan` : "Your AEO plan"}
+        </h1>
+        <p className="mt-1 text-ink-500">
+          Pick up where you left off — your progress is saved to this link, on any device.
+        </p>
+      </div>
+
+      {state.profile && <ScoreRing profile={state.profile} className="mb-8" />}
+
+      {hasPlan ? (
+        <PhasedPlanView
+          plan={state.plan}
+          storageKey={`aeo-plan:resumed:${state.id}`}
+          planStateId={state.id}
+          initialDone={state.done_task_ids}
+          serverBacked
+          score={state.score_snapshot}
+        />
+      ) : (
+        <p className="rounded-xl border border-dashed border-ink/15 p-8 text-center text-sm text-ink-500">
+          This plan doesn&apos;t have any tasks saved yet.
+        </p>
+      )}
+    </section>
+  );
 }

@@ -62,15 +62,18 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  # The Next.js UI. NEXT_PUBLIC_API_BASE is baked at build time and must be the URL the
-  # browser uses — the host-published API port, not the in-network hostname.
+  # The Next.js UI. It PROXIES API calls server-side (app/api/[...path]) so the secret key
+  # never reaches the browser — so it needs the backend URL + key at RUNTIME (not baked).
   web:
     build:
       context: ./web
-      args:
-        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
     image: aeo-web:latest
     restart: unless-stopped
+    environment:
+      # Server-side only (the proxy reads these): the in-network API origin + the X-API-Key it
+      # forwards. AEO__API__AUTH_KEY is unset locally → empty key → the open dev API accepts it.
+      API_BASE_URL: ${API_BASE_URL:-http://api:8000}
+      API_KEY: ${AEO__API__AUTH_KEY:-}
     ports:
       - "3000:3000"
     depends_on:

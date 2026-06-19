@@ -494,3 +494,101 @@ def test_cors_allows_the_web_ui_origin() -> None:
     # fetch fails silently, so it's load-bearing for the whole guided flow
     r = client.get("/api/health", headers={"Origin": "http://localhost:3000"})
     assert r.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+
+# ── retention foundation (Specs #1–#2) endpoint wiring ──────────────────────────
+
+
+def test_resume_plan_blank_session_is_not_an_error() -> None:
+    # the homepage 'resume' banner must read 'nothing to resume' as {id:null} (200),
+    # never an error — a blank session never touches the DB.
+    r = client.get("/api/plan-state")
+    assert r.status_code == 200
+    assert r.json() == {"id": None}
+
+
+def test_site_freshness_is_best_effort_without_db() -> None:
+    # the wizard freshness check (Slice 2b) must never break the flow — any miss/DB error
+    # resolves to {fresh: false}.
+    r = client.get("/api/site-freshness", params={"domain": "no-such-domain.example"})
+    assert r.status_code == 200
+    assert r.json()["fresh"] is False
+
+
+def test_recheck_status_is_best_effort_without_db() -> None:
+    # 'Verified live' (Spec #2) must never break the results view — empty set on any failure.
+    r = client.get("/api/recheck-status", params={"domain": "no-such-domain.example"})
+    assert r.status_code == 200
+    assert r.json() == {"verified": [], "count": 0}
+
+
+def test_create_plan_state_rejects_an_oversized_payload() -> None:
+    # the public plan-state endpoint caps the stored blob so it can't be abused (B1).
+    big = {"x": "y" * 1_100_000}
+    r = client.post("/api/plan-state", json={"plan": big})
+    assert r.status_code == 422  # bounded by _bounded_json before any DB write
+
+
+# ── audit endpoint hardening (SSRF guard + dedupe) ──────────────────────────────
+
+
+def test_audit_rejects_an_internal_host() -> None:
+    # SSRF guard: a domain resolving to loopback/internal must be rejected (400), so a crawl
+    # can't be pointed at internal infra (e.g. cloud metadata).
+    assert client.post("/api/audit", json={"domain": "localhost"}).status_code == 400
+
+
+def test_audit_dedupes_an_in_flight_domain(monkeypatch) -> None:
+    # double-clicks / overlapping requests for the same domain collapse onto one job.
+    import asyncio
+
+    from aeo.api import jobs as jobs_mod
+
+    async def slow_runner(domain, name, progress=None, should_cancel=None, **kw):
+        for _ in range(500):
+            if should_cancel and should_cancel():
+                return {"run": {"run_id": 1}, "cancelled": True}
+            await asyncio.sleep(0.01)
+        return {"run": {"run_id": 1}}
+
+    monkeypatch.setattr(jobs_mod, "default_audit_runner", slow_runner)
+    a = client.post("/api/audit", json={"domain": "acme.com"}).json()["job_id"]
+    b = client.post("/api/audit", json={"domain": "acme.com"}).json()["job_id"]
+    assert a == b  # the second request found the in-flight job
+    jobs_mod.JOBS.request_cancel(a)  # let the slow runner wind down
+
+
+# ── per-IP rate limiting ────────────────────────────────────────────────────────
+
+
+def test_rate_limit_throttles_over_the_cap_but_exempts_health(monkeypatch) -> None:
+    import sys
+
+    app_mod = sys.modules["aeo.api.app"]  # the module, not the re-exported FastAPI instance
+    from aeo.settings import get_settings
+
+    # tiny cap on the live (cached) settings; fresh limiter so the test is isolated
+    monkeypatch.setattr(get_settings().api, "rate_limit", 3)
+    monkeypatch.setattr(get_settings().api, "rate_window_sec", 60)
+    monkeypatch.setattr(app_mod, "_RATE", app_mod._RateLimiter())
+
+    # /api/health is never limited (liveness probes must always pass)
+    assert all(client.get("/api/health").status_code == 200 for _ in range(8))
+
+    # a limited route: first 3 pass, the rest get 429 + Retry-After
+    codes = [client.get("/api/plan-state").status_code for _ in range(5)]
+    assert codes[:3] == [200, 200, 200]
+    assert codes[3:] == [429, 429]
+    blocked = client.get("/api/plan-state")
+    assert blocked.status_code == 429 and "Retry-After" in blocked.headers
+
+
+def test_rate_limit_disabled_by_default(monkeypatch) -> None:
+    import sys
+
+    app_mod = sys.modules["aeo.api.app"]  # the module, not the re-exported FastAPI instance
+    from aeo.settings import get_settings
+
+    monkeypatch.setattr(get_settings().api, "rate_limit", 0)  # the default
+    monkeypatch.setattr(app_mod, "_RATE", app_mod._RateLimiter())
+    assert all(client.get("/api/plan-state").status_code == 200 for _ in range(10))

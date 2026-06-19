@@ -293,3 +293,48 @@ export interface BriefRequest {
   goals: string[];
   use_llm: boolean;
 }
+
+// ── retention foundation (Specs #1–#2) ──────────────────────────────────────────
+
+// A persisted, resumable plan (B1) — the durable artifact behind the /plan/<id> link.
+// Mirrors src/aeo/storage/repos/plan_state.py rows.
+export interface PlanStateResponse {
+  id: string;
+  run_id: number | null;
+  business_name: string | null;
+  domain: string | null;
+  plan: StructuredPlan;
+  profile: SiteProfile | null;
+  score_snapshot: number | null;
+  done_task_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+// GET /api/plan-state?session_id= — what the homepage 'resume your plan' banner reads.
+export interface ResumeResponse {
+  id: string | null;
+  business_name?: string | null;
+  domain?: string | null;
+}
+
+// GET /api/recheck-status?domain= — re-crawl-verified outcomes (Spec #2 "Verified live").
+export interface VerifiedOutcome {
+  url: string;
+  criterion: string | null;
+  detected_at: string | null;
+}
+
+export interface RecheckStatusResponse {
+  verified: VerifiedOutcome[];
+  count: number;
+}
+
+// GET /api/site-freshness?domain= — has this domain been audited recently? (Slice 2b)
+export interface SiteFreshnessResponse {
+  fresh: boolean;
+  run_id?: number;
+  last_crawled_at?: string;
+  status?: string;
+  has_report?: boolean;
+}
