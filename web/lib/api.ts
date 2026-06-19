@@ -6,6 +6,7 @@ import type {
   BriefPlan,
   BriefRequest,
   CompetitorSuggestResponse,
+  DeliverablesJob,
   DeliverablesResponse,
   PlanStateResponse,
   ProfileResponse,
@@ -59,15 +60,20 @@ function getSessionId(): string {
   return sid;
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+async function postJson<T>(path: string, body: unknown, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, {
       method: "POST",
       headers: headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
+      ...init,
     });
-  } catch {
+  } catch (err) {
+    // An AbortSignal.timeout fires a TimeoutError; a manual cancel fires an AbortError.
+    if (err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      throw new Error("That took longer than expected. Please try again.");
+    }
     throw new Error(`Cannot reach the API at ${BASE}. Is it running?  (aeo serve)`);
   }
   if (!res.ok) {
@@ -88,8 +94,24 @@ export const api = {
   },
   deliverables(
     req: BriefRequest & { draft_limit?: number; builder_mode?: string },
+    init?: RequestInit,
   ): Promise<DeliverablesResponse> {
-    return postJson<DeliverablesResponse>("/api/deliverables", req);
+    return postJson<DeliverablesResponse>("/api/deliverables", req, init);
+  },
+  // ── personalized downloadable files (#7, async) ───────────────────────────
+  /** Start the slow, AI-personalized downloadable-files build as a background job. The
+   *  in-app plan is already instant via `deliverables({ use_llm: false })`; this upgrades
+   *  the page drafts to AI-written prose. Returns a job id to poll with `personalizeStatus`. */
+  startPersonalize(
+    req: BriefRequest & { draft_limit?: number; builder_mode?: string },
+  ): Promise<{ job_id: string; status: string }> {
+    return postJson<{ job_id: string; status: string }>("/api/deliverables/personalize", req);
+  },
+  /** Poll a personalization job; `result` holds the full DeliverablesResponse on success. */
+  async personalizeStatus(jobId: string): Promise<DeliverablesJob> {
+    const res = await fetch(`${BASE}/api/deliverables/${encodeURIComponent(jobId)}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as DeliverablesJob;
   },
   // NOTE: the server also offers POST /api/deliverables.zip, but the UI zips the
   // already-fetched assets client-side instead — the endpoint re-generates the whole
