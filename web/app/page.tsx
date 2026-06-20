@@ -18,6 +18,7 @@ import type {
   SiteProfile,
 } from "@/lib/types";
 import { GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
+import { goalsFromProfile } from "@/lib/goals";
 import { aeoScore } from "@/lib/score";
 import { Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/components/chrome";
 import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
@@ -77,6 +78,9 @@ export default function Page() {
   const [servicesText, setServicesText] = useState("");
   const [competitors, setCompetitors] = useState<CompetitorPick[]>([]);
   const [goals, setGoals] = useState<string[]>([]);
+  // True once we've pre-checked goals from the profile — drives the "we suggested these"
+  // hint on step 3. Reset whenever the prefill is cleared (new site).
+  const [goalsAutoApplied, setGoalsAutoApplied] = useState(false);
   const [challenges, setChallenges] = useState("");
   const [useLlm, setUseLlm] = useState(true);
 
@@ -113,6 +117,12 @@ export default function Page() {
   // The domain string we last ran the prefill crawl for — so we can detect a site change
   // (Back-and-edit, or just typing a new URL) and drop stale prefills before re-crawling.
   const lastProfiledDomainRef = useRef<string | null>(null);
+  // Goal pre-selection (Task 5): suggest goals from the profile when the user first lands
+  // on step 3, but never fight a manual edit. `goalsTouched` flips on the first manual
+  // toggle; `goalsSuggestedFor` records the domain we already suggested for (so navigating
+  // back-and-forth doesn't re-apply, and a NEW site re-suggests after resetPrefilled).
+  const goalsTouchedRef = useRef(false);
+  const goalsSuggestedForRef = useRef<string | null>(null);
 
   const studioRef = useRef<HTMLElement>(null);
 
@@ -125,9 +135,13 @@ export default function Page() {
     setLocation("");
     setServicesText("");
     setGoals([]);
+    setGoalsAutoApplied(false);
     setCompetitors([]);
     setProfileResult(null);
     setForceRecrawl(false);
+    // A fresh site gets a fresh goal suggestion (and forgets the old manual-edit flag).
+    goalsTouchedRef.current = false;
+    goalsSuggestedForRef.current = null;
   }
 
   // A dead crawl (or no site at all) routes to the no-website brief path (#3).
@@ -161,8 +175,28 @@ export default function Page() {
   }
 
   function toggleGoal(goal: string) {
+    goalsTouchedRef.current = true; // a manual choice — auto-suggestion must not override it
     setGoals((prev) => (prev.includes(goal) ? prev.filter((g) => g !== goal) : [...prev, goal]));
   }
+
+  // Pre-check sensible goals from the crawl/profile when the user reaches step 3 — once per
+  // site, and never once they've started picking manually. Empty signal → leave it blank.
+  useEffect(() => {
+    if (step !== 3 || goalsTouchedRef.current) return;
+    const key = domain.trim() || "_";
+    if (goalsSuggestedForRef.current === key) return;
+    goalsSuggestedForRef.current = key;
+    const suggested = goalsFromProfile({
+      profile: profileResult?.profile ?? null,
+      industry: profileResult?.industry,
+      coveragePct: profileResult?.coverage?.pct ?? null,
+      competitorCount: competitors.length,
+    });
+    if (suggested.length > 0) {
+      setGoals(suggested);
+      setGoalsAutoApplied(true);
+    }
+  }, [step, profileResult, competitors.length, domain]);
 
   // Leaving step 0: take a fast look at the site so steps 1–3 come prefilled (#2). The
   // profile endpoint never 502s — a dead crawl returns route='dead' and we fall through
@@ -577,6 +611,12 @@ export default function Page() {
 
                   {step === 3 && (
                     <div className="space-y-6">
+                      {goalsAutoApplied && (
+                        <p className="step-in rounded-lg border border-emerald-500/25 bg-emerald-500/[0.08] px-3.5 py-2.5 text-sm text-emerald-300">
+                          <Check className="mr-1.5 inline" width={13} height={13} />
+                          We ticked a few goals that fit what we found on your site — change any of them.
+                        </p>
+                      )}
                       <div className="grid gap-2.5 sm:grid-cols-2">
                         {GOAL_OPTIONS.map((g, i) => {
                           const on = goals.includes(g.label);
