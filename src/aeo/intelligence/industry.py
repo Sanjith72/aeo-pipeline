@@ -249,13 +249,20 @@ def parse_sparql_profile(data: dict | None) -> WikidataProfile:
 async def _default_sparql_fetch(query: str) -> dict | None:
     import httpx
 
+    from ..crawl.transport import async_transport
+
     # Wikidata's WDQS requires a descriptive User-Agent and rejects generic ones.
     headers = {
         "User-Agent": "AEO-Pipeline/1.0 (industry resolver; contact: ops@aeo.local)",
         "Accept": "application/sparql-results+json",
     }
+    # Route through the force-IPv4 transport seam like every other outbound client: on a
+    # dual-stack host that stalls on AAAA (OCI Ampere, and observed locally), the WDQS
+    # request otherwise hangs ~20s+ and trips the timeout, silently emptying every profile.
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0, follow_redirects=True, headers=headers, transport=async_transport()
+        ) as client:
             resp = await client.get(
                 "https://query.wikidata.org/sparql", params={"query": query, "format": "json"}
             )
