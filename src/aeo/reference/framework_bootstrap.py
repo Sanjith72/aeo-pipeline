@@ -24,7 +24,7 @@ Onboarding any site becomes:  ``aeo framework bootstrap <domain>`` → review th
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, get_args
+from typing import TYPE_CHECKING, Any, get_args
 
 import yaml
 
@@ -34,6 +34,9 @@ from ..settings import get_settings
 from .blueprint import Intent, JourneyStage, PageType, SitemapNode, normalize_slug
 from .domain_config import normalize_domain
 from .taxonomic_ceiling import ceiling_prompt_clause, ceiling_standards, merge_ceiling_entities
+
+if TYPE_CHECKING:
+    from .framework import Framework
 
 log = get_logger(__name__)
 
@@ -235,6 +238,34 @@ def bootstrap_framework(
         "standalone_nodes": standalone or fw["standalone_nodes"],
         "_generated_by": f"bootstrap:{llm.model}",
     }
+
+
+def resolve_framework(
+    domain: str | None,
+    *,
+    llm: LLMClient | None = None,
+    topic: str | None = None,
+    category: str | None = None,
+) -> Framework:
+    """The per-site reference framework — the single source of truth shared by the profile
+    preview, the deep audit, and the deliverables path, so all three agree on the "ideal
+    site" a domain is measured against.
+
+    Resolution order: a curated per-domain file (``config/domains/{domain}.framework.yaml``)
+    wins; otherwise an in-memory :func:`bootstrap_framework` (a universal generic skeleton,
+    LLM-tailored to the site's real topic when an LLM is available). Only the no-domain case
+    falls back to the shared ``framework.yaml`` default.
+
+    This replaces the old per-site fall-through to that shared seed (Securin's
+    cybersecurity framework), which leaked cyber recommendations onto every unconfigured
+    site (e.g. a marine business getting an "Attack Surface Management" plan)."""
+    from .framework import build_framework, load_framework
+
+    if not domain:
+        return load_framework()  # no domain → the shared default framework
+    if framework_file_path(domain).exists():
+        return load_framework(domain)  # curated per-domain override
+    return build_framework(bootstrap_framework(domain, llm=llm, topic=topic, category=category))
 
 
 def framework_file_path(domain: str, config_dir: Path | None = None) -> Path:

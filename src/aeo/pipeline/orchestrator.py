@@ -490,7 +490,7 @@ class Orchestrator:
         from ..recommender.draft import draft_missing_page
         from ..reference.competitor_patterns import CompetitorPatterns
         from ..reference.domain_config import load_domain_config
-        from ..reference.framework import load_framework
+        from ..reference.framework_bootstrap import resolve_framework
         from ..reference.generator import generate_blueprint
         from .reference_arch import discovered_pages
 
@@ -507,7 +507,12 @@ class Orchestrator:
         # Blueprint (in-memory, not persisted). Deterministic by default; competitor
         # patterns are empty (dry-run never reads the DB).
         ra = settings.reference_architecture
-        framework = load_framework(domain)  # per-domain override if present
+        # Per-site framework: curated per-domain file if present, else a bootstrapped
+        # generic/LLM-tailored skeleton — never the shared cybersecurity seed for an
+        # unconfigured site (that seed leaked cyber recs onto every domain).
+        framework = resolve_framework(
+            domain, llm=(self._llm if use_llm else None), topic=(dc.topic if dc else None)
+        )
         topic = (dc.topic if dc else None) or framework.topic or ra.topic
         # The blueprint legitimately falls back to the seeded framework topic (the
         # generator is built for it), but that global seed must NOT become this site's
