@@ -110,8 +110,25 @@ export default function Page() {
       .catch(() => {});
   }, []);
   const auditJobIdRef = useRef<string | null>(null);
+  // The domain string we last ran the prefill crawl for — so we can detect a site change
+  // (Back-and-edit, or just typing a new URL) and drop stale prefills before re-crawling.
+  const lastProfiledDomainRef = useRef<string | null>(null);
 
   const studioRef = useRef<HTMLElement>(null);
+
+  // Drop every crawl-derived "About you"/competitor/goal prefill and the inferred snapshot
+  // used for override tracking, so a new site never inherits the previous one's answers.
+  // The typed domain is deliberately left alone (the user is editing it).
+  function resetPrefilled() {
+    setName("");
+    setCategory("");
+    setLocation("");
+    setServicesText("");
+    setGoals([]);
+    setCompetitors([]);
+    setProfileResult(null);
+    setForceRecrawl(false);
+  }
 
   // A dead crawl (or no site at all) routes to the no-website brief path (#3).
   const noSite = !hasSite || profileResult?.route === "dead";
@@ -156,10 +173,17 @@ export default function Page() {
       setStep(1);
       return;
     }
+    const target = domain.trim();
+    // Site changed since the last crawl (even without using Back) → clear site A's prefills
+    // so its industry/location/services/competitors never leak into site B.
+    if (lastProfiledDomainRef.current !== null && lastProfiledDomainRef.current !== target) {
+      resetPrefilled();
+    }
+    lastProfiledDomainRef.current = target;
     setPrefilling(true);
     setError(null);
     try {
-      const res = await api.profile({ domain: domain.trim(), use_llm: useLlm });
+      const res = await api.profile({ domain: target, use_llm: useLlm });
       setProfileResult(res);
       if (res.industry && !category.trim()) setCategory(res.industry);
       if (res.location && !location.trim()) setLocation(res.location);
@@ -637,7 +661,16 @@ export default function Page() {
               </div>
 
               <div className="mt-6 flex items-center justify-between gap-3">
-                <button onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0} className="btn-ghost">
+                <button
+                  onClick={() => {
+                    // Returning to the website-entry step drops site A's crawl-derived
+                    // prefills so a newly-entered site starts clean (the domain stays).
+                    if (step === 1) resetPrefilled();
+                    setStep((s) => Math.max(0, s - 1));
+                  }}
+                  disabled={step === 0}
+                  className="btn-ghost"
+                >
                   ← Back
                 </button>
                 <span className="label-mono">
