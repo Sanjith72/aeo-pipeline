@@ -468,6 +468,117 @@ export function AnalysisProgress({ job, onCancel }: { job: AuditJob; onCancel?: 
   );
 }
 
+// ── prefill / profile crawl progress (the fast "take a look" wait) ───────────────
+
+// The named sub-steps the /api/profile round actually performs (homepage crawl +
+// Wikidata industry/HQ resolve + on-site competitor mining + services extraction). The
+// endpoint is a single request with no server stream, so — like BuildProgress — we drive
+// an honest, staged client-side indicator that the parent unmounts the instant the real
+// profile lands (so it never hangs near the end).
+const PREFILL_STEPS = [
+  "Crawling your homepage",
+  "Resolving your industry",
+  "Finding competitors",
+  "Reading your services",
+] as const;
+
+/** A lightweight, AnalysisProgress-styled indicator for the seconds-long prefill crawl —
+ *  a determinate bar plus a checked-off step list, so the wait reads as motion toward a
+ *  prefilled "About you" rather than an open-ended spinner. Reuses the deep-audit amber
+ *  visual language for consistency. */
+export function PrefillProgress() {
+  const reduced = useReducedMotion();
+  const [stepIdx, setStepIdx] = useState(0);
+  const [pct, setPct] = useState(10);
+
+  // A steady climb capped below 100 so it always reads as motion and never falsely
+  // completes — the parent unmounts this the moment the profile resolves. Gated on
+  // reduced-motion (a JS interval is still motion).
+  useEffect(() => {
+    if (reduced) return;
+    const ceiling = 92;
+    const climb = setInterval(() => setPct((p) => Math.min(ceiling, p + 3)), 200);
+    return () => clearInterval(climb);
+  }, [reduced]);
+
+  useEffect(() => {
+    if (reduced) return;
+    const rot = setInterval(
+      () => setStepIdx((i) => Math.min(i + 1, PREFILL_STEPS.length - 1)),
+      900,
+    );
+    return () => clearInterval(rot);
+  }, [reduced]);
+
+  // Reduced motion: a calm, static labelled bar — still not a naked spinner.
+  if (reduced) {
+    return (
+      <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-4 text-sm">
+        <p className="mb-2 font-medium text-amber-200">Taking a look at your site…</p>
+        <div
+          className="h-1.5 overflow-hidden rounded-full bg-amber-500/15"
+          role="progressbar"
+          aria-valuetext="Reviewing your homepage"
+          aria-label="Prefill progress"
+        >
+          <div className="h-full w-1/3 rounded-full bg-amber-400/80" />
+        </div>
+      </div>
+    );
+  }
+
+  const rounded = Math.round(pct);
+  return (
+    <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-4 text-sm">
+      <div className="flex items-center gap-2.5 text-amber-200">
+        <span className="relative flex h-2.5 w-2.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
+        </span>
+        <span className="font-medium">Taking a quick look at your site…</span>
+      </div>
+
+      <div
+        className="mt-3 h-1.5 overflow-hidden rounded-full bg-amber-500/15"
+        role="progressbar"
+        aria-valuenow={rounded}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-busy
+        aria-label="Prefill progress"
+      >
+        <div
+          className="h-full rounded-full bg-amber-400/80 transition-[width] duration-500 ease-out"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      <ol className="mt-3.5 space-y-2">
+        {PREFILL_STEPS.map((label, i) => {
+          const isDone = i < stepIdx;
+          const isCurrent = i === stepIdx;
+          return (
+            <li key={label} className="flex items-center gap-2.5">
+              {isDone ? (
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white">
+                  <Check width={10} height={10} />
+                </span>
+              ) : isCurrent ? (
+                <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-amber-500/40 border-t-amber-400" />
+              ) : (
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                  <span className="h-1.5 w-1.5 rounded-full bg-ink/20" />
+                </span>
+              )}
+              <span className={isDone || isCurrent ? "text-ink" : "text-ink-300"}>{label}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
 // ── overview ──────────────────────────────────────────────────────────────────
 
 function confidenceWord(value: number): string {

@@ -20,7 +20,7 @@ import type {
 import { GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
 import { aeoScore } from "@/lib/score";
 import { Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/components/chrome";
-import { AnalysisProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
+import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { Combobox } from "@/components/ui/Combobox";
 import { Check } from "@/components/ui/icons";
@@ -477,6 +477,10 @@ export default function Page() {
                           ? "We take a quick look and show your AI visibility score in seconds — then pre-fill the next steps for you."
                           : "No website yet? No problem — we'll plan your ideal one from scratch."}
                       </p>
+
+                      {/* The seconds-long prefill crawl: a per-section progress card so the
+                          wait reads as motion toward a filled-in "About you", not a spinner. */}
+                      {prefilling && hasSite && <PrefillProgress />}
                     </div>
                   )}
 
