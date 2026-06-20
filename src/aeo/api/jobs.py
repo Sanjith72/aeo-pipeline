@@ -251,3 +251,43 @@ async def default_audit_runner(
         domain, target=target, progress=progress,
         force_recrawl=force_recrawl, should_cancel=should_cancel,
     )
+
+
+# ── personalized-kit build job (the slow LLM path behind /api/deliverables/personalize) ──
+# The interactive plan is built synchronously and instantly (deterministic); only the
+# LLM-written downloadable page DRAFTS are slow, so that upgrade runs here as a background
+# job — same reasoning as the deep audit: never block a request the proxy would time out.
+
+
+async def execute_deliverables(
+    registry: JobRegistry, job_id: str, *, build: Callable[[ProgressFn], dict[str, Any]]
+) -> None:
+    """Run a kit-personalization build to completion off the API event loop, recording
+    status/result/error on the registry. ``build(progress)`` is the sync (LLM-heavy) builder;
+    it runs in a worker thread so ``/api/deliverables/{id}`` polling stays responsive. Never
+    raises — any failure is captured on the job so the poller sees ``failed``."""
+    registry.update(job_id, status=JOB_RUNNING, progress="personalizing your kit…")
+
+    def _sink(stage: str, counts: dict[str, Any]) -> None:
+        registry.record_stage(job_id, stage, counts)
+
+    try:
+        result = await asyncio.to_thread(build, _sink)
+        registry.update(job_id, status=JOB_SUCCEEDED, progress="complete", result=result)
+    except Exception as exc:  # the job records the failure; the endpoint never 500s
+        log.warning("deliverables_job_failed", job_id=job_id, error=str(exc))
+        registry.update(job_id, status=JOB_FAILED, progress="failed", error=str(exc))
+
+
+def spawn_deliverables(
+    job_id: str, *, build: Callable[[ProgressFn], dict[str, Any]]
+) -> threading.Thread:
+    """Run a kit personalization on a dedicated daemon thread (its own event loop) so the
+    slow LLM page-drafting never blocks the API. ``build(progress)`` is the sync builder."""
+
+    def _run() -> None:
+        asyncio.run(execute_deliverables(JOBS, job_id, build=build))
+
+    thread = threading.Thread(target=_run, name=f"deliverables-{job_id}", daemon=True)
+    thread.start()
+    return thread

@@ -13,6 +13,7 @@ import type {
   BriefPlan,
   BriefRequest,
   CompetitorPick,
+  DeliverablesJob,
   DeliverablesResponse,
   ProfileResponse,
   SiteProfile,
@@ -23,6 +24,7 @@ import { Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/co
 import { AnalysisProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { Combobox } from "@/components/ui/Combobox";
+import { useReducedMotion } from "@/components/motion/primitives";
 import { Check } from "@/components/ui/icons";
 
 function splitList(value: string): string[] {
@@ -57,6 +59,39 @@ function formatAge(hours: number): string {
   return days === 1 ? "yesterday" : `${days} days ago`;
 }
 
+// #2 — the staged analysis experience shown while the fast crawl runs. The crawl is one call
+// that returns in seconds; these stages animate the work so the wait reads as the AI actively
+// examining the site (Perplexity/Linear-style) instead of a silent spinner.
+const ANALYSIS_STAGES = [
+  "Checking your website structure",
+  "Discovering your pages",
+  "Evaluating AEO readiness",
+  "Analyzing content quality",
+  "Identifying authority signals",
+  "Spotting optimization opportunities",
+  "Building your strategic roadmap",
+] as const;
+
+// #3 — goals the analysis recommends pre-selected. The crawl already reveals the gaps, the
+// business model, and whether the business is local, so we tick the goals that map to those
+// findings; the user unticks or adds their own. Outcome language only — keys match GOAL_OPTIONS.
+function recommendedGoals(profile: SiteProfile | null, hasLocation: boolean): Set<string> {
+  const rec = new Set<string>(["Show up in AI answers"]); // the core promise — always relevant
+  if (!profile) {
+    rec.add("Win more customers");
+    return rec;
+  }
+  const stages = profile.journey?.stages ?? [];
+  const covered = stages.filter((s) => s.covered).length;
+  const model = (profile.business_intent?.model ?? "").toLowerCase();
+  if (stages.length > 0 && covered / stages.length < 0.6) rec.add("Build my brand's authority");
+  if ((profile.journey?.gaps ?? []).length > 0) rec.add("Win more customers");
+  if (/commerce|retail|shop|product|store/.test(model)) rec.add("Sell more online");
+  if (hasLocation || /local|service/.test(model)) rec.add("Grow local business");
+  if ((profile.actions ?? []).length > 3) rec.add("Beat my competitors");
+  return rec;
+}
+
 const STEPS = [
   { label: "Your website", blurb: "Pop in your address — we'll take a look." },
   { label: "About you", blurb: "We filled this in from your site. Fix anything that's off." },
@@ -77,6 +112,7 @@ export default function Page() {
   const [servicesText, setServicesText] = useState("");
   const [competitors, setCompetitors] = useState<CompetitorPick[]>([]);
   const [goals, setGoals] = useState<string[]>([]);
+  const [customGoalInput, setCustomGoalInput] = useState("");
   const [challenges, setChallenges] = useState("");
   const [useLlm, setUseLlm] = useState(true);
 
@@ -90,6 +126,13 @@ export default function Page() {
   const [plan, setPlan] = useState<BriefPlan | null>(null);
   const [deliverables, setDeliverables] = useState<DeliverablesResponse | null>(null);
   const [delivLoading, setDelivLoading] = useState(false);
+  const [delivError, setDelivError] = useState<string | null>(null);
+  // #7 — the async "personalize my downloadable files" job. The in-app plan is always
+  // instant; this optional upgrade rewrites the downloadable page drafts with the LLM and
+  // runs as a background job so the slow build never blocks (or times out) the request.
+  const [personalizing, setPersonalizing] = useState(false);
+  const [personalizeError, setPersonalizeError] = useState<string | null>(null);
+  const [personalizeJob, setPersonalizeJob] = useState<DeliverablesJob | null>(null);
   const [auditJob, setAuditJob] = useState<AuditJob | null>(null);
   const [deepProfile, setDeepProfile] = useState<SiteProfile | null>(null);
   // R2-2 re-crawl: when the homepage was crawled recently, default to reusing that data
@@ -110,6 +153,8 @@ export default function Page() {
       .catch(() => {});
   }, []);
   const auditJobIdRef = useRef<string | null>(null);
+  const personalizeJobIdRef = useRef<string | null>(null);
+  const goalsSeeded = useRef(false);
 
   const studioRef = useRef<HTMLElement>(null);
 
@@ -130,6 +175,14 @@ export default function Page() {
     if (top < -40) studioRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [step, view]);
 
+  // #3 — when the user first lands on the goals step, pre-select the goals the analysis
+  // recommends (once). They can untick or add their own afterward.
+  useEffect(() => {
+    if (goalsSeeded.current || step !== 3) return;
+    goalsSeeded.current = true;
+    if (goals.length === 0) setGoals([...recommendedGoals(profile, !!location.trim())]);
+  }, [step, profile, location, goals.length]);
+
   function briefFromForm(): BriefRequest {
     return {
       name: name.trim() || deriveName(domain) || "My business",
@@ -145,6 +198,15 @@ export default function Page() {
 
   function toggleGoal(goal: string) {
     setGoals((prev) => (prev.includes(goal) ? prev.filter((g) => g !== goal) : [...prev, goal]));
+  }
+
+  // #3 — add a free-typed custom goal (e.g. "Rank for niche topics"). Stored alongside the
+  // preset goals; rendered as a removable chip below the recommended grid.
+  function addCustomGoal() {
+    const g = customGoalInput.trim();
+    if (!g) return;
+    setGoals((prev) => (prev.includes(g) ? prev : [...prev, g]));
+    setCustomGoalInput("");
   }
 
   // Leaving step 0: take a fast look at the site so steps 1–3 come prefilled (#2). The
@@ -283,9 +345,16 @@ export default function Page() {
 
   async function generateDeliverables() {
     setDelivLoading(true);
-    setError(null);
+    setDelivError(null);
     try {
-      const deliv = await api.deliverables({ ...briefFromForm(), draft_limit: 10 });
+      // #7: the in-app plan is deterministic, so force the FAST path (use_llm=false) — it
+      // returns in seconds and never hits the proxy/keep-alive timeout that made the old
+      // LLM-personalized build "return nothing". A 90s ceiling turns a backend stall into a
+      // retryable error instead of an endless spinner.
+      const deliv = await api.deliverables(
+        { ...briefFromForm(), use_llm: false, draft_limit: 10 },
+        { signal: AbortSignal.timeout(90_000) },
+      );
       setDeliverables(deliv);
       // Spec #1: persist the interactive plan so progress survives a device switch and
       // earns a resumable /plan/<id> link. Best-effort — the in-app plan works without it.
@@ -305,9 +374,43 @@ export default function Page() {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setDelivError(err instanceof Error ? err.message : String(err));
     } finally {
       setDelivLoading(false);
+    }
+  }
+
+  // #7 — optional, explicit upgrade: have the LLM write the downloadable page drafts. Runs
+  // as a background job (returns a job id immediately, then we poll), so the slow build
+  // never holds a request open. The instant in-app plan stays exactly as it is; only the
+  // downloadable assets change. On failure the ready-made deterministic files remain.
+  async function personalizeFiles() {
+    setPersonalizing(true);
+    setPersonalizeError(null);
+    try {
+      const { job_id } = await api.startPersonalize({ ...briefFromForm(), use_llm: true, draft_limit: 10 });
+      personalizeJobIdRef.current = job_id;
+      let job = await api.personalizeStatus(job_id);
+      setPersonalizeJob(job);
+      let tries = 0;
+      while ((job.status === "queued" || job.status === "running") && tries < 450) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        job = await api.personalizeStatus(job_id);
+        setPersonalizeJob(job);
+        tries += 1;
+      }
+      if (job.status === "succeeded" && job.result) {
+        setDeliverables(job.result);
+      } else {
+        setPersonalizeError(
+          job.error ||
+            "We couldn't personalize your files just now — your ready-made files are still available below.",
+        );
+      }
+    } catch (err) {
+      setPersonalizeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPersonalizing(false);
     }
   }
 
@@ -337,6 +440,10 @@ export default function Page() {
 
   const isLast = step === STEPS.length - 1;
 
+  // #3 — recommendations + any free-typed custom goals (goals not in the preset list).
+  const recommended = recommendedGoals(profile, !!location.trim());
+  const customGoals = goals.filter((g) => !GOAL_OPTIONS.some((o) => o.label === g));
+
   return (
     <>
       <TopBar />
@@ -357,7 +464,7 @@ export default function Page() {
           )}
         </div>
 
-        {view === "wizard" && resume && (
+        {view === "wizard" && resume && !prefilling && (
           <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/[0.06] p-4 animate-fade-up">
             <p className="text-sm text-ink-500">
               Welcome back — you have a saved plan for{" "}
@@ -389,12 +496,19 @@ export default function Page() {
               auditJob={auditJob}
               deliverables={deliverables}
               delivLoading={delivLoading}
+              delivError={delivError}
               aiPersonalization={useLlm}
               onGenerateDeliverables={generateDeliverables}
+              onPersonalize={personalizeFiles}
+              personalizing={personalizing}
+              personalizeError={personalizeError}
+              personalizeProgress={personalizeJob?.progress ?? null}
               onDownloadZip={downloadZip}
               onEdit={() => setView("wizard")}
             />
           </>
+        ) : prefilling ? (
+          <AnalysisSequence domain={domain.trim() || "your site"} />
         ) : (
           <div className="grid animate-fade-up-slow gap-8 md:grid-cols-[230px_1fr]">
             <Stepper current={step} onJump={setStep} />
@@ -547,9 +661,19 @@ export default function Page() {
 
                   {step === 3 && (
                     <div className="space-y-6">
+                      {/* #3 — the analysis pre-selects the goals it recommends; the user
+                          unticks what doesn't fit or adds their own below. */}
+                      <div className="step-in rounded-lg border border-accent/25 bg-accent/[0.06] px-3.5 py-2.5 text-sm text-ink-500">
+                        <span className="font-medium text-ink">
+                          {profile ? "We pre-selected goals from your analysis." : "Pick what success looks like."}
+                        </span>{" "}
+                        Keep what fits, untick what doesn&apos;t, or add your own.
+                      </div>
+
                       <div className="grid gap-2.5 sm:grid-cols-2">
                         {GOAL_OPTIONS.map((g, i) => {
                           const on = goals.includes(g.label);
+                          const rec = recommended.has(g.label);
                           return (
                             <button
                               key={g.label}
@@ -566,13 +690,64 @@ export default function Page() {
                               >
                                 {on && <Check className="animate-pop" width={12} height={12} />}
                               </span>
-                              <span>
-                                <span className="block font-medium text-ink">{g.label}</span>
+                              <span className="min-w-0">
+                                <span className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-medium text-ink">{g.label}</span>
+                                  {rec && (
+                                    <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent ring-1 ring-accent/30">
+                                      {profile ? "Recommended by AI" : "Suggested"}
+                                    </span>
+                                  )}
+                                </span>
                                 <span className="mt-0.5 block text-xs leading-relaxed text-ink-300">{g.hint}</span>
                               </span>
                             </button>
                           );
                         })}
+                      </div>
+
+                      {/* #3 — custom goals: any objective the presets don't cover. */}
+                      <div>
+                        {customGoals.length > 0 && (
+                          <div className="mb-2.5 flex flex-wrap gap-2">
+                            {customGoals.map((cg) => (
+                              <span key={cg} className="chip">
+                                {cg}
+                                <button
+                                  type="button"
+                                  onClick={() => toggleGoal(cg)}
+                                  aria-label={`Remove goal ${cg}`}
+                                  className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full text-ink-300 transition-colors hover:bg-ink/10 hover:text-ink"
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex gap-2">
+                          <input
+                            className="input"
+                            value={customGoalInput}
+                            onChange={(e) => setCustomGoalInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                addCustomGoal();
+                              }
+                            }}
+                            placeholder="Add your own — e.g. Rank for niche topics"
+                            aria-label="Add a custom goal"
+                          />
+                          <button
+                            type="button"
+                            onClick={addCustomGoal}
+                            disabled={!customGoalInput.trim()}
+                            className="btn-ghost shrink-0"
+                          >
+                            + Add
+                          </button>
+                        </div>
                       </div>
 
                       <Field label="Anything frustrating you right now?" hint="optional">
@@ -593,10 +768,11 @@ export default function Page() {
                           onChange={(e) => setUseLlm(e.target.checked)}
                         />
                         <span>
-                          <span className="block font-medium text-ink">Personalize the wording with AI</span>
+                          <span className="block font-medium text-ink">Write my downloadable files with AI</span>
                           <span className="block text-xs text-ink-300">
-                            Recommended — reads like it was written for you. Adds a build step (around 10 minutes)
-                            after the review; leave it off for an instant plan.
+                            Optional. Your interactive plan is ready instantly either way — turn this on and we&apos;ll
+                            offer to AI-write every downloadable page for you on the results screen (a few minutes,
+                            only when you ask).
                           </span>
                         </span>
                       </label>
@@ -704,6 +880,97 @@ function ErrorNote({ message }: { message: string }) {
       <span>
         <span className="font-medium">We hit a snag.</span> {message}
       </span>
+    </div>
+  );
+}
+
+// #2 — the centered analysis experience that replaces the wizard while the fast crawl runs.
+// The crawl is a single call that returns in seconds; the stages animate the work so the
+// wait reads as the AI actively examining the site, never a silent spinner. The sequence
+// unmounts the instant the crawl resolves (prefilling → false) and step 1 lands with the
+// provisional score, so the motion flows straight into a result.
+function AnalysisSequence({ domain }: { domain: string }) {
+  const reduced = useReducedMotion();
+  const [active, setActive] = useState(reduced ? ANALYSIS_STAGES.length - 1 : 0);
+  useEffect(() => {
+    if (reduced) return;
+    const id = setInterval(
+      () => setActive((i) => Math.min(i + 1, ANALYSIS_STAGES.length - 1)),
+      650,
+    );
+    return () => clearInterval(id);
+  }, [reduced]);
+  const pct = Math.round(((active + 1) / ANALYSIS_STAGES.length) * 100);
+
+  return (
+    <div className="step-in mx-auto max-w-xl">
+      <div className="card relative overflow-hidden p-7 sm:p-9">
+        <div className="blueprint-grid blueprint-grid-fade pointer-events-none absolute inset-0 opacity-60" aria-hidden />
+        <div className="relative">
+          <div className="flex items-center gap-2.5 text-accent">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
+              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-accent" />
+            </span>
+            <span className="label-mono !text-accent">Analyzing</span>
+          </div>
+          <h3 className="mt-2 text-xl font-semibold">
+            Looking at <span className="font-mono text-ink">{domain}</span>…
+          </h3>
+          <p className="mt-1 text-sm text-ink-500">
+            We&apos;re reading your site the way an AI assistant would. This only takes a few seconds.
+          </p>
+
+          <div
+            className="mt-5 h-1.5 overflow-hidden rounded-full bg-ink/[0.07]"
+            role="progressbar"
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-busy
+            aria-label="Analysis progress"
+          >
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-accent to-accent-600 transition-[width] duration-500 ease-out"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+
+          <ol className="mt-5 space-y-2.5">
+            {ANALYSIS_STAGES.map((label, i) => {
+              const done = i < active;
+              const current = i === active;
+              return (
+                <li
+                  key={label}
+                  className={`flex items-center gap-3 text-sm transition-opacity duration-300 ${
+                    i <= active ? "opacity-100" : "opacity-40"
+                  }`}
+                >
+                  <span
+                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition-colors duration-300 ${
+                      done
+                        ? "bg-emerald-500 text-white"
+                        : current
+                          ? "border-2 border-accent/60"
+                          : "border border-ink/15"
+                    }`}
+                  >
+                    {done ? (
+                      <Check className="animate-pop" width={11} height={11} />
+                    ) : current ? (
+                      <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-accent/40 border-t-accent" />
+                    ) : null}
+                  </span>
+                  <span className={done ? "text-ink-500" : current ? "font-medium text-ink" : "text-ink-300"}>
+                    {label}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      </div>
     </div>
   );
 }

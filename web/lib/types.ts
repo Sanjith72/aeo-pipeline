@@ -198,6 +198,19 @@ export interface SiteReportResponse {
   sections: { strategy?: SiteProfile } & Record<string, unknown>;
 }
 
+// The async "personalize my downloadable files" job (#7): the in-app plan is instant
+// (POST /api/deliverables, use_llm=false); this job upgrades the downloadable page drafts
+// to AI-written prose without holding a request open. Polled via GET /api/deliverables/{id};
+// `result` is the full DeliverablesResponse on success. Mirrors the AuditJob shape.
+export interface DeliverablesJob {
+  job_id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | string;
+  progress: string;
+  stages: AuditStage[];
+  result: DeliverablesResponse | null;
+  error: string | null;
+}
+
 export interface CompetitorSuggestion {
   name: string;
   domain: string;
