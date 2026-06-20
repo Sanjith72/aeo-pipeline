@@ -427,16 +427,43 @@ class Orchestrator:
         )
         analysis = self.analyze_run(run_summary.run_id, progress=progress)
         site_report_id = self._build_and_persist_site_report(run_summary.run_id, target, domain=domain)
+        milestones = await self._verify_milestones(run_summary.run_id, target, domain=domain)
         log.info(
             "audit_cycle_complete", run_id=run_summary.run_id, domain=domain,
-            site_report_id=site_report_id,
+            site_report_id=site_report_id, milestones_verified=milestones.get("newly_verified", 0),
         )
         _emit(progress, "report", site_report_id=site_report_id)
         return {
             "run": run_summary.as_dict(),
             "analysis": analysis.as_dict(),
             "site_report_id": site_report_id,
+            "milestones": milestones,
         }
+
+    async def _verify_milestones(self, run_id: int, target: Target, *, domain: str) -> dict:
+        """Auto-verify the client's implementation milestones against the freshly-crawled
+        site (the weekly 'did they do it?' check). Best-effort and isolated — like
+        completion detection, this is bookkeeping on top of the audit and must never abort
+        it. Only clients are tracked; competitors and a missing milestone plan no-op."""
+        if target.kind != "client":
+            return {"checked": 0, "newly_verified": 0, "verified_keys": []}
+        try:
+            from ..storage.repos import milestones as milestones_repo
+            from ..storage.repos import pages as pages_repo
+
+            if not milestones_repo.has_milestones(target.id):
+                return {"checked": 0, "newly_verified": 0, "verified_keys": []}
+            # Feed the verifier the run's full crawled inventory so deep pages (not linked
+            # from the homepage) still count as live.
+            slugs = [p["url_normalized"] for p in pages_repo.by_run(run_id) if p.get("url_normalized")]
+            from .milestone_audit import verify_client_milestones
+
+            return await verify_client_milestones(
+                target.id, domain, run_id=run_id, discovered_slugs=slugs,
+            )
+        except Exception as exc:  # verification must never break the audit cycle
+            log.warning("milestone_verify_skipped", run_id=run_id, domain=domain, error=str(exc))
+            return {"checked": 0, "newly_verified": 0, "verified_keys": [], "error": str(exc)}
 
     async def dry_run(
         self,

@@ -26,6 +26,7 @@ with zero discovered competitors and the operator adds them by hand.
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import httpx
@@ -39,6 +40,10 @@ log = get_logger(__name__)
 _MAX_ALIASES = 4
 _DEFAULT_COUNT = 5
 _MAX_COUNT = 12  # a hard ceiling so a pathological prompt response can't flood entities.yaml
+# Verify candidate domains concurrently — independent network probes, so a sequential loop
+# wasted ~timeout × N seconds. Bounded so a pathological response can't open a thread storm.
+_MAX_VERIFY_WORKERS = 8
+_HEAD_CHECK_TIMEOUT = 5.0  # per-probe; a competitor's site is either up fast or not worth waiting on
 
 _DISCOVERY_SYSTEM = (
     "You are a market research analyst identifying REAL, currently-operating direct "
@@ -137,7 +142,9 @@ def _default_head_check(domain: str) -> bool:
 
     url = f"https://{domain}"
     try:
-        with httpx.Client(timeout=10.0, follow_redirects=True, transport=sync_transport()) as client:
+        with httpx.Client(
+            timeout=_HEAD_CHECK_TIMEOUT, follow_redirects=True, transport=sync_transport()
+        ) as client:
             resp = client.head(url)
             if resp.status_code < 400:
                 return True
@@ -208,14 +215,22 @@ def _discover_once(
         seen_domains.add(cand.domain)
         candidates.append(cand)
 
+    # Verify every candidate domain CONCURRENTLY (the checks are independent HEAD/GET
+    # probes). ``executor.map`` preserves candidate order, so verified/dropped read the
+    # same as the old sequential loop — only faster (wall-clock ≈ the slowest single probe,
+    # not their sum).
+    to_check = candidates[:count]
     verified: list[DiscoveredCompetitor] = []
     dropped: list[DiscoveredCompetitor] = []
-    for cand in candidates[:count]:
-        if check(cand.domain):
-            verified.append(cand)
-        else:
-            dropped.append(cand)
-            log.info("competitor_candidate_dropped", name=cand.name, domain=cand.domain)
+    if to_check:
+        with ThreadPoolExecutor(max_workers=min(len(to_check), _MAX_VERIFY_WORKERS)) as pool:
+            outcomes = list(pool.map(lambda c: (c, check(c.domain)), to_check))
+        for cand, ok in outcomes:
+            if ok:
+                verified.append(cand)
+            else:
+                dropped.append(cand)
+                log.info("competitor_candidate_dropped", name=cand.name, domain=cand.domain)
 
     return CompetitorDiscoveryResult(verified=verified, dropped=dropped, raw_count=len(candidates))
 
@@ -272,6 +287,10 @@ def discover_competitors(
         result = _discover_once(
             name, domain, pass_topic, pass_loc, services, count, strict, llm, check
         )
+        # EARLY EXIT: the first pass that yields any verified competitor wins — we return
+        # immediately rather than walking the rest of the ladder. So a strict pass that
+        # already finds peers costs exactly ONE llm.generate_json call, never four; only a
+        # genuinely empty pass falls through to the next (broader) rung.
         if result.verified:
             result.relaxed = idx > 0
             if result.relaxed:

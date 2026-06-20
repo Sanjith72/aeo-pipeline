@@ -8,10 +8,14 @@ import type {
   CompetitorSuggestResponse,
   DeliverablesJob,
   DeliverablesResponse,
+  MilestoneDashboard,
+  MilestoneStatus,
+  MilestoneVerifyResult,
   PlanStateResponse,
   ProfileResponse,
   RecheckStatusResponse,
   ResumeResponse,
+  SharedPlanResponse,
   SiteFreshnessResponse,
   SiteProfile,
   SiteReportResponse,
@@ -152,6 +156,50 @@ export const api = {
     const res = await fetch(`${BASE}/api/site-report/${runId}`, { headers: headers() });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as SiteReportResponse;
+  },
+
+  // ── implementation milestones (persisted + auto-verified plan) ────────────
+  /** Persist the generated plan as the site's milestones and return the dashboard.
+   *  Idempotent — re-syncing keeps existing progress + any crawl-verified status. */
+  syncMilestones(req: {
+    domain: string;
+    name?: string;
+    plan: StructuredPlan;
+    cms_type?: string | null;
+  }): Promise<MilestoneDashboard> {
+    return postJson<MilestoneDashboard>("/api/milestones", req);
+  },
+  /** The dashboard for a domain (empty milestones if no plan persisted yet). */
+  async getMilestones(domain: string): Promise<MilestoneDashboard> {
+    const res = await fetch(`${BASE}/api/milestones?domain=${encodeURIComponent(domain)}`, {
+      headers: headers(),
+    });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as MilestoneDashboard;
+  },
+  /** Owner's manual status toggle for one task; returns the recomputed dashboard. */
+  setMilestoneTask(req: { domain: string; task_key: string; status: MilestoneStatus }): Promise<MilestoneDashboard> {
+    return postJson<MilestoneDashboard>("/api/milestones/task", req);
+  },
+  /** Run the verification crawl now ("Check my site") — detects which pending
+   *  artifacts are live, auto-verifies them, and returns the refreshed dashboard. */
+  verifyMilestones(domain: string): Promise<MilestoneVerifyResult> {
+    return postJson<MilestoneVerifyResult>("/api/milestones/verify", { domain });
+  },
+  /** Revoke the current Developer Handoff link and get a fresh token (owner action,
+   *  authenticated). The old /share/<token> link stops working immediately. */
+  rotateShareLink(domain: string): Promise<{ share_token: string }> {
+    return postJson<{ share_token: string }>("/api/share/rotate", { domain });
+  },
+  /** The public, read-only shared plan behind a Developer Handoff link. No auth — the
+   *  token is the credential. Used by the /share/[token] route. */
+  async getSharedPlan(token: string): Promise<SharedPlanResponse> {
+    const res = await fetch(`${BASE}/api/share/${encodeURIComponent(token)}`, { headers: headers() });
+    if (!res.ok) {
+      if (res.status === 404) throw new Error("This share link is invalid or has been revoked.");
+      throw new Error(`API ${res.status} ${res.statusText}`);
+    }
+    return (await res.json()) as SharedPlanResponse;
   },
 
   // ── persisted, resumable plan (B1, Spec #1) ───────────────────────────────

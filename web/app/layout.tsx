@@ -71,7 +71,13 @@ const FAQ_JSONLD = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${display.variable} ${sans.variable} ${mono.variable} ${serif.variable}`}>
-      <body className="min-h-screen bg-paper font-sans text-ink antialiased selection:bg-accent/20">
+      {/* suppressHydrationWarning: browser extensions (e.g. Grammarly) inject
+          data-* attributes onto <body> before React hydrates, which otherwise
+          trips a hydration mismatch. Scoped to this element only. */}
+      <body
+        className="min-h-screen bg-paper font-sans text-ink antialiased selection:bg-accent/20"
+        suppressHydrationWarning
+      >
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(APP_JSONLD) }}

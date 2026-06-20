@@ -48,6 +48,15 @@ _MAX_TASK_ID_LEN = 256
 # Bound concurrent deep audits — each spawns a crawl worker thread, so cap the blast radius.
 _MAX_CONCURRENT_AUDITS = 4
 
+# Wikidata "About you" enrichment is DISABLED in /api/profile. The WDQS lookup is a full
+# P856 scan that runs ~38–50s uncontended — it never returns inside this endpoint's budget,
+# so the merge below was inert in production (location/about always fell back to the crawl).
+# The resolver (intelligence.industry.resolve_wikidata_profile) is left intact behind this
+# flag rather than deleted: flip to True only with a sub-budget retrieval path (e.g. the
+# SPARQL→QID→wbgetentities hybrid) AND after confirming the actual onboarding audience has
+# Wikidata entities (notable firms do; local SMBs don't). See the analysis thread.
+_WIKIDATA_ENRICHMENT_ENABLED = False
+
 
 def _assert_crawlable_host(domain: str) -> None:
     """SSRF guard: resolve the target host and reject private/loopback/link-local/
@@ -88,6 +97,12 @@ def require_api_key(request: Request) -> None:
         return
     path = request.url.path
     if not path.startswith("/api/") or path == "/api/health":
+        return
+    # The Developer Handoff read-only VIEW is public by design — the unguessable share
+    # token in the path IS the credential, so the GET is never gated by the API key (a
+    # developer who got the link has no key). Only the GET: owner-only actions under
+    # /api/share/ (e.g. POST /api/share/rotate, which revokes a link) stay authenticated.
+    if path.startswith("/api/share/") and request.method == "GET":
         return
     if request.headers.get("x-api-key") != key:
         raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
@@ -220,6 +235,32 @@ class CompetitorSuggestRequest(BaseModel):
     services: list[str] = []  # crawled offerings sharpen the LLM's "direct competitor" sense
     count: int = 6
     verify: bool = False  # live domain HEAD-checks are slow; the picker only needs names
+
+
+class MilestoneSyncRequest(BaseModel):
+    """Persist a generated plan as a client's implementation milestones. ``plan`` is the
+    structured plan from ``/api/deliverables`` (report.packager.build_plan output)."""
+
+    domain: str
+    name: str | None = None
+    plan: dict[str, Any]
+    # Detected CMS ('wordpress' | 'shopify' | 'unknown') from /api/profile — persisted on
+    # the client so the dashboard's "I'll do it myself" steps match the platform.
+    cms_type: str | None = None
+
+
+class MilestoneTaskUpdate(BaseModel):
+    domain: str
+    task_key: str
+    status: Literal["pending", "in_progress", "verified_completed"]
+
+
+class MilestoneVerifyRequest(BaseModel):
+    domain: str
+
+
+class ShareRotateRequest(BaseModel):
+    domain: str
 
 
 class EventRequest(BaseModel):
@@ -527,17 +568,23 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     import asyncio
 
     from ..intelligence import DEAD, classify_intake
-    from ..intelligence.industry import resolve_wikidata_industry
+    from ..intelligence.industry import WikidataProfile, resolve_wikidata_profile
     from ..intelligence.site_facts import SiteFacts, gather_site_facts
     from ..pipeline import Orchestrator
     from ..settings import get_settings
 
     cache = _cache_age(req.domain)
     # Crawl the homepage + key pages for Location / what-you-offer / on-site competitors,
-    # and resolve a SPECIFIC industry vertical from Wikidata — all concurrently with the
-    # structural dry-run profile so the wizard prefills in one round.
+    # concurrently with the structural dry-run profile so the wizard prefills in one round.
+    # Wikidata enrichment (HQ location/country/products/description) is gated OFF — see
+    # _WIKIDATA_ENRICHMENT_ENABLED: the WDQS lookup can't return inside this budget, so the
+    # merge stays code-complete but the network call isn't even spawned.
     facts_task = asyncio.create_task(gather_site_facts(req.domain))
-    wikidata_task = asyncio.create_task(resolve_wikidata_industry(req.domain))
+    wikidata_task = (
+        asyncio.create_task(resolve_wikidata_profile(req.domain))
+        if _WIKIDATA_ENRICHMENT_ENABLED
+        else None
+    )
     # The fast intake must return in seconds — the wizard shows a provisional score the
     # instant this lands. So it runs the STRUCTURAL profile deterministically: no sample
     # page drafts and no LLM blueprint/profile synthesis (dozens of slow calls on a local
@@ -551,10 +598,12 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
         facts: SiteFacts = await facts_task
     except Exception:  # facts are best-effort enrichment — never fail the profile over them
         facts = SiteFacts()
-    try:
-        wikidata_industry = await wikidata_task
-    except Exception:
-        wikidata_industry = None
+    wikidata = WikidataProfile()
+    if wikidata_task is not None:
+        try:
+            wikidata = await wikidata_task
+        except Exception:  # Wikidata is best-effort enrichment — never fail the profile over it
+            wikidata = WikidataProfile()
     intake = get_settings().intake
     discovered = int(result.get("discovered") or 0)
     # The live profile path doesn't fetch body text, so the gate is page-count based.
@@ -566,10 +615,26 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     # → the structural profile's coarse label (business-model fallback). This is what
     # keeps generic "Enterprise" from surfacing whenever a real vertical is knowable.
     prof = result.get("profile")
-    industry = wikidata_industry or facts.industry or (prof.get("industry") if prof else None)
+    industry = wikidata.industry or facts.industry or (prof.get("industry") if prof else None)
     industry_source = (
-        "wikidata" if wikidata_industry else "crawl" if facts.industry else "model" if industry else None
+        "wikidata" if wikidata.industry else "crawl" if facts.industry else "model" if industry else None
     )
+    # Wikidata HQ as a location string ("London, United Kingdom" / just the city / just the
+    # country) — the enrichment fallback when the crawl found no address on the page.
+    wikidata_location = (
+        f"{wikidata.location}, {wikidata.country}"
+        if wikidata.location and wikidata.country
+        else wikidata.location or wikidata.country
+    )
+    # Location, best source first: crawl address/schema (most precise) → Wikidata HQ →
+    # the structural profile's URL-path guess.
+    location = facts.location or wikidata_location or (prof.get("location") if prof else None)
+    # What you offer, best source first: crawl offerings (schema.org / service pages) →
+    # Wikidata products produced (P1056).
+    services = facts.services or wikidata.offerings
+    # A one-line "about" blurb — a crawl-derived summary would win if we had one, so today
+    # this surfaces the Wikidata schema:description when present.
+    about = wikidata.description
     if prof is None or route == DEAD:
         # Crawl found nothing usable → the no-website brief path is the right flow.
         return {
@@ -577,9 +642,11 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
             "profile": None,
             "industry": industry,
             "industry_source": industry_source,
-            "location": facts.location,
-            "services": facts.services,
+            "location": location,
+            "services": services,
+            "about": about,
             "competitors": facts.competitors,
+            "cms_type": facts.cms_type,
             "discovered": discovered,
             "source": result.get("source"),
             "next": "/api/plan",
@@ -590,10 +657,11 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
         "profile": prof,
         "industry": industry,
         "industry_source": industry_source,
-        # Prefer the content-derived location (address/footer/schema) over the URL-path guess.
-        "location": facts.location or prof.get("location"),
-        "services": facts.services,
+        "location": location,
+        "services": services,
+        "about": about,
         "competitors": facts.competitors,
+        "cms_type": facts.cms_type,
         "coverage": result["coverage"],
         "discovered": discovered,
         "source": result["source"],
@@ -614,6 +682,10 @@ async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     name = req.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="name is required")
+    # The SHARED client: on AEO__LLM__PROVIDER=cloud this is Gemini, so production gets
+    # cloud latency for free. If a slow LOCAL model is the bottleneck here, point the burst
+    # paths at a faster backend via AEO__LLM__BULK_PROVIDER rather than hardcoding a model
+    # (domain verification is already parallelized; the LLM call is the remaining cost).
     llm = get_client()
     if not llm.enabled:
         # No LLM → best-effort on-site signals (comparison / alternatives pages).
@@ -762,6 +834,120 @@ def record_override(req: OverrideRequest) -> dict[str, Any]:
         "refinement_id": refinement_id,
         "refinement_status": "proposed",  # never 'accepted' — human-gated by design
     }
+
+
+def _owner_dashboard(target: Any, *, dashboard: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The owner-facing dashboard payload: the raw roll-up enriched with a per-task
+    ``dev_brief`` (Developer Handoff) and the client's stable ``share_token`` (so the UI
+    can build the read-only /share/<token> link). ``dashboard`` reuses an already-fetched
+    roll-up (e.g. the one a status update returns) instead of re-reading it."""
+    from ..report.dev_brief import attach_dev_briefs
+    from ..storage.repos import milestones as milestones_repo
+
+    dash = dashboard if dashboard is not None else milestones_repo.get_dashboard(target.id)
+    attach_dev_briefs(dash, origin=target.domain, cms_type=target.cms_type)
+    dash["share_token"] = milestones_repo.ensure_share_token(target.id)
+    return dash
+
+
+@app.post("/api/milestones")
+def sync_milestones(req: MilestoneSyncRequest) -> dict[str, Any]:
+    """Persist a generated plan as the client's implementation milestones and return the
+    dashboard. Idempotent: re-syncing keeps existing per-task progress and any
+    crawl-verified status (stable task ids), only refreshing descriptions."""
+    from ..report.milestones import plan_to_milestones
+    from ..storage.repos import milestones as milestones_repo
+    from ..storage.repos import targets as targets_repo
+
+    domain = req.domain.strip()
+    if not domain:
+        raise HTTPException(status_code=422, detail="domain is required")
+    # Only persist a recognised platform — never overwrite a known CMS with 'unknown'
+    # on a later re-sync (upsert COALESCE-preserves the prior value when this is None).
+    cms = req.cms_type if req.cms_type in ("wordpress", "shopify") else None
+    target = targets_repo.upsert(req.name or domain, domain, "client", cms_type=cms)
+    milestones_repo.sync_plan(target.id, plan_to_milestones(req.plan))
+    return _owner_dashboard(target)
+
+
+@app.get("/api/milestones")
+def get_milestones(domain: str) -> dict[str, Any]:
+    """The implementation dashboard for a domain (milestones + tasks + progress). Returns
+    an empty dashboard when the domain has no plan persisted yet (not a 404), so the UI
+    can show the 'build your plan to start tracking' state."""
+    from ..storage.repos import targets as targets_repo
+
+    target = targets_repo.by_domain(domain)
+    if target is None:
+        return {"milestones": [], "progress": {"total": 0, "verified": 0, "in_progress": 0, "pct": 0}}
+    return _owner_dashboard(target)
+
+
+@app.post("/api/milestones/task")
+def update_milestone_task(req: MilestoneTaskUpdate) -> dict[str, Any]:
+    """Owner's manual status toggle for one task (Pending / In Progress / Verified).
+    Returns the recomputed dashboard."""
+    from ..storage.repos import milestones as milestones_repo
+    from ..storage.repos import targets as targets_repo
+
+    target = targets_repo.by_domain(req.domain)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"no client for domain {req.domain}")
+    dash = milestones_repo.set_task_status(target.id, req.task_key, req.status)
+    if dash is None:
+        raise HTTPException(status_code=404, detail=f"no task {req.task_key}")
+    return _owner_dashboard(target, dashboard=dash)
+
+
+@app.post("/api/milestones/verify")
+async def verify_milestones(req: MilestoneVerifyRequest) -> dict[str, Any]:
+    """Run the verification crawl now ('Check my site') — discover the live site, detect
+    which pending milestone artifacts are now present, auto-verify them, and return the
+    refreshed dashboard + a summary of what flipped. Needs network + a live DB."""
+    from ..crawl.discovery import discover
+    from ..pipeline.milestone_audit import verify_client_milestones
+    from ..storage.repos import targets as targets_repo
+
+    target = targets_repo.by_domain(req.domain)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"no client for domain {req.domain}")
+    discovery = await discover(req.domain)
+    summary = await verify_client_milestones(
+        target.id, req.domain, discovered_slugs=[d.url for d in discovery.urls],
+    )
+    return {"summary": summary, "dashboard": _owner_dashboard(target)}
+
+
+@app.post("/api/share/rotate")
+def rotate_share(req: ShareRotateRequest) -> dict[str, Any]:
+    """Revoke the client's current Developer Handoff link and issue a fresh one (owner
+    action — AUTHENTICATED; the guard only exempts the read-only GET under /api/share/).
+    The old /share/<token> link stops resolving immediately. Returns the new token so the
+    UI can rebuild every handoff link/textarea optimistically."""
+    from ..storage.repos import milestones as milestones_repo
+    from ..storage.repos import targets as targets_repo
+
+    target = targets_repo.by_domain(req.domain)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"no client for domain {req.domain}")
+    return {"share_token": milestones_repo.rotate_share_token(target.id)}
+
+
+@app.get("/api/share/{token}")
+def shared_plan(token: str) -> dict[str, Any]:
+    """Read-only, UNAUTHENTICATED view of a client's implementation plan — the Developer
+    Handoff link. The share token in the path is the only credential (see require_api_key's
+    /api/share/ exemption). Returns the dashboard (with per-task dev briefs) plus the
+    business name/domain for the page header. 404 if the token is unknown or revoked."""
+    from ..report.dev_brief import attach_dev_briefs
+    from ..storage.repos import milestones as milestones_repo
+
+    client = milestones_repo.client_for_token(token)
+    if client is None:
+        raise HTTPException(status_code=404, detail="this share link is invalid or has been revoked")
+    dash = milestones_repo.get_dashboard(client["id"])
+    attach_dev_briefs(dash, origin=client["domain"], cms_type=client.get("cms_type"))
+    return {"business_name": client["name"], "domain": client["domain"], **dash}
 
 
 @app.get("/api/metrics")

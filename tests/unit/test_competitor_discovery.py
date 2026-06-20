@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 from aeo.reference.competitor_discovery import _discovery_prompt, discover_competitors
 
 
@@ -93,3 +96,41 @@ def test_strict_pass_wins_without_relaxing():
     assert [c.name for c in result.verified] == ["Delta"]
     assert result.relaxed is False
     assert len(llm.prompts) == 1  # stopped at the strict pass, no wasted calls
+
+
+def test_ladder_stops_at_first_verified_pass_never_fires_four_calls():
+    # The strict pass already verifies a peer → exactly ONE llm.generate_json call, even
+    # though four relaxation rungs are available. Guards against the slow 4×-LLM walk.
+    llm = _FakeLLM([(lambda p: True, [_comp(f"C{i}", f"c{i}.com") for i in range(5)])])
+    result = discover_competitors(
+        "Acme", "acme.com", topic="Healthcare", location="Austin, TX",
+        count=5, llm=llm, head_check=lambda _d: True,
+    )
+    assert len(result.verified) == 5
+    assert len(llm.prompts) == 1  # never walked the rest of the ladder
+
+
+def test_domain_verification_runs_concurrently():
+    # Inject a HeadCheck that records peak concurrency: a sequential loop would never see
+    # more than one probe in flight; the parallel pool should overlap them.
+    comps = [_comp(f"C{i}", f"c{i}.com") for i in range(5)]
+    llm = _FakeLLM([(lambda p: True, comps)])
+
+    state = {"now": 0, "max": 0}
+    lock = threading.Lock()
+
+    def slow_check(domain: str) -> bool:
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        time.sleep(0.05)  # hold the slot so overlapping probes are observable
+        with lock:
+            state["now"] -= 1
+        return True
+
+    result = discover_competitors(
+        "Acme", "acme.com", topic="Healthcare", location="Austin, TX",
+        count=5, llm=llm, head_check=slow_check,
+    )
+    assert len(result.verified) == 5
+    assert state["max"] >= 2  # probes overlapped — not verified one-at-a-time

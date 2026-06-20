@@ -26,6 +26,7 @@ import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanize
 import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/score";
 import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
 import { ArrowRight, Check, Sparkle } from "./ui/icons";
+import { MilestoneDashboard } from "./MilestoneDashboard";
 
 const EFFORT_PILL: Record<string, string> = {
   low: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
@@ -165,6 +166,7 @@ function VerifiedLive({ verified }: { verified: VerifiedOutcome[] }) {
 
 export function ResultsView({
   businessName,
+  domain,
   profile,
   plan,
   auditJob,
@@ -172,6 +174,7 @@ export function ResultsView({
   delivLoading,
   delivError,
   aiPersonalization,
+  cmsType,
   onGenerateDeliverables,
   onPersonalize,
   personalizing,
@@ -181,6 +184,7 @@ export function ResultsView({
   onEdit,
 }: {
   businessName: string;
+  domain?: string;
   profile: SiteProfile | null;
   plan: BriefPlan | null;
   auditJob: AuditJob | null;
@@ -188,6 +192,8 @@ export function ResultsView({
   delivLoading: boolean;
   delivError: string | null;
   aiPersonalization: boolean;
+  // Detected CMS, threaded down to the milestone dashboard's "I'll do it myself" steps.
+  cmsType?: string | null;
   onGenerateDeliverables: () => void;
   onPersonalize: () => void;
   personalizing: boolean;
@@ -283,6 +289,10 @@ export function ResultsView({
           <PlanPanel
             deliverables={deliverables}
             loading={delivLoading}
+            slowMode={aiPersonalization}
+            domain={domain?.trim() || undefined}
+            businessName={businessName}
+            cmsType={cmsType}
             error={delivError}
             storageKey={`aeo-plan:${businessName.toLowerCase()}`}
             onGenerate={onGenerateDeliverables}
@@ -463,6 +473,140 @@ export function AnalysisProgress({ job, onCancel }: { job: AuditJob; onCancel?: 
         The thorough review usually takes around 10 minutes — findings appear above as they come in. You
         can leave this tab open.
       </p>
+    </div>
+  );
+}
+
+// ── prefill / profile crawl progress (the fast "take a look" wait) ───────────────
+
+// The named sub-steps the /api/profile round actually performs (homepage crawl +
+// Wikidata industry/HQ resolve + on-site competitor mining + services extraction). The
+// endpoint is a single request with no server stream, so — like BuildProgress — we drive
+// an honest, staged client-side indicator that the parent unmounts the instant the real
+// profile lands (so it never hangs near the end).
+const PREFILL_STEPS = [
+  "Crawling your homepage",
+  "Resolving your industry",
+  "Finding competitors",
+  "Reading your services",
+] as const;
+
+/** A lightweight, AnalysisProgress-styled indicator for the seconds-long prefill crawl —
+ *  a determinate bar plus a checked-off step list, so the wait reads as motion toward a
+ *  prefilled "About you" rather than an open-ended spinner. Reuses the deep-audit amber
+ *  visual language for consistency.
+ *
+ *  The climb caps below 100 so it never falsely completes; when the real profile lands the
+ *  parent flips `done`, which snaps the bar to 100% with every step checked for a brief beat
+ *  before it unmounts — closure instead of a bar that vanishes at 92% (which reads as stuck
+ *  on any crawl slow enough to watch). */
+export function PrefillProgress({ done = false }: { done?: boolean }) {
+  const reduced = useReducedMotion();
+  const [stepIdx, setStepIdx] = useState(0);
+  const [pct, setPct] = useState(10);
+
+  // A steady climb capped below 100 so it always reads as motion and never falsely
+  // completes — `done` (set by the parent on completion) is what fills it to 100%. Gated on
+  // reduced-motion (a JS interval is still motion).
+  useEffect(() => {
+    if (reduced) return;
+    const ceiling = 92;
+    const climb = setInterval(() => setPct((p) => Math.min(ceiling, p + 3)), 200);
+    return () => clearInterval(climb);
+  }, [reduced]);
+
+  useEffect(() => {
+    if (reduced) return;
+    const rot = setInterval(
+      () => setStepIdx((i) => Math.min(i + 1, PREFILL_STEPS.length - 1)),
+      900,
+    );
+    return () => clearInterval(rot);
+  }, [reduced]);
+
+  const displayPct = done ? 100 : pct;
+  // On completion every step is checked; otherwise the spinner sits on the current one.
+  const reachedIdx = done ? PREFILL_STEPS.length : stepIdx;
+
+  // Reduced motion: a calm, static labelled bar — still not a naked spinner.
+  if (reduced) {
+    return (
+      <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-4 text-sm">
+        <p className="mb-2 font-medium text-amber-200">
+          {done ? "Got it — filling in your details…" : "Taking a look at your site…"}
+        </p>
+        <div
+          className="h-1.5 overflow-hidden rounded-full bg-amber-500/15"
+          role="progressbar"
+          aria-valuenow={done ? 100 : undefined}
+          aria-valuetext={done ? "Done" : "Reviewing your homepage"}
+          aria-label="Prefill progress"
+        >
+          <div
+            className="h-full rounded-full bg-amber-400/80 transition-[width] duration-300"
+            style={{ width: done ? "100%" : "33%" }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  const rounded = Math.round(displayPct);
+  return (
+    <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-4 text-sm">
+      <div className="flex items-center gap-2.5 text-amber-200">
+        {done ? (
+          <span className="flex h-2.5 w-2.5 items-center justify-center rounded-full bg-emerald-500 text-white">
+            <Check width={8} height={8} />
+          </span>
+        ) : (
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
+          </span>
+        )}
+        <span className="font-medium">
+          {done ? "Got it — filling in your details…" : "Taking a quick look at your site…"}
+        </span>
+      </div>
+
+      <div
+        className="mt-3 h-1.5 overflow-hidden rounded-full bg-amber-500/15"
+        role="progressbar"
+        aria-valuenow={rounded}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-busy={!done}
+        aria-label="Prefill progress"
+      >
+        <div
+          className="h-full rounded-full bg-amber-400/80 transition-[width] duration-500 ease-out"
+          style={{ width: `${displayPct}%` }}
+        />
+      </div>
+
+      <ol className="mt-3.5 space-y-2">
+        {PREFILL_STEPS.map((label, i) => {
+          const isDone = i < reachedIdx;
+          const isCurrent = !done && i === reachedIdx;
+          return (
+            <li key={label} className="flex items-center gap-2.5">
+              {isDone ? (
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white">
+                  <Check width={10} height={10} />
+                </span>
+              ) : isCurrent ? (
+                <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-amber-500/40 border-t-amber-400" />
+              ) : (
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                  <span className="h-1.5 w-1.5 rounded-full bg-ink/20" />
+                </span>
+              )}
+              <span className={isDone || isCurrent ? "text-ink" : "text-ink-300"}>{label}</span>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }
@@ -1425,6 +1569,10 @@ function BuildProgress({ slowMode }: { slowMode: boolean }) {
 function PlanPanel({
   deliverables,
   loading,
+  slowMode,
+  domain,
+  businessName,
+  cmsType,
   error,
   storageKey,
   onGenerate,
@@ -1437,6 +1585,10 @@ function PlanPanel({
 }: {
   deliverables: DeliverablesResponse | null;
   loading: boolean;
+  slowMode: boolean;
+  domain?: string;
+  businessName: string;
+  cmsType?: string | null;
   error: string | null;
   storageKey: string;
   onGenerate: () => void;
@@ -1488,11 +1640,18 @@ function PlanPanel({
     );
   }
 
-  const plan = deliverables.plan;
+  const hasPlan = deliverables.plan && deliverables.plan.total > 0;
   return (
     <div>
-      {plan && plan.total > 0 ? (
-        <PhasedPlanView plan={plan} storageKey={storageKey} />
+      {hasPlan && deliverables.plan ? (
+        // With a real site, the plan becomes a persisted, server-tracked roadmap that the
+        // weekly crawl auto-verifies. Without one (brief-only flow), fall back to the
+        // local, offline checklist so the experience still works with no DB/site.
+        domain ? (
+          <MilestoneDashboard domain={domain} plan={deliverables.plan} businessName={businessName} cmsType={cmsType} />
+        ) : (
+          <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} />
+        )
       ) : (
         <div className="rounded-xl border border-dashed border-ink/15 p-8 text-center">
           <h3 className="text-base font-semibold">Your plan is ready</h3>

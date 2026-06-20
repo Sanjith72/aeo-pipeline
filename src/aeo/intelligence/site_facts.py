@@ -48,6 +48,25 @@ _CITY_ST_ZIP = re.compile(
 # Comparison/alternative signals that name a competitor on the site's own pages.
 _VS_RE = re.compile(r"(?:^|[/\s\-_])(?:vs\.?|versus)[/\s\-_]+([A-Za-z0-9][A-Za-z0-9.\-_& ]{1,40})", re.I)
 _ALT_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9.\-_& ]{1,40})[\s\-_]+alternatives?\b", re.I)
+# A page is a genuine comparison/alternatives SOURCE only when its own URL PATH says so.
+# Scanning every page's <title> for "vs" is exactly what produced phantom competitors:
+# a homepage titled "Buy vs Rent Calculator | XYZ Real Estate" is NOT a comparison page,
+# so we gate on the URL slug (``/compare``, ``/x-vs-y``, ``/acme-alternative``) and only
+# read a title when the URL already proved the page is about a comparison.
+_COMPARE_PATH_RE = re.compile(
+    r"(?:^|[/\-_])(?:compare|comparison|alternatives?|versus|vs)(?:[/\-_]|$)", re.I
+)
+# Generic, non-brand words the loose vs/alternative regexes sweep up from marketing copy.
+# A real competitor is a proper name — never one of these, and never a phrase made
+# entirely of them ("Real Estate", "Buy Calculator").
+_COMPETITOR_STOPWORDS = frozenset({
+    "buy", "rent", "sell", "lease", "own", "owning", "buying", "renting", "leasing",
+    "selling", "real", "estate", "real estate", "calculator", "mortgage", "loan",
+    "home", "homes", "house", "houses", "price", "prices", "pricing", "cost", "costs",
+    "free", "online", "best", "top", "new", "old", "more", "other", "others", "the",
+    "our", "your", "us", "you", "them", "competitor", "competitors", "alternative",
+    "alternatives", "comparison", "compare", "review", "reviews", "guide", "vs", "versus",
+})
 
 # A section/menu label that GROUPS the specific offerings beneath it ("Our Services" →
 # the dropdown items or sub-headings that follow). Matched on the whole (whitespace-
@@ -72,6 +91,50 @@ _SERVICE_STOPWORDS = frozenset({
 _MAX_SERVICES = 8
 _MAX_COMPETITORS = 6
 
+# Headings that introduce SERVED-vertical copy ("Industries we serve", "Our customers",
+# "Case studies", "Solutions for ...") — i.e. the company's *customers'* verticals, not its
+# own. Matching industry keywords inside these sections is exactly why a payments company
+# read as "Healthcare". The industry classifier reads the site's self-description and skips
+# any hero heading that matches this.
+_SERVED_VERTICAL_RE = re.compile(
+    r"\b(industr(?:y|ies)|who\s+we\s+(?:serve|help|work\s+with)|customers?|clients?|"
+    r"use\s+cases?|case\s+stud(?:y|ies)|trusted\s+by|solutions?\s+for|by\s+industry|"
+    r"sectors?|verticals?)\b",
+    re.I,
+)
+# How many leading headings count as "the hero" — enough for an H1 + a tagline, not the
+# whole page (which would drag body sections back in).
+_HERO_HEADING_LIMIT = 3
+
+# CMS fingerprints, checked against the raw page HTML (most-specific first). The detected
+# platform drives the "I'll do it myself" instructions — WordPress and Shopify need very
+# different paste-the-snippet steps, and "unknown" gets a CMS-agnostic fallback.
+CMS_WORDPRESS = "wordpress"
+CMS_SHOPIFY = "shopify"
+CMS_UNKNOWN = "unknown"
+_CMS_FOOTPRINTS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        CMS_WORDPRESS,
+        re.compile(
+            r"wp-content|wp-includes"
+            r"|<meta[^>]+name=[\"']generator[\"'][^>]+content=[\"']\s*wordpress",
+            re.I,
+        ),
+    ),
+    (CMS_SHOPIFY, re.compile(r"cdn\.shopify\.com|Shopify\.theme", re.I)),
+]
+
+
+def detect_cms(html_parts: list[str]) -> str:
+    """Best-effort CMS detection from raw page HTML — ``'wordpress'`` / ``'shopify'`` /
+    ``'unknown'``. Footprint-based (theme asset URLs, generator meta), so it stays cheap and
+    offline; an empty/unrecognised site yields ``'unknown'`` rather than guessing."""
+    blob = "\n".join(p for p in html_parts if p)
+    for name, rx in _CMS_FOOTPRINTS:
+        if rx.search(blob):
+            return name
+    return CMS_UNKNOWN
+
 
 @dataclass(slots=True)
 class SiteFacts:
@@ -81,6 +144,9 @@ class SiteFacts:
     # Crawl-derived specific vertical (Healthcare, Finance, …) — the fallback when
     # Wikidata has no entity for this site. None when the content gives no clear signal.
     industry: str | None = None
+    # Detected publishing platform ('wordpress' | 'shopify' | 'unknown') — drives the
+    # CMS-specific copy-paste instructions in the implementation dashboard.
+    cms_type: str = CMS_UNKNOWN
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +154,7 @@ class SiteFacts:
             "services": self.services,
             "competitors": self.competitors,
             "industry": self.industry,
+            "cms_type": self.cms_type,
         }
 
 
@@ -263,6 +330,35 @@ def services_from_headings(docs: list[FetchedDoc]) -> list[str]:
     return out
 
 
+# Splits a description into clauses so the offer fallback grabs the first meaningful
+# phrase rather than a whole paragraph. Sentence punctuation + spaced dashes / pipes.
+_DESC_CLAUSE_SPLIT = re.compile(r"\s*[.;|·••–—\n]\s*|\s+-\s+")
+
+
+def offer_from_description(soup: Any) -> list[str]:
+    """Last-resort "what you offer" label when a site exposes no structured offerings,
+    no ``/services`` links, no service nav, and no service-section headings.
+
+    Coarse but honest: the first clause of the site's own meta/OpenGraph description (or
+    the ``<title>`` as a final floor), so the wizard's "What do you offer?" is never blank
+    after a successful crawl. The user refines a prefill far more readily than they invent
+    one from an empty box."""
+    text = ""
+    for attrs in ({"name": "description"}, {"property": "og:description"}, {"property": "og:title"}):
+        meta = soup.find("meta", attrs=attrs)
+        content = (meta.get("content") if meta else "") or ""
+        if content.strip():
+            text = content.strip()
+            break
+    if not text and soup.title:
+        text = soup.title.get_text(" ", strip=True)
+    if not text:
+        return []
+    clause = _DESC_CLAUSE_SPLIT.split(text)[0]
+    clause = re.sub(r"\s+", " ", clause).strip(" \t\n·|-—–»")[:60].strip(" \t\n·|-—–»")
+    return [clause] if clause and re.search(r"[A-Za-z]", clause) else []
+
+
 def _dedupe_keep_order(items: list[str], limit: int) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -281,10 +377,19 @@ def _competitor_name(raw: str) -> str | None:
     name = re.sub(r"[\-_]+", " ", raw).strip()
     name = re.sub(r"\s+", " ", name)
     # Drop trailing filler the regexes can sweep in ("acme pricing", "acme review").
-    name = re.sub(r"\b(pricing|review|reviews|comparison|features?|page)\b.*$", "", name, flags=re.I).strip()
+    name = re.sub(
+        r"\b(pricing|review|reviews|comparison|features?|page|calculator|alternatives?)\b.*$",
+        "", name, flags=re.I,
+    ).strip()
     if not name or len(name) < 2 or len(name) > 40:
         return None
-    if name.lower() in {"the", "our", "your", "best", "top", "other", "competitors", "us"}:
+    low = name.lower()
+    if low in _COMPETITOR_STOPWORDS:
+        return None
+    # Reject phrases built entirely from generic words — "Real Estate", "Buy Calculator",
+    # "Best Homes" are descriptions, not brands. A real competitor has at least one token
+    # that isn't a common marketing/category word.
+    if all(word.lower() in _COMPETITOR_STOPWORDS for word in name.split()):
         return None
     return name.title()
 
@@ -296,12 +401,25 @@ def competitors_from_docs(docs: list[FetchedDoc], own: str) -> list[dict[str, st
     found: list[str] = []
     for doc in docs:
         soup = parse(doc.html)
-        title = soup.title.get_text(" ", strip=True) if soup.title else ""
-        haystacks = [doc.url, title]
+        haystacks: list[str] = []
+        # Only mine THIS page's own url + title when the URL slug proves it's a comparison
+        # page. This is the fix for phantom competitors: a homepage whose title merely
+        # contains "vs" ("Buy vs Rent Calculator") is no longer treated as a versus page.
+        if _COMPARE_PATH_RE.search(doc.url):
+            haystacks.append(doc.url)
+            if soup.title:
+                haystacks.append(soup.title.get_text(" ", strip=True))
+        # Anchors are a signal only when the LINK ITSELF points at a comparison/alternatives
+        # slug (``/compare/acme``, ``/initech-alternative``) — the rival's name lives in the
+        # slug (and, for outbound links, the anchor text). A bare "vs" substring no longer
+        # qualifies a link.
         for a in soup.find_all("a", href=True):
             href = (a.get("href") or "")
-            if re.search(r"vs|versus|alternativ|compar", href, re.I):
-                haystacks.append(absolute(doc.url, href))
+            abs_href = absolute(doc.url, href)
+            if not _COMPARE_PATH_RE.search(href) and not _COMPARE_PATH_RE.search(abs_href):
+                continue
+            haystacks.append(abs_href)
+            if not same_site(abs_href, own):  # outbound rival link — its text names them
                 haystacks.append(a.get_text(" ", strip=True))
         for h in haystacks:
             if not h:
@@ -316,6 +434,37 @@ def competitors_from_docs(docs: list[FetchedDoc], own: str) -> list[dict[str, st
                     found.append(name)
     names = _dedupe_keep_order(found, _MAX_COMPETITORS)
     return [{"name": n, "domain": ""} for n in names]
+
+
+def self_description_text(soup: Any) -> str:
+    """The site's OWN self-description — ``<title>``, the meta description, OpenGraph
+    title/description/site-name, and the hero heading(s) — and deliberately NOT the page
+    body.
+
+    Industry is a PROVENANCE problem, not a confidence one: the body is where
+    "Industries we serve / Our customers / Case studies" copy lives, so matching vertical
+    keywords there misreads a payments company as "Healthcare" — a *strong* match on the
+    wrong text, which no confidence threshold would catch. Self-description text describes
+    the company itself, so it's the honest signal for the company's own vertical; a hero
+    heading that introduces a served-vertical section is skipped for the same reason."""
+    parts: list[str] = []
+    if soup.title:
+        parts.append(soup.title.get_text(" ", strip=True))
+    for attrs in (
+        {"name": "description"},
+        {"property": "og:title"},
+        {"property": "og:description"},
+        {"property": "og:site_name"},
+    ):
+        meta = soup.find("meta", attrs=attrs)
+        content = (meta.get("content") if meta else "") or ""
+        if content.strip():
+            parts.append(content.strip())
+    for h in soup.find_all(("h1", "h2"), limit=_HERO_HEADING_LIMIT):
+        label = re.sub(r"\s+", " ", h.get_text(" ", strip=True)).strip()
+        if label and not _SERVED_VERTICAL_RE.search(label):
+            parts.append(label)
+    return " \n ".join(p for p in parts if p)
 
 
 def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
@@ -348,8 +497,27 @@ def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
         _MAX_SERVICES,
     )
     competitors = competitors_from_docs(docs, own)
-    industry = classify_vertical(" ".join(text_parts), services=services)
-    return SiteFacts(location=location, services=services, competitors=competitors, industry=industry)
+    # Classify the company's OWN vertical from the HOMEPAGE self-description (title/meta/hero)
+    # ONLY — not the body, not the scraped services, and not key pages. Each of those carries
+    # served-vertical contamination: the body has "industries we serve" copy, services can be
+    # customer-segment links, and key pages (/solutions/restaurants, a wellness template
+    # gallery) are vertical-specific and name-drop verticals in their own titles. The
+    # homepage is where a company states what it IS. Abstain (None) when it's generic —
+    # empty beats confidently wrong (a marketing platform read as "Restaurants").
+    homepage_desc = self_description_text(parse(docs[0].html)) if docs else ""
+    industry = classify_vertical(homepage_desc)
+    # "What do you offer?" must never come back empty from a crawl that found a page.
+    # Tiered fallback: structured offerings (above) → first clause of the site's own
+    # description → the classified industry label. The user edits whichever lands.
+    if not services and docs:
+        services = offer_from_description(parse(docs[0].html))
+    if not services and industry:
+        services = [industry]
+    cms_type = detect_cms([d.html for d in docs])
+    return SiteFacts(
+        location=location, services=services, competitors=competitors,
+        industry=industry, cms_type=cms_type,
+    )
 
 
 def _url_views(urls: list[str]) -> list[Any]:

@@ -144,6 +144,16 @@ class RetentionCfg(BaseModel):
     enabled: bool = True
 
 
+class MilestonesCfg(BaseModel):
+    # Implementation Milestones: the "Final Plan" persisted per client + verified by the
+    # weekly crawl. When `verify_on_crawl` is on, the audit cycle re-scrapes the site and
+    # auto-flips any milestone task whose recommended artifact (a page slug / offering /
+    # heading) is now live to 'verified_completed'. Best-effort: a hiccup here never
+    # aborts the audit. Off → milestones still persist + track, but only the owner's
+    # manual toggles advance them.
+    verify_on_crawl: bool = True
+
+
 class IntakeCfg(BaseModel):
     # Intake intelligence (#3): branch on crawl quality so the URL can be the only
     # input. A site with fewer than `thin_site_min_pages` pages (or, when body text is
@@ -246,6 +256,7 @@ class Settings(BaseSettings):
     database: DatabaseCfg = DatabaseCfg()
     validation: ValidationCfg = ValidationCfg()
     retention: RetentionCfg = RetentionCfg()
+    milestones: MilestonesCfg = MilestonesCfg()
     intake: IntakeCfg = IntakeCfg()
     perplexity: PerplexityCfg = PerplexityCfg()
     scoring: ScoringCfg = ScoringCfg()

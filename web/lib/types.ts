@@ -125,6 +125,68 @@ export interface StructuredPlan {
   total: number;
 }
 
+// ── Implementation Milestones (persisted, per-site, auto-verified) ──────────────
+// The "Final Plan" turned into trackable state: aeo.storage.repos.milestones +
+// /api/milestones. Status advances either by the owner (manual) or by the weekly
+// verification crawl (crawl) detecting the recommended artifact live on the site.
+export type MilestoneStatus = "pending" | "in_progress" | "verified_completed";
+
+export interface MilestoneTask {
+  id: number;
+  task_key: string;
+  label: string;
+  action_required: string;
+  how_to: string;
+  verify_kind: "page" | "service" | "heading" | "manual";
+  verify_target: string | null;
+  status: MilestoneStatus;
+  status_source: "manual" | "crawl";
+  detected_at: string | null;
+  // Developer Handoff: a developer-ready technical brief (server-generated from the
+  // verify signal — JSON-LD snippet, exact heading tag, etc.). Present on owner + share views.
+  dev_brief?: string;
+  // "I'll do it myself": the strictly paste-able artifact (JSON-LD <script> or bare heading
+  // tag), or null for off-site tasks; plus the CMS-aware, numbered walkthrough.
+  raw_snippet?: string | null;
+  diy_steps?: string[];
+}
+
+export interface Milestone {
+  milestone_key: string;
+  title: string;
+  blurb: string;
+  status: MilestoneStatus;
+  position: number;
+  tasks: MilestoneTask[];
+}
+
+export interface MilestoneProgress {
+  total: number;
+  verified: number;
+  in_progress: number;
+  pct: number;
+}
+
+export interface MilestoneDashboard {
+  milestones: Milestone[];
+  progress: MilestoneProgress;
+  // The client's stable read-only share token (owner views only). The UI builds the
+  // Developer Handoff link as `${origin}/share/${share_token}`.
+  share_token?: string;
+}
+
+export interface MilestoneVerifyResult {
+  summary: { checked: number; newly_verified: number; verified_keys: string[] };
+  dashboard: MilestoneDashboard;
+}
+
+// The public, read-only payload behind /share/[token] (GET /api/share/{token}). No
+// share_token is echoed back — the viewer already holds it.
+export interface SharedPlanResponse extends MilestoneDashboard {
+  business_name: string;
+  domain: string;
+}
+
 // R2-5 — the plan's tasks clustered by difficulty/maturity grade (the Strategy tab).
 export interface StrategyGroup {
   grade: "foundation" | "growth" | "advanced" | string;
@@ -165,6 +227,12 @@ export interface ProfileResponse {
   // competitor signals (the wizard seeds these so the user edits instead of typing).
   services?: string[];
   competitors?: CompetitorSuggestion[];
+  // A one-line "about" blurb (Wikidata schema:description today; a crawl summary would win
+  // if available). Null when neither source has one.
+  about?: string | null;
+  // Detected publishing platform ('wordpress' | 'shopify' | 'unknown'). Threaded into the
+  // milestone sync so the dashboard's "I'll do it myself" steps match the platform.
+  cms_type?: string | null;
   // Where the resolved specific industry came from: "wikidata" | "crawl" | "model".
   industry_source?: string | null;
   // R2-2 cache age: when this domain's homepage was last crawled, so the UI can show

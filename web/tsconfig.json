@@ -17,5 +17,6 @@
     "paths": { "@/*": ["./*"] }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "//": "*.test.ts use explicit .ts import extensions for Node's built-in runner; excluded so tsc/Next don't type-check them.",
+  "exclude": ["node_modules", "**/*.test.ts"]
 }
