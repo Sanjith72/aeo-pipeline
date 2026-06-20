@@ -485,14 +485,19 @@ const PREFILL_STEPS = [
 /** A lightweight, AnalysisProgress-styled indicator for the seconds-long prefill crawl —
  *  a determinate bar plus a checked-off step list, so the wait reads as motion toward a
  *  prefilled "About you" rather than an open-ended spinner. Reuses the deep-audit amber
- *  visual language for consistency. */
-export function PrefillProgress() {
+ *  visual language for consistency.
+ *
+ *  The climb caps below 100 so it never falsely completes; when the real profile lands the
+ *  parent flips `done`, which snaps the bar to 100% with every step checked for a brief beat
+ *  before it unmounts — closure instead of a bar that vanishes at 92% (which reads as stuck
+ *  on any crawl slow enough to watch). */
+export function PrefillProgress({ done = false }: { done?: boolean }) {
   const reduced = useReducedMotion();
   const [stepIdx, setStepIdx] = useState(0);
   const [pct, setPct] = useState(10);
 
   // A steady climb capped below 100 so it always reads as motion and never falsely
-  // completes — the parent unmounts this the moment the profile resolves. Gated on
+  // completes — `done` (set by the parent on completion) is what fills it to 100%. Gated on
   // reduced-motion (a JS interval is still motion).
   useEffect(() => {
     if (reduced) return;
@@ -510,32 +515,50 @@ export function PrefillProgress() {
     return () => clearInterval(rot);
   }, [reduced]);
 
+  const displayPct = done ? 100 : pct;
+  // On completion every step is checked; otherwise the spinner sits on the current one.
+  const reachedIdx = done ? PREFILL_STEPS.length : stepIdx;
+
   // Reduced motion: a calm, static labelled bar — still not a naked spinner.
   if (reduced) {
     return (
       <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-4 text-sm">
-        <p className="mb-2 font-medium text-amber-200">Taking a look at your site…</p>
+        <p className="mb-2 font-medium text-amber-200">
+          {done ? "Got it — filling in your details…" : "Taking a look at your site…"}
+        </p>
         <div
           className="h-1.5 overflow-hidden rounded-full bg-amber-500/15"
           role="progressbar"
-          aria-valuetext="Reviewing your homepage"
+          aria-valuenow={done ? 100 : undefined}
+          aria-valuetext={done ? "Done" : "Reviewing your homepage"}
           aria-label="Prefill progress"
         >
-          <div className="h-full w-1/3 rounded-full bg-amber-400/80" />
+          <div
+            className="h-full rounded-full bg-amber-400/80 transition-[width] duration-300"
+            style={{ width: done ? "100%" : "33%" }}
+          />
         </div>
       </div>
     );
   }
 
-  const rounded = Math.round(pct);
+  const rounded = Math.round(displayPct);
   return (
     <div className="step-in rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-4 text-sm">
       <div className="flex items-center gap-2.5 text-amber-200">
-        <span className="relative flex h-2.5 w-2.5">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
-          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
+        {done ? (
+          <span className="flex h-2.5 w-2.5 items-center justify-center rounded-full bg-emerald-500 text-white">
+            <Check width={8} height={8} />
+          </span>
+        ) : (
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500" />
+          </span>
+        )}
+        <span className="font-medium">
+          {done ? "Got it — filling in your details…" : "Taking a quick look at your site…"}
         </span>
-        <span className="font-medium">Taking a quick look at your site…</span>
       </div>
 
       <div
@@ -544,19 +567,19 @@ export function PrefillProgress() {
         aria-valuenow={rounded}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-busy
+        aria-busy={!done}
         aria-label="Prefill progress"
       >
         <div
           className="h-full rounded-full bg-amber-400/80 transition-[width] duration-500 ease-out"
-          style={{ width: `${pct}%` }}
+          style={{ width: `${displayPct}%` }}
         />
       </div>
 
       <ol className="mt-3.5 space-y-2">
         {PREFILL_STEPS.map((label, i) => {
-          const isDone = i < stepIdx;
-          const isCurrent = i === stepIdx;
+          const isDone = i < reachedIdx;
+          const isCurrent = !done && i === reachedIdx;
           return (
             <li key={label} className="flex items-center gap-2.5">
               {isDone ? (

@@ -86,6 +86,9 @@ export default function Page() {
 
   // crawl-derived intake (#2/#3): the fast profile that runs when leaving step 0
   const [prefilling, setPrefilling] = useState(false);
+  // Flips true the moment the profile lands so PrefillProgress can snap to 100% for a beat
+  // before we advance to step 1 (closure instead of a bar vanishing mid-climb).
+  const [prefillDone, setPrefillDone] = useState(false);
   const [profileResult, setProfileResult] = useState<ProfileResponse | null>(null);
 
   // results
@@ -215,6 +218,7 @@ export default function Page() {
     }
     lastProfiledDomainRef.current = target;
     setPrefilling(true);
+    setPrefillDone(false);
     setError(null);
     try {
       const res = await api.profile({ domain: target, use_llm: useLlm });
@@ -233,6 +237,10 @@ export default function Page() {
         );
       }
       if (!name.trim()) setName(deriveName(domain));
+      // Snap the progress bar to 100% and let it read for a beat before advancing — closure
+      // rather than a bar that vanishes mid-climb.
+      setPrefillDone(true);
+      await new Promise((resolve) => setTimeout(resolve, 450));
     } catch (err) {
       // network failure only — let the user continue with manual entry
       setError(err instanceof Error ? err.message : String(err));
@@ -514,7 +522,7 @@ export default function Page() {
 
                       {/* The seconds-long prefill crawl: a per-section progress card so the
                           wait reads as motion toward a filled-in "About you", not a spinner. */}
-                      {prefilling && hasSite && <PrefillProgress />}
+                      {prefilling && hasSite && <PrefillProgress done={prefillDone} />}
                     </div>
                   )}
 
