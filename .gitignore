@@ -18,3 +18,9 @@ ops/data/
 .DS_Store
 .claude/
 .superpowers/
+
+# local tooling + scratch/test artifacts (not for the shared repo)
+.mcp.json
+/apple_report.pdf
+/apple-site-report.pdf
+/config/domains/apple.com.yaml
