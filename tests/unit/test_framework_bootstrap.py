@@ -131,6 +131,39 @@ def test_bootstrap_unknown_category_no_ceiling_seed():
     assert data["required_entities"] == []  # unknown vertical → no curated seed
 
 
+def test_resolve_framework_unconfigured_domain_bootstraps_not_seed():
+    # An unconfigured domain must get a generic/bootstrapped framework — NOT the shared
+    # cybersecurity seed (the bluewavemarine.in bug: cyber recs on a marine site).
+    from aeo.reference.framework_bootstrap import resolve_framework
+
+    fw = resolve_framework("bluewavemarine.in", llm=None)
+    slugs = {n.slug for n in fw.nodes}
+    assert "/attack-surface-management" not in slugs   # no seeded cyber nodes
+    assert "/what-is-ctem" not in slugs
+    assert {"/resources", "/faq", "/product"} <= slugs  # the universal generic skeleton
+    assert fw.topic == "Bluewavemarine"                 # derived from the domain
+
+
+def test_resolve_framework_uses_per_domain_file_when_present(tmp_path, monkeypatch):
+    # A per-domain framework file always wins over the bootstrap.
+    from aeo.reference.framework_bootstrap import resolve_framework
+
+    payload = {
+        "topic": "Payments", "required_entities": ["Stripe"],
+        "clusters": [], "standalone_nodes": [
+            {"slug": "/pricing", "title": "Pricing", "page_type": "product",
+             "intent": "commercial", "journey_stage": "decision"}],
+    }
+    monkeypatch.setattr(get_settings(), "config_dir", str(tmp_path))
+    fw_mod.load_framework.cache_clear()
+    try:
+        write_framework("stripe.com", bootstrap_framework("stripe.com", llm=FakeLLM(payload)))
+        fw = resolve_framework("stripe.com", llm=None)
+        assert fw.topic == "Payments"  # from the file, not generic-from-domain ("Stripe")
+    finally:
+        fw_mod.load_framework.cache_clear()
+
+
 def test_tailored_framework_loads_end_to_end(tmp_path, monkeypatch):
     payload = {
         "topic": "Payments",

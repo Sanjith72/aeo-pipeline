@@ -33,8 +33,7 @@ from pydantic import BaseModel, Field, field_validator
 from ..intelligence.brief import plan_from_brief
 from ..reference.business_input import BusinessInput
 from ..reference.competitor_patterns import CompetitorPatterns
-from ..reference.framework import Framework, build_framework, load_framework
-from ..reference.framework_bootstrap import bootstrap_framework, framework_file_path
+from ..reference.framework import Framework
 from ..reference.generator import generate_blueprint
 from ..report.packager import build_asset_bundle, checklist_for, plan_for
 from . import jobs as jobs_mod
@@ -384,13 +383,13 @@ def _framework_and_llm(brief: BusinessInput, use_llm: bool) -> tuple[Framework, 
     """A brief-tailored framework (curated file if present, else an in-memory bootstrap
     skeleton — LLM-tailored when enabled) + the resolved LLM client."""
     from ..nlp.llm import get_client
+    from ..reference.framework_bootstrap import resolve_framework
 
     llm = get_client() if use_llm else None
-    key = brief.key()
-    if framework_file_path(key).exists():
-        return load_framework(key), llm
-    data = bootstrap_framework(key, llm=llm, topic=brief.topic_hint(), category=brief.category)
-    return build_framework(data), llm
+    framework = resolve_framework(
+        brief.key(), llm=llm, topic=brief.topic_hint(), category=brief.category
+    )
+    return framework, llm
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
@@ -420,19 +419,12 @@ def plan(req: BriefRequest) -> dict[str, Any]:
 def blueprint(req: BlueprintRequest) -> dict[str, Any]:
     """Generate the ideal-site blueprint for a topic/domain (deterministic; LLM enriches)."""
     from ..nlp.llm import get_client
+    from ..reference.domain_config import normalize_domain
+    from ..reference.framework_bootstrap import resolve_framework
 
     llm = get_client() if req.use_llm else None
-    if req.domain:
-        from ..reference.domain_config import normalize_domain
-
-        key = normalize_domain(req.domain) or req.domain
-        framework = (
-            load_framework(key)
-            if framework_file_path(key).exists()
-            else build_framework(bootstrap_framework(key, llm=llm, topic=req.topic, category=req.category))
-        )
-    else:
-        framework = load_framework()
+    key = (normalize_domain(req.domain) or req.domain) if req.domain else None
+    framework = resolve_framework(key, llm=llm, topic=req.topic, category=req.category)
     bp = generate_blueprint(
         topic=req.topic or framework.topic, framework=framework,
         patterns=CompetitorPatterns(), llm=llm,

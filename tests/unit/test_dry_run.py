@@ -89,6 +89,20 @@ def test_unconfigured_domain_does_not_inherit_the_seed_industry(monkeypatch):
     assert industry not in ("Cybersecurity", "PEV")
 
 
+def test_unconfigured_domain_blueprint_is_not_the_cyber_seed(monkeypatch):
+    # The bluewavemarine.in regression: an unconfigured (non-cyber) site must be measured
+    # against a bootstrapped per-site framework, NOT the seeded cybersecurity blueprint —
+    # otherwise its analysis/coverage/roadmap recommend ASM/CTEM/KEV pages.
+    _patch_discovery(monkeypatch, [
+        "https://bluewavemarine.in/",
+        "https://bluewavemarine.in/about",
+    ])
+    result = asyncio.run(Orchestrator(llm=None).dry_run("bluewavemarine.in", pages=0))
+    assert result["topic"] == "Bluewavemarine"  # from the domain, not the "PEV" seed
+    missing = {m["slug"] for m in result["coverage"]["top_missing"]}
+    assert not any("ctem" in s or "attack-surface" in s or "epss" in s for s in missing)
+
+
 def test_dry_run_scores_pages_in_memory(monkeypatch):
     _patch_discovery(monkeypatch, ["https://securin.io/what-is-ctem"])
     html = (_FIX / "strong_page.html").read_text(encoding="utf-8")

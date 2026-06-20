@@ -28,7 +28,7 @@ from ..reference import Reference, load_reference
 from ..reference.blueprint import normalize_slug
 from ..reference.competitor_patterns import CompetitorPatterns, extract_patterns
 from ..reference.domain_config import load_domain_config, normalize_domain
-from ..reference.framework import load_framework
+from ..reference.framework_bootstrap import resolve_framework
 from ..reference.generator import generate_blueprint
 from ..settings import get_settings
 from ..storage.models import ExtractionBundle
@@ -75,7 +75,10 @@ def generate_and_pin_blueprint(
     if not cfg.enabled:
         return None
     dc = load_domain_config(domain) if domain else None
-    framework = load_framework(domain)  # per-domain override if config/domains/{domain}.framework.yaml exists
+    # Per-site framework: curated per-domain file if present, else a bootstrapped
+    # generic/LLM-tailored skeleton — never the shared cybersecurity seed for an
+    # unconfigured site.
+    framework = resolve_framework(domain, llm=llm, topic=topic or (dc.topic if dc else None))
     # The loaded framework is the topic authority (per-domain override wins); the
     # settings default is only a last resort when nothing more specific exists.
     topic = topic or (dc.topic if dc else None) or framework.topic or cfg.topic
