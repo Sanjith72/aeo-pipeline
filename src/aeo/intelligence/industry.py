@@ -125,19 +125,46 @@ def _registrable(domain: str) -> str:
     return host.removeprefix("www.")
 
 
+def _host_regex(reg_domain: str) -> str:
+    """A SPARQL-literal regex that matches a P856 official-website value ONLY when it is the
+    registrable domain's own root — ``^https?://(www.)?<host>/?$`` — case-insensitive.
+
+    This is deliberately anchored, not a substring ``CONTAINS``: matching the bare host as a
+    substring pulls in subsidiary URLs, longer paths, and coincidental matches (e.g.
+    ``ibm.com`` matched an unrelated SF "productivity software" item), and the parser then
+    faithfully returns the WRONG company's HQ/products. A wrong prefill is worse than none in
+    onboarding, since ``location`` flows into competitor discovery. Anchoring rejects all of
+    those in one move (and narrows what the engine scans).
+
+    Dots are escaped for the regex AND doubled for the SPARQL string literal (so SPARQL
+    unescapes ``\\\\.`` → ``\\.`` → a literal dot). The host is sanitised first so it can't
+    break out of the literal or inject regex metacharacters."""
+    host = reg_domain.replace("\\", "").replace('"', "")
+    host_pat = host.replace(".", r"\\.")  # each "." → SPARQL-literal \\.  → regex \.
+    return rf"^https?://(www\\.)?{host_pat}/?$"
+
+
 def _sparql_query(reg_domain: str) -> str:
-    # Match the item whose official website (P856) contains this domain, then pull its
-    # industry (P452) and instance-of (P31) English labels — plus the richer "About you"
-    # signals: headquarters (P159) and its country (P17), products/materials produced
-    # (P1056), and the item's English schema:description one-liner. The label SERVICE
-    # auto-derives ?<var>Label for every selected entity variable; ?description is a plain
-    # literal (a language-tagged string), so it's filtered to English directly.
-    safe = reg_domain.replace('"', "")
+    # Match the item whose official website (P856) IS this exact registrable domain (anchored
+    # host regex — see _host_regex), then pull its industry (P452) and instance-of (P31)
+    # English labels plus the richer "About you" signals: headquarters (P159) and its country
+    # (P17), products/materials produced (P1056), and the item's English schema:description
+    # one-liner. The label SERVICE auto-derives ?<var>Label for every selected entity
+    # variable; ?description is a plain literal (a language-tagged string), filtered to English.
+    pattern = _host_regex(reg_domain)
+    # Several entities can legitimately share one official website (a global parent plus its
+    # national subsidiaries — e.g. IBM and IBM Deutschland both point at ibm.com). Pick the
+    # SINGLE most-notable match (most Wikipedia sitelinks) in an inner subquery, so HQ /
+    # products / description come from the parent company, not whichever subsidiary sorted
+    # first. With a lone small-business entity the ORDER BY/LIMIT 1 simply returns it.
     return (
         "SELECT ?industryLabel ?instanceLabel ?hqLabel ?countryLabel ?productLabel "
         "?description WHERE { "
+        "{ SELECT ?item WHERE { "
         "?item wdt:P856 ?website . "
-        f'FILTER(CONTAINS(LCASE(STR(?website)), "{safe}")) . '
+        f'FILTER(REGEX(STR(?website), "{pattern}", "i")) . '
+        "?item wikibase:sitelinks ?sl . "
+        "} ORDER BY DESC(?sl) LIMIT 1 } "
         "OPTIONAL { ?item wdt:P452 ?industry . } "
         "OPTIONAL { ?item wdt:P31 ?instance . } "
         "OPTIONAL { ?item wdt:P159 ?hq . OPTIONAL { ?hq wdt:P17 ?country . } } "
@@ -246,6 +273,13 @@ def parse_sparql_profile(data: dict | None) -> WikidataProfile:
     return profile
 
 
+# WDQS is genuinely slow for these scans (measured ~1–15s, occasionally 30s+). The lookup
+# runs CONCURRENTLY with the homepage crawl in /api/profile (itself ~10s+), so a timeout in
+# that range is nearly free — it rarely extends the total wait beyond the crawl — while a
+# tighter 10s cap lost too many otherwise-valid responses.
+_SPARQL_TIMEOUT = 12.0
+
+
 async def _default_sparql_fetch(query: str) -> dict | None:
     import httpx
 
@@ -261,7 +295,8 @@ async def _default_sparql_fetch(query: str) -> dict | None:
     # request otherwise hangs ~20s+ and trips the timeout, silently emptying every profile.
     try:
         async with httpx.AsyncClient(
-            timeout=10.0, follow_redirects=True, headers=headers, transport=async_transport()
+            timeout=_SPARQL_TIMEOUT, follow_redirects=True, headers=headers,
+            transport=async_transport(),
         ) as client:
             resp = await client.get(
                 "https://query.wikidata.org/sparql", params={"query": query, "format": "json"}

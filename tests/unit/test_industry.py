@@ -62,6 +62,22 @@ def _cleveland_clinic_sparql() -> dict:
     }
 
 
+def test_sparql_query_uses_anchored_host_regex_not_substring():
+    from aeo.intelligence.industry import _host_regex, _sparql_query
+
+    q = _sparql_query("ibm.com")
+    # Anchored REGEX on the official-website value, not a free CONTAINS substring scan.
+    assert "REGEX(STR(?website)" in q
+    assert "CONTAINS" not in q
+    # The pattern anchors start/end and allows an optional www, with the dot escaped for
+    # the SPARQL string literal (\\. → regex \.), so it matches only the domain's own root.
+    pat = _host_regex("ibm.com")
+    assert pat == r"^https?://(www\\.)?ibm\\.com/?$"
+    # A coincidental-substring host (e.g. "notibm.com") yields a DIFFERENT anchored pattern,
+    # so the engine can't conflate them the way CONTAINS did.
+    assert _host_regex("notibm.com") != pat
+
+
 def test_parse_sparql_industry_resolves_healthcare():
     assert parse_sparql_industry(_cleveland_clinic_sparql()) == "Healthcare"
 
@@ -82,8 +98,11 @@ def test_resolve_wikidata_industry_with_injected_fetch():
 
     out = asyncio.run(resolve_wikidata_industry("https://www.clevelandclinic.org/", fetch=fake_fetch))
     assert out == "Healthcare"
-    # the registrable domain (no scheme/www) is what we match Wikidata's P856 on
-    assert "clevelandclinic.org" in captured["query"]
+    # The registrable host is matched via an ANCHORED regex on P856 — never a substring
+    # CONTAINS (which pulled wrong/subsidiary entities). The host root must still be present.
+    assert "REGEX" in captured["query"]
+    assert "CONTAINS" not in captured["query"]
+    assert "clevelandclinic" in captured["query"]
 
 
 def test_resolve_wikidata_industry_no_match_returns_none():
