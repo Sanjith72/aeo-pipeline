@@ -227,6 +227,9 @@ export interface ProfileResponse {
   // competitor signals (the wizard seeds these so the user edits instead of typing).
   services?: string[];
   competitors?: CompetitorSuggestion[];
+  // A one-line "about" blurb (Wikidata schema:description today; a crawl summary would win
+  // if available). Null when neither source has one.
+  about?: string | null;
   // Detected publishing platform ('wordpress' | 'shopify' | 'unknown'). Threaded into the
   // milestone sync so the dashboard's "I'll do it myself" steps match the platform.
   cms_type?: string | null;

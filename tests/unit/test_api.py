@@ -390,7 +390,10 @@ def test_profile_returns_inferred_industry_and_location(monkeypatch) -> None:
 
 def _stub_site_facts(monkeypatch, *, location=None, services=None, competitors=None, industry=None,
                      wikidata=None, cms_type="unknown") -> None:
-    """Stop /api/profile's homepage crawl AND Wikidata lookup from hitting the network."""
+    """Stop /api/profile's homepage crawl AND Wikidata lookup from hitting the network.
+    ``wikidata`` may be a bare industry string (shorthand for a Wikidata vertical) or a
+    full :class:`WikidataProfile` (to exercise HQ/products/description fall-through)."""
+    from aeo.intelligence.industry import WikidataProfile
     from aeo.intelligence.site_facts import SiteFacts
 
     async def fake_gather(domain, **_):
@@ -399,11 +402,13 @@ def _stub_site_facts(monkeypatch, *, location=None, services=None, competitors=N
             industry=industry, cms_type=cms_type,
         )
 
+    wiki = WikidataProfile(industry=wikidata) if isinstance(wikidata, str) else (wikidata or WikidataProfile())
+
     async def fake_wikidata(domain, **_):
-        return wikidata
+        return wiki
 
     monkeypatch.setattr("aeo.intelligence.site_facts.gather_site_facts", fake_gather)
-    monkeypatch.setattr("aeo.intelligence.industry.resolve_wikidata_industry", fake_wikidata)
+    monkeypatch.setattr("aeo.intelligence.industry.resolve_wikidata_profile", fake_wikidata)
 
 
 def test_profile_includes_crawled_services_and_competitors(monkeypatch) -> None:
@@ -451,6 +456,61 @@ def test_profile_industry_prefers_wikidata_vertical(monkeypatch) -> None:
     body = client.post("/api/profile", json={"domain": "clevelandclinic.org"}).json()
     assert body["industry"] == "Healthcare"
     assert body["industry_source"] == "wikidata"
+
+
+def test_profile_enriches_location_services_about_from_wikidata(monkeypatch) -> None:
+    # A non-curated site whose crawl found no address/offerings still prefills from
+    # Wikidata's HQ (P159 + P17 country), products produced (P1056), and description.
+    from aeo.intelligence.industry import WikidataProfile
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True, draft_samples=True, **_):
+        return {
+            "profile": {"industry": "Enterprise", "location": None, "scenario": "small_site"},
+            "coverage": {"pct": 50.0}, "discovered": 18, "source": "sitemap",
+        }
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    # Crawl finds nothing usable for location/services; Wikidata supplies them.
+    _stub_site_facts(
+        monkeypatch,
+        wikidata=WikidataProfile(
+            industry="Software / SaaS",
+            location="London",
+            country="United Kingdom",
+            offerings=["Endpoint Protection", "Threat Intelligence"],
+            description="British cybersecurity software company",
+        ),
+    )
+    body = client.post("/api/profile", json={"domain": "sophos.com"}).json()
+    assert body["industry"] == "Software / SaaS"
+    assert body["location"] == "London, United Kingdom"  # HQ + country, since crawl had none
+    assert body["services"] == ["Endpoint Protection", "Threat Intelligence"]
+    assert body["about"] == "British cybersecurity software company"
+
+
+def test_profile_crawl_location_services_win_over_wikidata(monkeypatch) -> None:
+    # When the crawl DID find an address/offerings, those (more precise) win; Wikidata is
+    # only the fallback.
+    from aeo.intelligence.industry import WikidataProfile
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True, draft_samples=True, **_):
+        return {
+            "profile": {"industry": "Enterprise", "location": None, "scenario": "small_site"},
+            "coverage": {"pct": 50.0}, "discovered": 18, "source": "sitemap",
+        }
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    _stub_site_facts(
+        monkeypatch,
+        location="Austin, TX",
+        services=["On-site Crawl Service"],
+        wikidata=WikidataProfile(location="London", country="United Kingdom", offerings=["Wikidata Offering"]),
+    )
+    body = client.post("/api/profile", json={"domain": "acme.com"}).json()
+    assert body["location"] == "Austin, TX"
+    assert body["services"] == ["On-site Crawl Service"]
 
 
 def test_profile_industry_falls_back_to_crawl_then_model(monkeypatch) -> None:

@@ -12,7 +12,9 @@ from aeo.intelligence.industry import (
     map_wikidata_labels,
     match_vertical,
     parse_sparql_industry,
+    parse_sparql_profile,
     resolve_wikidata_industry,
+    resolve_wikidata_profile,
 )
 
 
@@ -106,6 +108,118 @@ def test_wikidata_lookups_are_cached_per_registrable_domain(monkeypatch):
     a = asyncio.run(industry.resolve_wikidata_industry("clevelandclinic.org"))
     b = asyncio.run(industry.resolve_wikidata_industry("https://www.clevelandclinic.org/"))
     assert a == b == "Healthcare"
+    assert calls["n"] == 1  # second call (same registrable domain) served from cache
+    industry.clear_wikidata_cache()
+
+
+# ── richer "About you" profile (HQ / products / description) ─────────────────────
+
+
+def _acme_profile_sparql() -> dict:
+    # Shape mirrors WDQS JSON for a company with HQ (P159) + its country (P17), two
+    # products produced (P1056), and an English schema:description. Industry P452 is a
+    # generic class but P31 carries the specific vertical (software company).
+    return {
+        "results": {
+            "bindings": [
+                {
+                    "industryLabel": {"value": "business enterprise"},
+                    "instanceLabel": {"value": "software company"},
+                    "hqLabel": {"value": "London"},
+                    "countryLabel": {"value": "United Kingdom"},
+                    "productLabel": {"value": "Endpoint Protection"},
+                    "description": {"value": "British cybersecurity software company"},
+                },
+                {"productLabel": {"value": "Threat Intelligence"}},
+                {"productLabel": {"value": "Endpoint Protection"}},  # dupe → deduped
+            ]
+        }
+    }
+
+
+def test_parse_sparql_profile_pulls_hq_products_description():
+    p = parse_sparql_profile(_acme_profile_sparql())
+    assert p.industry == "Software / SaaS"  # falls through generic P452 to specific P31
+    assert p.location == "London"
+    assert p.country == "United Kingdom"
+    assert p.offerings == ["Endpoint Protection", "Threat Intelligence"]  # deduped, in order
+    assert p.description == "British cybersecurity software company"
+    assert p.has_signal() is True
+
+
+def test_parse_sparql_profile_generic_only_industry_falls_through():
+    # Generic-only P452/P31 → industry None, but HQ/description still parse independently.
+    data = {
+        "results": {
+            "bindings": [
+                {
+                    "instanceLabel": {"value": "business enterprise"},
+                    "hqLabel": {"value": "Berlin"},
+                    "description": {"value": "A privately held company"},
+                }
+            ]
+        }
+    }
+    p = parse_sparql_profile(data)
+    assert p.industry is None
+    assert p.location == "Berlin"
+    assert p.description == "A privately held company"
+    assert p.offerings == []
+
+
+def test_parse_sparql_profile_empty_is_blank_no_signal():
+    for data in (None, {}, {"results": {"bindings": []}}):
+        p = parse_sparql_profile(data)
+        assert p.industry is None and p.location is None and p.offerings == []
+        assert p.has_signal() is False
+
+
+def test_resolve_wikidata_profile_with_injected_fetch():
+    captured = {}
+
+    async def fake_fetch(query: str):
+        captured["query"] = query
+        return _acme_profile_sparql()
+
+    out = asyncio.run(resolve_wikidata_profile("https://www.acme.io/", fetch=fake_fetch))
+    assert out.industry == "Software / SaaS"
+    assert out.location == "London"
+    assert out.offerings == ["Endpoint Protection", "Threat Intelligence"]
+    # the richer query asks for HQ / products / description on top of industry/instance
+    assert "P159" in captured["query"] and "P1056" in captured["query"]
+    assert "schema:description" in captured["query"]
+
+
+def test_resolve_wikidata_profile_no_entity_is_blank():
+    async def empty_fetch(query: str):
+        return {"results": {"bindings": []}}
+
+    out = asyncio.run(resolve_wikidata_profile("unknown-biz.example", fetch=empty_fetch))
+    assert out.has_signal() is False
+
+
+def test_resolve_wikidata_profile_network_failure_is_blank():
+    async def dead_fetch(query: str):
+        return None
+
+    out = asyncio.run(resolve_wikidata_profile("acme.io", fetch=dead_fetch, use_cache=False))
+    assert out.has_signal() is False
+
+
+def test_resolve_wikidata_profile_cached_per_registrable_domain(monkeypatch):
+    from aeo.intelligence import industry
+
+    industry.clear_wikidata_cache()
+    calls = {"n": 0}
+
+    async def counting_fetch(query: str):
+        calls["n"] += 1
+        return _acme_profile_sparql()
+
+    monkeypatch.setattr(industry, "_default_sparql_fetch", counting_fetch)
+    a = asyncio.run(industry.resolve_wikidata_profile("acme.io"))
+    b = asyncio.run(industry.resolve_wikidata_profile("https://www.acme.io/"))
+    assert a.location == b.location == "London"
     assert calls["n"] == 1  # second call (same registrable domain) served from cache
     industry.clear_wikidata_cache()
 

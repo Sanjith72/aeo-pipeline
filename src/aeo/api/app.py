@@ -501,17 +501,18 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     import asyncio
 
     from ..intelligence import DEAD, classify_intake
-    from ..intelligence.industry import resolve_wikidata_industry
+    from ..intelligence.industry import WikidataProfile, resolve_wikidata_profile
     from ..intelligence.site_facts import SiteFacts, gather_site_facts
     from ..pipeline import Orchestrator
     from ..settings import get_settings
 
     cache = _cache_age(req.domain)
     # Crawl the homepage + key pages for Location / what-you-offer / on-site competitors,
-    # and resolve a SPECIFIC industry vertical from Wikidata — all concurrently with the
-    # structural dry-run profile so the wizard prefills in one round.
+    # and resolve the richer "About you" facts from Wikidata (specific industry vertical +
+    # HQ location/country + products produced + a one-line description) — all concurrently
+    # with the structural dry-run profile so the wizard prefills in one round.
     facts_task = asyncio.create_task(gather_site_facts(req.domain))
-    wikidata_task = asyncio.create_task(resolve_wikidata_industry(req.domain))
+    wikidata_task = asyncio.create_task(resolve_wikidata_profile(req.domain))
     # The fast intake must return in seconds — the wizard shows a provisional score the
     # instant this lands. So it runs the STRUCTURAL profile deterministically: no sample
     # page drafts and no LLM blueprint/profile synthesis (dozens of slow calls on a local
@@ -526,9 +527,9 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     except Exception:  # facts are best-effort enrichment — never fail the profile over them
         facts = SiteFacts()
     try:
-        wikidata_industry = await wikidata_task
-    except Exception:
-        wikidata_industry = None
+        wikidata: WikidataProfile = await wikidata_task
+    except Exception:  # Wikidata is best-effort enrichment — never fail the profile over it
+        wikidata = WikidataProfile()
     intake = get_settings().intake
     discovered = int(result.get("discovered") or 0)
     # The live profile path doesn't fetch body text, so the gate is page-count based.
@@ -540,10 +541,26 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     # → the structural profile's coarse label (business-model fallback). This is what
     # keeps generic "Enterprise" from surfacing whenever a real vertical is knowable.
     prof = result.get("profile")
-    industry = wikidata_industry or facts.industry or (prof.get("industry") if prof else None)
+    industry = wikidata.industry or facts.industry or (prof.get("industry") if prof else None)
     industry_source = (
-        "wikidata" if wikidata_industry else "crawl" if facts.industry else "model" if industry else None
+        "wikidata" if wikidata.industry else "crawl" if facts.industry else "model" if industry else None
     )
+    # Wikidata HQ as a location string ("London, United Kingdom" / just the city / just the
+    # country) — the enrichment fallback when the crawl found no address on the page.
+    wikidata_location = (
+        f"{wikidata.location}, {wikidata.country}"
+        if wikidata.location and wikidata.country
+        else wikidata.location or wikidata.country
+    )
+    # Location, best source first: crawl address/schema (most precise) → Wikidata HQ →
+    # the structural profile's URL-path guess.
+    location = facts.location or wikidata_location or (prof.get("location") if prof else None)
+    # What you offer, best source first: crawl offerings (schema.org / service pages) →
+    # Wikidata products produced (P1056).
+    services = facts.services or wikidata.offerings
+    # A one-line "about" blurb — a crawl-derived summary would win if we had one, so today
+    # this surfaces the Wikidata schema:description when present.
+    about = wikidata.description
     if prof is None or route == DEAD:
         # Crawl found nothing usable → the no-website brief path is the right flow.
         return {
@@ -551,8 +568,9 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
             "profile": None,
             "industry": industry,
             "industry_source": industry_source,
-            "location": facts.location,
-            "services": facts.services,
+            "location": location,
+            "services": services,
+            "about": about,
             "competitors": facts.competitors,
             "cms_type": facts.cms_type,
             "discovered": discovered,
@@ -565,9 +583,9 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
         "profile": prof,
         "industry": industry,
         "industry_source": industry_source,
-        # Prefer the content-derived location (address/footer/schema) over the URL-path guess.
-        "location": facts.location or prof.get("location"),
-        "services": facts.services,
+        "location": location,
+        "services": services,
+        "about": about,
         "competitors": facts.competitors,
         "cms_type": facts.cms_type,
         "coverage": result["coverage"],

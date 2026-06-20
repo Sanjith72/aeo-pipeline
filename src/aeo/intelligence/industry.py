@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any
 
 from ..logging import get_logger
 from ..utils.url import host_of
@@ -125,14 +127,22 @@ def _registrable(domain: str) -> str:
 
 def _sparql_query(reg_domain: str) -> str:
     # Match the item whose official website (P856) contains this domain, then pull its
-    # industry (P452) and instance-of (P31) English labels.
+    # industry (P452) and instance-of (P31) English labels — plus the richer "About you"
+    # signals: headquarters (P159) and its country (P17), products/materials produced
+    # (P1056), and the item's English schema:description one-liner. The label SERVICE
+    # auto-derives ?<var>Label for every selected entity variable; ?description is a plain
+    # literal (a language-tagged string), so it's filtered to English directly.
     safe = reg_domain.replace('"', "")
     return (
-        "SELECT ?industryLabel ?instanceLabel WHERE { "
+        "SELECT ?industryLabel ?instanceLabel ?hqLabel ?countryLabel ?productLabel "
+        "?description WHERE { "
         "?item wdt:P856 ?website . "
         f'FILTER(CONTAINS(LCASE(STR(?website)), "{safe}")) . '
         "OPTIONAL { ?item wdt:P452 ?industry . } "
         "OPTIONAL { ?item wdt:P31 ?instance . } "
+        "OPTIONAL { ?item wdt:P159 ?hq . OPTIONAL { ?hq wdt:P17 ?country . } } "
+        "OPTIONAL { ?item wdt:P1056 ?product . } "
+        'OPTIONAL { ?item schema:description ?description . FILTER(LANG(?description) = "en") } '
         'SERVICE wikibase:label { bd:serviceParam wikibase:language "en" . } '
         "} LIMIT 50"
     )
@@ -155,6 +165,85 @@ def parse_sparql_industry(data: dict | None) -> str | None:
         if ins:
             instance_labels.append(str(ins))
     return map_wikidata_labels(industry_labels, instance_labels)
+
+
+@dataclass(slots=True)
+class WikidataProfile:
+    """Best-effort "About you" facts resolved from a site's Wikidata item — every field
+    is optional (None / empty) when Wikidata has no value for it. Mirrors what the wizard
+    prefills: a specific industry vertical, a headquarters location + its country, the
+    products/services produced (the "what you offer" signal), and a one-line description."""
+
+    industry: str | None = None
+    location: str | None = None
+    country: str | None = None
+    offerings: list[str] = field(default_factory=list)
+    description: str | None = None
+
+    def has_signal(self) -> bool:
+        """True when at least one field carries a value — drives cache TTL (a real entity
+        with facts is cached long, an empty/no-entity result re-checks sooner)."""
+        return bool(
+            self.industry or self.location or self.country or self.offerings or self.description
+        )
+
+
+_MAX_OFFERINGS = 8
+
+
+def _dedupe_keep_order(items: list[str], limit: int) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for it in items:
+        key = it.lower()
+        if not it or key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def parse_sparql_profile(data: dict | None) -> WikidataProfile:
+    """Fold a SPARQL JSON result into a :class:`WikidataProfile`. Reuses the P452/P31 →
+    vertical mapping for ``industry`` (generic-only labels still fall through to None) and
+    pulls the first HQ/country/description plus all distinct products produced. An empty /
+    non-dict result yields an all-empty profile, never raises."""
+    profile = WikidataProfile()
+    if not isinstance(data, dict):
+        return profile
+    bindings = (((data.get("results") or {}).get("bindings")) or [])
+    industry_labels: list[str] = []
+    instance_labels: list[str] = []
+    offerings: list[str] = []
+    for b in bindings:
+        if not isinstance(b, dict):
+            continue
+        ind = (b.get("industryLabel") or {}).get("value")
+        ins = (b.get("instanceLabel") or {}).get("value")
+        if ind:
+            industry_labels.append(str(ind))
+        if ins:
+            instance_labels.append(str(ins))
+        if profile.location is None:
+            hq = (b.get("hqLabel") or {}).get("value")
+            if hq:
+                profile.location = str(hq).strip() or None
+        if profile.country is None:
+            country = (b.get("countryLabel") or {}).get("value")
+            if country:
+                profile.country = str(country).strip() or None
+        if profile.description is None:
+            desc = (b.get("description") or {}).get("value")
+            if desc:
+                profile.description = str(desc).strip() or None
+        product = (b.get("productLabel") or {}).get("value")
+        if product and str(product).strip():
+            offerings.append(str(product).strip())
+    profile.industry = map_wikidata_labels(industry_labels, instance_labels)
+    profile.offerings = _dedupe_keep_order(offerings, _MAX_OFFERINGS)
+    return profile
 
 
 async def _default_sparql_fetch(query: str) -> dict | None:
@@ -184,6 +273,9 @@ async def _default_sparql_fetch(query: str) -> dict | None:
 # Hits live long; misses re-check sooner in case an entity gets added later. Only real
 # SPARQL responses are cached — transient network/non-200 failures are not, so they retry.
 _CACHE: dict[str, tuple[float, str | None]] = {}
+# A parallel cache for the richer profile lookups (same registrable-domain key, same TTL
+# policy), so resolve_wikidata_profile is cached independently of resolve_wikidata_industry.
+_PROFILE_CACHE: dict[str, tuple[float, WikidataProfile | None]] = {}
 _CACHE_TTL_HIT = 7 * 24 * 3600   # 7 days
 _CACHE_TTL_MISS = 24 * 3600      # 1 day
 _CACHE_MAX = 4096
@@ -192,25 +284,28 @@ _CACHE_MAX = 4096
 def clear_wikidata_cache() -> None:
     """Drop all cached Wikidata lookups (used by tests; safe to call anytime)."""
     _CACHE.clear()
+    _PROFILE_CACHE.clear()
 
 
-def _cache_get(key: str) -> tuple[bool, str | None]:
+def _cache_get(cache: dict, key: str) -> tuple[bool, Any]:
     """(hit, value) — ``hit`` is False on a miss or an expired entry."""
-    entry = _CACHE.get(key)
+    entry = cache.get(key)
     if entry is None or entry[0] <= time.monotonic():
         return False, None
     return True, entry[1]
 
 
-def _cache_put(key: str, value: str | None) -> None:
-    if len(_CACHE) >= _CACHE_MAX:
+def _cache_put(cache: dict, key: str, value: Any, *, hit: bool) -> None:
+    """Store ``value`` under ``key``. A real-data ``hit`` lives long; a miss (None / no
+    entity) re-checks sooner in case an entity gets added to Wikidata later."""
+    if len(cache) >= _CACHE_MAX:
         now = time.monotonic()
-        for k in [k for k, (exp, _) in _CACHE.items() if exp <= now]:
-            del _CACHE[k]
-        if len(_CACHE) >= _CACHE_MAX:  # still full of live entries → reset (internal-tool scale)
-            _CACHE.clear()
-    ttl = _CACHE_TTL_HIT if value else _CACHE_TTL_MISS
-    _CACHE[key] = (time.monotonic() + ttl, value)
+        for k in [k for k, (exp, _) in cache.items() if exp <= now]:
+            del cache[k]
+        if len(cache) >= _CACHE_MAX:  # still full of live entries → reset (internal-tool scale)
+            cache.clear()
+    ttl = _CACHE_TTL_HIT if hit else _CACHE_TTL_MISS
+    cache[key] = (time.monotonic() + ttl, value)
 
 
 async def resolve_wikidata_industry(
@@ -229,7 +324,7 @@ async def resolve_wikidata_industry(
 
     cache_on = use_cache and fetch is None
     if cache_on:
-        hit, value = _cache_get(reg)
+        hit, value = _cache_get(_CACHE, reg)
         if hit:
             return value
 
@@ -244,5 +339,44 @@ async def resolve_wikidata_industry(
     # Cache only a real response — a None ``data`` means a network/non-200 hiccup, which
     # should retry rather than stick as a cached miss.
     if cache_on and data is not None:
-        _cache_put(reg, vertical)
+        _cache_put(_CACHE, reg, vertical, hit=vertical is not None)
     return vertical
+
+
+async def resolve_wikidata_profile(
+    domain: str, *, fetch: SparqlFetch | None = None, use_cache: bool = True
+) -> WikidataProfile:
+    """Resolve a domain's richer "About you" facts via Wikidata — a specific industry
+    vertical plus headquarters location/country, products produced, and a one-line
+    description. Returns an all-empty :class:`WikidataProfile` (never raises) when there's
+    no matching entity or on any network/parse failure; the caller merges these
+    best-source-first behind the crawl signals.
+
+    Shares the injectable ``fetch`` seam and the in-process cache pattern with
+    :func:`resolve_wikidata_industry` (a separate profile cache, same TTL policy). The
+    cache is bypassed when a custom ``fetch`` is injected or ``use_cache=False``."""
+    reg = _registrable(domain)
+    if not reg or "." not in reg:
+        return WikidataProfile()
+
+    cache_on = use_cache and fetch is None
+    if cache_on:
+        hit, value = _cache_get(_PROFILE_CACHE, reg)
+        if hit:
+            return value if value is not None else WikidataProfile()
+
+    fetch = fetch or _default_sparql_fetch
+    try:
+        data = await fetch(_sparql_query(reg))
+    except Exception as exc:
+        log.warning("wikidata_profile_resolve_failed", domain=domain, error=str(exc))
+        return WikidataProfile()
+
+    # Only a real response is cacheable — a None ``data`` (network/non-200 hiccup) should
+    # retry rather than stick as a cached empty profile.
+    if data is None:
+        return WikidataProfile()
+    profile = parse_sparql_profile(data)
+    if cache_on:
+        _cache_put(_PROFILE_CACHE, reg, profile, hit=profile.has_signal())
+    return profile
