@@ -608,6 +608,10 @@ async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     name = req.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="name is required")
+    # The SHARED client: on AEO__LLM__PROVIDER=cloud this is Gemini, so production gets
+    # cloud latency for free. If a slow LOCAL model is the bottleneck here, point the burst
+    # paths at a faster backend via AEO__LLM__BULK_PROVIDER rather than hardcoding a model
+    # (domain verification is already parallelized; the LLM call is the remaining cost).
     llm = get_client()
     if not llm.enabled:
         # No LLM → best-effort on-site signals (comparison / alternatives pages).
