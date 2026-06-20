@@ -440,7 +440,9 @@ def test_profile_includes_crawled_services_and_competitors(monkeypatch) -> None:
 
 
 def test_profile_industry_prefers_wikidata_vertical(monkeypatch) -> None:
-    # Wikidata's specific vertical beats the structural "Enterprise" coarse label.
+    # The Wikidata MERGE logic (gated off in prod — see _WIKIDATA_ENRICHMENT_ENABLED — because
+    # WDQS can't answer inside the budget) still works when re-enabled: its specific vertical
+    # beats the structural "Enterprise" coarse label. Flip the flag on to exercise the path.
     from aeo.pipeline import Orchestrator
 
     async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True, draft_samples=True, **_):
@@ -451,11 +453,41 @@ def test_profile_industry_prefers_wikidata_vertical(monkeypatch) -> None:
             "source": "sitemap",
         }
 
+    import importlib
+    monkeypatch.setattr(importlib.import_module("aeo.api.app"), "_WIKIDATA_ENRICHMENT_ENABLED", True)
     monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
     _stub_site_facts(monkeypatch, wikidata="Healthcare")
     body = client.post("/api/profile", json={"domain": "clevelandclinic.org"}).json()
     assert body["industry"] == "Healthcare"
     assert body["industry_source"] == "wikidata"
+
+
+def test_profile_wikidata_enrichment_disabled_by_default(monkeypatch) -> None:
+    # With the flag OFF (the production default), a rich Wikidata stub must NOT surface —
+    # the response falls back to crawl/structural signals only, because the WDQS lookup is
+    # too slow to fire inside the endpoint budget so it isn't even consulted.
+    from aeo.intelligence.industry import WikidataProfile
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True, draft_samples=True, **_):
+        return {
+            "profile": {"industry": "Enterprise", "location": None, "scenario": "small_site"},
+            "coverage": {"pct": 50.0}, "discovered": 18, "source": "sitemap",
+        }
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    _stub_site_facts(
+        monkeypatch,
+        industry="Finance",  # crawl-classified vertical
+        wikidata=WikidataProfile(industry="Healthcare", location="London", country="United Kingdom",
+                                 offerings=["X"], description="a description"),
+    )
+    body = client.post("/api/profile", json={"domain": "acme.com"}).json()
+    # Wikidata is ignored entirely: industry from the crawl, location/about not populated.
+    assert body["industry"] == "Finance"
+    assert body["industry_source"] == "crawl"
+    assert body["location"] is None
+    assert body["about"] is None
 
 
 def test_profile_enriches_location_services_about_from_wikidata(monkeypatch) -> None:
@@ -470,6 +502,8 @@ def test_profile_enriches_location_services_about_from_wikidata(monkeypatch) -> 
             "coverage": {"pct": 50.0}, "discovered": 18, "source": "sitemap",
         }
 
+    import importlib
+    monkeypatch.setattr(importlib.import_module("aeo.api.app"), "_WIKIDATA_ENRICHMENT_ENABLED", True)
     monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
     # Crawl finds nothing usable for location/services; Wikidata supplies them.
     _stub_site_facts(

@@ -48,6 +48,15 @@ _MAX_TASK_ID_LEN = 256
 # Bound concurrent deep audits — each spawns a crawl worker thread, so cap the blast radius.
 _MAX_CONCURRENT_AUDITS = 4
 
+# Wikidata "About you" enrichment is DISABLED in /api/profile. The WDQS lookup is a full
+# P856 scan that runs ~38–50s uncontended — it never returns inside this endpoint's budget,
+# so the merge below was inert in production (location/about always fell back to the crawl).
+# The resolver (intelligence.industry.resolve_wikidata_profile) is left intact behind this
+# flag rather than deleted: flip to True only with a sub-budget retrieval path (e.g. the
+# SPARQL→QID→wbgetentities hybrid) AND after confirming the actual onboarding audience has
+# Wikidata entities (notable firms do; local SMBs don't). See the analysis thread.
+_WIKIDATA_ENRICHMENT_ENABLED = False
+
 
 def _assert_crawlable_host(domain: str) -> None:
     """SSRF guard: resolve the target host and reject private/loopback/link-local/
@@ -508,11 +517,16 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
 
     cache = _cache_age(req.domain)
     # Crawl the homepage + key pages for Location / what-you-offer / on-site competitors,
-    # and resolve the richer "About you" facts from Wikidata (specific industry vertical +
-    # HQ location/country + products produced + a one-line description) — all concurrently
-    # with the structural dry-run profile so the wizard prefills in one round.
+    # concurrently with the structural dry-run profile so the wizard prefills in one round.
+    # Wikidata enrichment (HQ location/country/products/description) is gated OFF — see
+    # _WIKIDATA_ENRICHMENT_ENABLED: the WDQS lookup can't return inside this budget, so the
+    # merge stays code-complete but the network call isn't even spawned.
     facts_task = asyncio.create_task(gather_site_facts(req.domain))
-    wikidata_task = asyncio.create_task(resolve_wikidata_profile(req.domain))
+    wikidata_task = (
+        asyncio.create_task(resolve_wikidata_profile(req.domain))
+        if _WIKIDATA_ENRICHMENT_ENABLED
+        else None
+    )
     # The fast intake must return in seconds — the wizard shows a provisional score the
     # instant this lands. So it runs the STRUCTURAL profile deterministically: no sample
     # page drafts and no LLM blueprint/profile synthesis (dozens of slow calls on a local
@@ -526,10 +540,12 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
         facts: SiteFacts = await facts_task
     except Exception:  # facts are best-effort enrichment — never fail the profile over them
         facts = SiteFacts()
-    try:
-        wikidata: WikidataProfile = await wikidata_task
-    except Exception:  # Wikidata is best-effort enrichment — never fail the profile over it
-        wikidata = WikidataProfile()
+    wikidata = WikidataProfile()
+    if wikidata_task is not None:
+        try:
+            wikidata = await wikidata_task
+        except Exception:  # Wikidata is best-effort enrichment — never fail the profile over it
+            wikidata = WikidataProfile()
     intake = get_settings().intake
     discovered = int(result.get("discovered") or 0)
     # The live profile path doesn't fetch body text, so the gate is page-count based.
