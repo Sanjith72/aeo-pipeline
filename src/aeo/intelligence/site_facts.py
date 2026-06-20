@@ -72,6 +72,21 @@ _SERVICE_STOPWORDS = frozenset({
 _MAX_SERVICES = 8
 _MAX_COMPETITORS = 6
 
+# Headings that introduce SERVED-vertical copy ("Industries we serve", "Our customers",
+# "Case studies", "Solutions for ...") — i.e. the company's *customers'* verticals, not its
+# own. Matching industry keywords inside these sections is exactly why a payments company
+# read as "Healthcare". The industry classifier reads the site's self-description and skips
+# any hero heading that matches this.
+_SERVED_VERTICAL_RE = re.compile(
+    r"\b(industr(?:y|ies)|who\s+we\s+(?:serve|help|work\s+with)|customers?|clients?|"
+    r"use\s+cases?|case\s+stud(?:y|ies)|trusted\s+by|solutions?\s+for|by\s+industry|"
+    r"sectors?|verticals?)\b",
+    re.I,
+)
+# How many leading headings count as "the hero" — enough for an H1 + a tagline, not the
+# whole page (which would drag body sections back in).
+_HERO_HEADING_LIMIT = 3
+
 # CMS fingerprints, checked against the raw page HTML (most-specific first). The detected
 # platform drives the "I'll do it myself" instructions — WordPress and Shopify need very
 # different paste-the-snippet steps, and "unknown" gets a CMS-agnostic fallback.
@@ -351,6 +366,37 @@ def competitors_from_docs(docs: list[FetchedDoc], own: str) -> list[dict[str, st
     return [{"name": n, "domain": ""} for n in names]
 
 
+def self_description_text(soup: Any) -> str:
+    """The site's OWN self-description — ``<title>``, the meta description, OpenGraph
+    title/description/site-name, and the hero heading(s) — and deliberately NOT the page
+    body.
+
+    Industry is a PROVENANCE problem, not a confidence one: the body is where
+    "Industries we serve / Our customers / Case studies" copy lives, so matching vertical
+    keywords there misreads a payments company as "Healthcare" — a *strong* match on the
+    wrong text, which no confidence threshold would catch. Self-description text describes
+    the company itself, so it's the honest signal for the company's own vertical; a hero
+    heading that introduces a served-vertical section is skipped for the same reason."""
+    parts: list[str] = []
+    if soup.title:
+        parts.append(soup.title.get_text(" ", strip=True))
+    for attrs in (
+        {"name": "description"},
+        {"property": "og:title"},
+        {"property": "og:description"},
+        {"property": "og:site_name"},
+    ):
+        meta = soup.find("meta", attrs=attrs)
+        content = (meta.get("content") if meta else "") or ""
+        if content.strip():
+            parts.append(content.strip())
+    for h in soup.find_all(("h1", "h2"), limit=_HERO_HEADING_LIMIT):
+        label = re.sub(r"\s+", " ", h.get_text(" ", strip=True)).strip()
+        if label and not _SERVED_VERTICAL_RE.search(label):
+            parts.append(label)
+    return " \n ".join(p for p in parts if p)
+
+
 def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
     """Fold the fetched pages into a :class:`SiteFacts` (pure; no network)."""
     own = normalize(docs[0].url) if docs else f"https://{domain}/"
@@ -381,7 +427,15 @@ def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
         _MAX_SERVICES,
     )
     competitors = competitors_from_docs(docs, own)
-    industry = classify_vertical(" ".join(text_parts), services=services)
+    # Classify the company's OWN vertical from the HOMEPAGE self-description (title/meta/hero)
+    # ONLY — not the body, not the scraped services, and not key pages. Each of those carries
+    # served-vertical contamination: the body has "industries we serve" copy, services can be
+    # customer-segment links, and key pages (/solutions/restaurants, a wellness template
+    # gallery) are vertical-specific and name-drop verticals in their own titles. The
+    # homepage is where a company states what it IS. Abstain (None) when it's generic —
+    # empty beats confidently wrong (a marketing platform read as "Restaurants").
+    homepage_desc = self_description_text(parse(docs[0].html)) if docs else ""
+    industry = classify_vertical(homepage_desc)
     cms_type = detect_cms([d.html for d in docs])
     return SiteFacts(
         location=location, services=services, competitors=competitors,

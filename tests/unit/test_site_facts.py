@@ -145,6 +145,72 @@ def test_extract_facts_combines_location_and_services():
     assert len(facts.services) <= 8
 
 
+# ── industry provenance: classify the company's OWN vertical, not its customers' ──────
+
+# A fintech whose body is full of "industries we serve: healthcare" copy. The old classifier
+# read the body and called this Healthcare; the self-description (title/meta) says fintech.
+_SERVED_VERTICAL_PAGE = """
+<html><head>
+<title>PayFlow — Payment Processing &amp; Financial Infrastructure</title>
+<meta name="description" content="PayFlow is a fintech platform for online payments and billing.">
+</head><body>
+<h1>Get paid faster</h1>
+<h2>Industries we serve</h2>
+<p>We help healthcare providers, hospitals, and medical clinics collect payments.</p>
+<section><h3>Healthcare</h3><p>Medical billing for clinics and dental practices.</p></section>
+</body></html>
+"""
+
+
+def test_industry_uses_self_description_not_served_vertical_body():
+    facts = extract_facts([FetchedDoc("https://payflow.com/", _SERVED_VERTICAL_PAGE)], domain="payflow.com")
+    # The fintech self-description wins; the "healthcare" served-vertical body is ignored.
+    assert facts.industry == "Finance"
+    assert facts.industry != "Healthcare"
+
+
+def test_industry_abstains_when_self_description_is_generic():
+    # Generic title + only served-vertical body keywords → abstain (None) rather than guess
+    # "Healthcare" off the customer copy. Empty beats confidently-wrong.
+    html = """
+    <html><head><title>PayFlow — Home</title></head><body>
+    <h2>Our customers</h2><p>healthcare, hospitals, medical, clinics</p>
+    </body></html>
+    """
+    facts = extract_facts([FetchedDoc("https://payflow.com/", html)], domain="payflow.com")
+    assert facts.industry is None
+
+
+def test_industry_ignores_contaminated_services_list():
+    # A marketing platform whose "Solutions" nav lists customer SEGMENTS (Restaurants,
+    # Retail). Those get scraped into `services`, but industry must come from the
+    # self-description ("Email Marketing Platform") — not the served-vertical service links.
+    html = """
+    <html><head><title>BeeMail — Email Marketing Platform</title></head><body>
+    <nav><ul><li><a>Solutions</a>
+      <ul><li><a href="/solutions/restaurants">Restaurants</a></li>
+          <li><a href="/solutions/retail">Retail</a></li></ul>
+    </li></ul></nav>
+    </body></html>
+    """
+    facts = extract_facts([FetchedDoc("https://beemail.com/", html)], domain="beemail.com")
+    assert facts.industry == "Marketing / Advertising"
+    assert facts.industry not in ("Restaurants", "Retail")
+
+
+def test_industry_kept_when_self_description_names_the_vertical():
+    # A real vertical in the title/meta is still detected — the fix is source-aware, it does
+    # not just over-abstain.
+    html = """
+    <html><head>
+    <title>Sophos — Cybersecurity &amp; Endpoint Protection</title>
+    <meta name="description" content="Next-gen endpoint protection and computer security software.">
+    </head><body><h1>Stop ransomware</h1></body></html>
+    """
+    facts = extract_facts([FetchedDoc("https://sophos.com/", html)], domain="sophos.com")
+    assert facts.industry == "Cybersecurity"
+
+
 def test_competitors_from_vs_and_alternative_pages():
     html = """
     <html><head><title>Acme vs Globex — why Acme wins</title></head><body>
