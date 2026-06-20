@@ -126,11 +126,7 @@ def evaluate(tasks: list[dict[str, Any]], signals: SiteSignals) -> set[str]:
         key = str(task.get("task_key") or "")
         if not key or not target or kind == "manual":
             continue
-        if kind == "page" and _page_verified(target, signals):
-            done.add(key)
-        elif kind == "service" and _label_matches(target, signals.services + signals.nav_labels + signals.headings):
-            done.add(key)
-        elif kind == "heading" and _label_matches(target, signals.headings + signals.nav_labels):
+        if (kind == "page" and _page_verified(target, signals)) or (kind == "service" and _label_matches(target, signals.services + signals.nav_labels + signals.headings)) or (kind == "heading" and _label_matches(target, signals.headings + signals.nav_labels)):
             done.add(key)
     return done
 

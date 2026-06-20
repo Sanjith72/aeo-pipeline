@@ -440,15 +440,24 @@ def blueprint(req: BlueprintRequest) -> dict[str, Any]:
     return bp.to_jsonb()
 
 
-@app.post("/api/deliverables")
-def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
-    """Build the developer-ready asset bundle from a brief and return it inline (the
-    frontend renders / offers each asset for download)."""
+def _build_deliverables_payload(req: DeliverablesRequest, progress: Any = None) -> dict[str, Any]:
+    """Assemble the full deliverables payload (manifest + interactive plan + strategy +
+    checklist + downloadable assets) from a brief.
+
+    The interactive ``plan`` is DETERMINISTIC — ``plan_for`` takes no LLM — so with
+    ``use_llm=False`` this returns in seconds (the fast path the in-app "Build my plan"
+    uses, identical task content either way). ``use_llm=True`` additionally has the LLM
+    write the downloadable page DRAFTS, which is minutes of work on a local model — so that
+    path runs as a background job (see ``/api/deliverables/personalize``) rather than
+    blocking a request the proxy/keep-alive window would kill. ``progress`` (optional)
+    receives ``(stage, counts)`` updates for the job poller."""
     from ..report.strategy import build_strategy
 
     brief = _brief(req)
     framework, llm = _framework_and_llm(brief, req.use_llm)
     plan_result = plan_from_brief(brief, framework=framework, llm=llm)
+    if progress:
+        progress("draft", {"pages": req.draft_limit})
     bundle = build_asset_bundle(
         blueprint=plan_result.blueprint, coverage=plan_result.coverage,
         profile=plan_result.profile.to_dict(), origin=brief.domain or brief.key(),
@@ -457,11 +466,14 @@ def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
     )
     # #10 — the prioritized plan as structured JSON: phased, quick-wins flagged, each
     # task carrying current_state/action_required/how_to + AI-vs-human prompts. This
-    # is what the interactive in-app checklist renders.
+    # is what the interactive in-app checklist renders. Deterministic — same with or
+    # without personalization, which is why the in-app plan can always be instant.
     plan = plan_for(
         blueprint=plan_result.blueprint, coverage=plan_result.coverage,
         builder_mode=req.builder_mode, business=_business_dict(brief),
     )
+    if progress:
+        progress("report", {"assets": len(bundle.assets)})
     return {
         "manifest": bundle.manifest(),
         "plan": plan,
@@ -476,6 +488,16 @@ def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
         ),
         "assets": [{"path": a.path, "kind": a.kind, "content": a.content} for a in bundle.assets],
     }
+
+
+@app.post("/api/deliverables")
+def deliverables(req: DeliverablesRequest) -> dict[str, Any]:
+    """Build the developer-ready asset bundle from a brief and return it inline (the
+    frontend renders / offers each asset for download). The in-app "Build my plan" calls
+    this with ``use_llm=false`` for an INSTANT, deterministic plan; the slow LLM-personalized
+    build runs as a job (``/api/deliverables/personalize``) so it never blocks the request
+    (the cause of the old "Build my plan returns nothing" hang)."""
+    return _build_deliverables_payload(req)
 
 
 @app.post("/api/deliverables.zip")
@@ -497,6 +519,42 @@ def deliverables_zip(req: DeliverablesRequest) -> Response:
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# Bound concurrent personalization builds — each spawns an LLM-heavy worker thread.
+_MAX_CONCURRENT_DELIVERABLES = 4
+
+
+@app.post("/api/deliverables/personalize")
+def start_personalize(req: DeliverablesRequest) -> dict[str, Any]:
+    """Start the slow, LLM-personalized kit build as a BACKGROUND job; returns a job id to
+    poll via ``GET /api/deliverables/{job_id}``. The interactive plan is already instant
+    (``POST /api/deliverables`` with ``use_llm=false``) — this upgrades the downloadable
+    files to AI-written page drafts without holding a request open for minutes (which the
+    proxy / keep-alive window would kill, exactly like the deep audit, which is why that's a
+    job too). Deduped per brief; concurrency-capped."""
+    req = req.model_copy(update={"use_llm": True})  # personalization always implies the LLM path
+    key = (req.domain or req.name or "").strip().lower()
+    existing = JOBS.active_for("deliverables", key)
+    if existing is not None:
+        return {"job_id": existing.id, "status": existing.status}
+    if JOBS.active_count("deliverables") >= _MAX_CONCURRENT_DELIVERABLES:
+        raise HTTPException(status_code=429, detail="too many builds in progress; please try again shortly")
+    job = JOBS.create("deliverables", key=key)
+    jobs_mod.spawn_deliverables(
+        job.id, build=lambda progress: _build_deliverables_payload(req, progress)
+    )
+    return {"job_id": job.id, "status": job.status}
+
+
+@app.get("/api/deliverables/{job_id}")
+def personalize_status(job_id: str) -> dict[str, Any]:
+    """Poll a personalization job. On ``succeeded``, ``result`` holds the full deliverables
+    payload (same shape as ``POST /api/deliverables``)."""
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no job {job_id}")
+    return job.to_dict()
 
 
 @app.post("/api/profile")

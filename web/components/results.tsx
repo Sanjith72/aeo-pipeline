@@ -17,6 +17,7 @@ import type {
   RecheckStatusResponse,
   SiteProfile,
   SitemapNode,
+  StrategyAction,
   StrategyView,
   StructuredPlan,
   VerifiedOutcome,
@@ -24,7 +25,7 @@ import type {
 import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
 import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/score";
 import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
-import { ArrowRight, Check } from "./ui/icons";
+import { ArrowRight, Check, Sparkle } from "./ui/icons";
 import { MilestoneDashboard } from "./MilestoneDashboard";
 
 const EFFORT_PILL: Record<string, string> = {
@@ -171,9 +172,14 @@ export function ResultsView({
   auditJob,
   deliverables,
   delivLoading,
+  delivError,
   aiPersonalization,
   cmsType,
   onGenerateDeliverables,
+  onPersonalize,
+  personalizing,
+  personalizeError,
+  personalizeProgress,
   onDownloadZip,
   onEdit,
 }: {
@@ -184,17 +190,22 @@ export function ResultsView({
   auditJob: AuditJob | null;
   deliverables: DeliverablesResponse | null;
   delivLoading: boolean;
+  delivError: string | null;
   aiPersonalization: boolean;
   // Detected CMS, threaded down to the milestone dashboard's "I'll do it myself" steps.
   cmsType?: string | null;
   onGenerateDeliverables: () => void;
+  onPersonalize: () => void;
+  personalizing: boolean;
+  personalizeError: string | null;
+  personalizeProgress: string | null;
   onDownloadZip: () => void;
   onEdit: () => void;
 }) {
   const tabs: { id: TabId; label: string }[] = [
     ...(profile ? [{ id: "overview" as const, label: "Overview" }] : []),
     ...(plan ? [{ id: "blueprint" as const, label: "Your website plan" }] : []),
-    ...(profile && profile.actions.length > 0 ? [{ id: "actions" as const, label: "Big moves" }] : []),
+    ...(profile && profile.actions.length > 0 ? [{ id: "actions" as const, label: "Roadmap" }] : []),
     ...(deliverables?.strategy && deliverables.strategy.groups.length > 0
       ? [{ id: "strategy" as const, label: "Strategy" }]
       : []),
@@ -211,16 +222,10 @@ export function ResultsView({
     if (profile?.domain) api.recheckStatus(profile.domain).then(setVerified).catch(() => {});
   }, [profile?.domain]);
 
-  // R2-6 nav rework: reserve the tallest panel height we've rendered so switching to a
-  // shorter tab never collapses the document and yanks the scroll position. Combined with
-  // the sticky tab bar and an opacity-only (no-translate) panel fade, tab switches stay
-  // put — no section jump, no scroll-to-top.
-  const panelRef = useRef<HTMLDivElement>(null);
-  const [minPanelH, setMinPanelH] = useState(0);
-  useEffect(() => {
-    const h = panelRef.current?.offsetHeight ?? 0;
-    if (h > minPanelH) setMinPanelH(h);
-  }, [tab, profile, plan, deliverables, minPanelH]);
+  // #6 — the old "reserve the tallest panel height" floor was removed: it left a large dead
+  // space below shorter tabs (most visibly "Your plan" before a plan is built). The sticky
+  // tab bar keeps the user oriented across switches, so panels now simply size to their own
+  // content and no empty gap remains.
 
   return (
     <div className="step-in">
@@ -265,12 +270,10 @@ export function ResultsView({
 
       <div
         key={tab}
-        ref={panelRef}
         id={`panel-${tab}`}
         role="tabpanel"
         aria-labelledby={`tab-${tab}`}
         className="animate-fade-in"
-        style={{ minHeight: minPanelH || undefined }}
       >
         {tab === "overview" && profile && (
           <>
@@ -280,7 +283,7 @@ export function ResultsView({
           </>
         )}
         {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
-        {tab === "actions" && profile && <ActionsPanel profile={profile} />}
+        {tab === "actions" && profile && <RoadmapPanel profile={profile} />}
         {tab === "strategy" && deliverables?.strategy && <StrategyPanel strategy={deliverables.strategy} />}
         {tab === "kit" && (
           <PlanPanel
@@ -290,9 +293,15 @@ export function ResultsView({
             domain={domain?.trim() || undefined}
             businessName={businessName}
             cmsType={cmsType}
+            error={delivError}
             storageKey={`aeo-plan:${businessName.toLowerCase()}`}
             onGenerate={onGenerateDeliverables}
             onDownloadZip={onDownloadZip}
+            onPersonalize={onPersonalize}
+            personalizing={personalizing}
+            personalizeError={personalizeError}
+            personalizeProgress={personalizeProgress}
+            aiPersonalization={aiPersonalization}
           />
         )}
       </div>
@@ -686,42 +695,144 @@ function Metric({ label, value, sub }: { label: string; value: string; sub: stri
   );
 }
 
-// ── strategy (high-level profile actions) ───────────────────────────────────────
+// ── the phased roadmap (#4) — "Big moves" as an ordered, progressively-disclosed plan ──
+// The flat list of equal-weight actions used to overwhelm ("what do I do first?"). We bucket
+// the same actions into four phases that answer that directly: do the low-effort wins now,
+// then shore up the foundation, then grow, then scale. Each phase collapses, the first is
+// open, and a single running number gives the recommended order across the whole roadmap.
 
-function ActionsPanel({ profile }: { profile: SiteProfile }) {
+type RoadmapPhase = { key: string; num: string; title: string; objective: string; impact: string };
+
+const ROADMAP_PHASES: RoadmapPhase[] = [
+  { key: "quick", num: "01", title: "Quick wins", objective: "Fast, high-leverage fixes you can ship this week.", impact: "Immediate gains in how AI reads you" },
+  { key: "foundation", num: "02", title: "Foundation", objective: "Make your core pages solid, complete, and trustworthy.", impact: "A stable base AI can rely on" },
+  { key: "growth", num: "03", title: "Growth", objective: "Expand your coverage and deepen your authority.", impact: "More questions you're the answer to" },
+  { key: "scale", num: "04", title: "Scale", objective: "Longer-term moves that compound over time.", impact: "A durable lead over competitors" },
+];
+
+// low effort → quick wins; medium → foundation; high effort split by priority into the
+// nearer-term growth moves vs the bigger long-term scale moves.
+function bucketRoadmap(actions: StrategyAction[]): Record<string, StrategyAction[]> {
+  const buckets: Record<string, StrategyAction[]> = { quick: [], foundation: [], growth: [], scale: [] };
+  const sorted = [...actions].sort((a, b) => a.priority - b.priority);
+  const high = sorted.filter((a) => a.effort === "high");
+  for (const a of sorted) {
+    if (a.effort === "low") buckets.quick.push(a);
+    else if (a.effort === "medium") buckets.foundation.push(a);
+    else if (high.indexOf(a) < Math.ceil(high.length / 2)) buckets.growth.push(a);
+    else buckets.scale.push(a);
+  }
+  return buckets;
+}
+
+function summarizeEffort(items: StrategyAction[]): string {
+  const set = new Set(items.map((a) => a.effort));
+  return set.size === 1 ? EFFORT_LABEL[[...set][0]] ?? humanizeToken([...set][0]) : "Mixed effort";
+}
+
+function RoadmapPanel({ profile }: { profile: SiteProfile }) {
+  const buckets = bucketRoadmap(profile.actions);
+  const phases = ROADMAP_PHASES.filter((p) => buckets[p.key].length > 0);
+  const [open, setOpen] = useState<Set<string>>(() => new Set(phases.length ? [phases[0].key] : []));
+  const toggle = (k: string) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+
+  // one running number across the whole roadmap = the recommended order, regardless of which
+  // phases are expanded (so the numbering never shifts when a phase is collapsed).
+  const ordered = phases.flatMap((p) => buckets[p.key]);
+  const orderOf = new Map(ordered.map((a, i) => [a, i + 1]));
+
   return (
     <div>
-      <p className="mb-4 text-sm text-ink-500">
-        The big moves, in order — each one says how much work to expect. The step-by-step,
-        page-by-page version lives under <span className="font-medium text-ink">Your plan</span>.
+      <p className="mb-5 text-sm text-ink-500">
+        Your big moves as a roadmap — in the order that pays off fastest. Start at the top; each phase
+        builds on the one before. The step-by-step, page-by-page version lives under{" "}
+        <span className="font-medium text-ink">Your plan</span>.
       </p>
-      <div className="space-y-3">
-        {profile.actions.map((a, i) => (
-          <div
-            key={a.priority}
-            className="step-in group flex gap-4 rounded-xl border border-ink/[0.08] bg-paper-100 p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-ink/[0.16] hover:shadow-card"
-            style={{ animationDelay: `${Math.min(i, 8) * 60}ms` }}
-          >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink font-mono text-xs text-paper-100 transition-colors duration-200 group-hover:bg-accent group-hover:text-white">
-              {String(a.priority).padStart(2, "0")}
-            </div>
-            <div className="flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-medium">{a.title}</span>
-                <span className="label-mono rounded bg-ink/[0.04] px-1.5 py-0.5 !tracking-[0.1em]">
-                  {humanizeToken(a.category)}
+      <div className="space-y-4">
+        {phases.map((p, pi) => {
+          const items = buckets[p.key];
+          const isOpen = open.has(p.key);
+          return (
+            <div
+              key={p.key}
+              className="step-in overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100"
+              style={{ animationDelay: `${pi * 70}ms` }}
+            >
+              <button
+                type="button"
+                onClick={() => toggle(p.key)}
+                aria-expanded={isOpen}
+                className="flex w-full items-center gap-4 px-4 py-3.5 text-left transition-colors hover:bg-paper-200/40"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink font-mono text-xs text-paper-100">
+                  {p.num}
                 </span>
-                <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${EFFORT_PILL[a.effort] ?? "bg-ink/5 text-ink-500"}`}>
-                  {EFFORT_LABEL[a.effort] ?? humanizeToken(a.effort)}
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">{p.title}</span>
+                    <span className="rounded-full bg-ink/[0.04] px-2 py-0.5 font-mono text-[11px] text-ink-500">
+                      {items.length} move{items.length === 1 ? "" : "s"}
+                    </span>
+                  </span>
+                  <span className="mt-0.5 block text-xs text-ink-300">{p.objective}</span>
                 </span>
-              </div>
-              <p className="mt-1 text-sm leading-relaxed text-ink-500">{a.detail}</p>
-              {a.related_slugs.length > 0 && (
-                <p className="mt-1.5 font-mono text-xs text-ink-300">pages: {a.related_slugs.join("  ·  ")}</p>
+                <span
+                  aria-hidden
+                  className={`shrink-0 font-mono text-lg leading-none text-ink-300 transition-transform duration-300 ${isOpen ? "rotate-45" : ""}`}
+                >
+                  +
+                </span>
+              </button>
+              {isOpen && (
+                <div className="step-in border-t border-ink/[0.06] px-4 py-4">
+                  <div className="mb-3 flex flex-wrap gap-x-6 gap-y-1 text-xs">
+                    <span>
+                      <span className="label-mono">Expected impact</span>{" "}
+                      <span className="text-ink-500">{p.impact}</span>
+                    </span>
+                    <span>
+                      <span className="label-mono">Effort</span>{" "}
+                      <span className="text-ink-500">{summarizeEffort(items)}</span>
+                    </span>
+                  </div>
+                  <ul className="space-y-2.5">
+                    {items.map((a) => (
+                      <li
+                        key={`${a.priority}-${a.title}`}
+                        className="flex gap-3 rounded-lg border border-ink/[0.06] bg-paper-200/30 p-3"
+                      >
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-ink/15 font-mono text-[11px] text-ink-300">
+                          {String(orderOf.get(a) ?? 0).padStart(2, "0")}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium">{a.title}</span>
+                            <span className="label-mono rounded bg-ink/[0.04] px-1.5 py-0.5 !tracking-[0.1em]">
+                              {humanizeToken(a.category)}
+                            </span>
+                            <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${EFFORT_PILL[a.effort] ?? "bg-ink/5 text-ink-500"}`}>
+                              {EFFORT_LABEL[a.effort] ?? humanizeToken(a.effort)}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-sm leading-relaxed text-ink-500">{a.detail}</p>
+                          {a.related_slugs.length > 0 && (
+                            <p className="mt-1.5 font-mono text-xs text-ink-300">pages: {a.related_slugs.join("  ·  ")}</p>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -863,10 +974,12 @@ function TaskCard({
   task,
   done,
   onToggle,
+  onHover,
 }: {
   task: PlanTask;
   done: boolean;
   onToggle: () => void;
+  onHover?: (id: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   // Critical #3: completing a task is a rewarded micro-moment — a one-shot emerald flash +
@@ -885,7 +998,13 @@ function TaskCard({
   }
 
   return (
-    <li className={`overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100 ${flash ? "task-done-flash" : ""}`}>
+    <li
+      className={`overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100 ${flash ? "task-done-flash" : ""}`}
+      onMouseEnter={() => onHover?.(task.id)}
+      onMouseLeave={() => onHover?.(null)}
+      onFocus={() => onHover?.(task.id)}
+      onBlur={() => onHover?.(null)}
+    >
       <div className="flex items-start gap-3 p-3.5">
         <input
           type="checkbox"
@@ -1010,10 +1129,12 @@ function TodayTray({
   tasks,
   done,
   onToggle,
+  onHover,
 }: {
   tasks: PlanTask[];
   done: Set<string>;
   onToggle: (t: PlanTask) => void;
+  onHover: (id: string | null) => void;
 }) {
   const next = tasks
     .filter((t) => !done.has(t.id))
@@ -1036,12 +1157,19 @@ function TodayTray({
       </div>
       <ul className="space-y-2">
         {next.map((t) => (
-          <li key={t.id} className="step-in flex items-start gap-3 rounded-xl border border-ink/[0.08] bg-paper-100 p-3.5">
+          <li
+            key={t.id}
+            className="step-in flex items-start gap-3 rounded-xl border border-ink/[0.08] bg-paper-100 p-3.5"
+            onMouseEnter={() => onHover(t.id)}
+            onMouseLeave={() => onHover(null)}
+          >
             <input
               type="checkbox"
               className="mt-0.5 h-4 w-4 shrink-0 accent-accent transition-transform duration-200 ease-out checked:scale-110"
               checked={done.has(t.id)}
               onChange={() => onToggle(t)}
+              onFocus={() => onHover(t.id)}
+              onBlur={() => onHover(null)}
               aria-label={`Mark "${t.action_required}" done`}
             />
             <div className="min-w-0 flex-1">
@@ -1058,6 +1186,55 @@ function TodayTray({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+// #5 — the plan-completion ring. Shows where you are now (solid arc) and, while you hover a
+// task, a ghosted arc previewing where finishing it gets you — the "what's this task worth?"
+// moment. Honest: every task is an equal share of the plan, so the preview is always the
+// next +1/total step (no invented per-task weights).
+function PlanProgressRing({ pct, previewPct }: { pct: number; previewPct: number | null }) {
+  const R = 22;
+  const C = 2 * Math.PI * R;
+  const showPreview = previewPct !== null && previewPct > pct;
+  return (
+    <div
+      className="relative h-14 w-14 shrink-0"
+      role="progressbar"
+      aria-valuenow={pct}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label="Plan progress"
+    >
+      <svg viewBox="0 0 56 56" className="h-full w-full -rotate-90" aria-hidden>
+        <circle cx="28" cy="28" r={R} fill="none" strokeWidth="5" className="stroke-ink/[0.08]" />
+        {showPreview && (
+          <circle
+            cx="28"
+            cy="28"
+            r={R}
+            fill="none"
+            strokeWidth="5"
+            strokeLinecap="round"
+            strokeDasharray={`${(C * (previewPct as number)) / 100} ${C}`}
+            className="stroke-accent/30 transition-[stroke-dasharray] duration-300 ease-out"
+          />
+        )}
+        <circle
+          cx="28"
+          cy="28"
+          r={R}
+          fill="none"
+          strokeWidth="5"
+          strokeLinecap="round"
+          strokeDasharray={`${(C * pct) / 100} ${C}`}
+          className="stroke-accent transition-[stroke-dasharray] duration-500 ease-out"
+        />
+      </svg>
+      <span className="absolute inset-0 flex items-center justify-center font-mono text-xs font-semibold tabular-nums text-ink">
+        {showPreview ? (previewPct as number) : pct}%
+      </span>
     </div>
   );
 }
@@ -1080,6 +1257,7 @@ function PhasedPlanView({
   score?: number | null;
 }) {
   const [done, setDone] = useState<Set<string>>(new Set());
+  const [hoverId, setHoverId] = useState<string | null>(null);
   const planViewed = useRef(false);
 
   // Seed progress after mount (never during render — prerender has no storage). A
@@ -1135,6 +1313,13 @@ function PhasedPlanView({
   const quickWins = allTasks.filter((t) => t.quick_win);
   const quickWinsDone = quickWins.filter((t) => done.has(t.id)).length;
 
+  // #5 — projected completion if the hovered (not-yet-done) task were checked off.
+  const hoverTask = hoverId ? allTasks.find((t) => t.id === hoverId) : null;
+  const hoverPreviewPct =
+    hoverTask && !done.has(hoverTask.id) && allTasks.length
+      ? Math.round(((doneCount + 1) / allTasks.length) * 100)
+      : null;
+
   // Group by priority band, then compute progressive unlock: a band opens once every
   // task in the band above it is complete.
   const banded: Record<Band, PlanTask[]> = { high: [], medium: [], low: [] };
@@ -1149,55 +1334,49 @@ function PhasedPlanView({
   return (
     <div className="space-y-6">
       <div className="card p-5 sm:p-6">
-        <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="text-base font-semibold">Your step-by-step plan</h3>
-          {/* Critical #3: the counter springs up on every check — the running tally of progress. */}
-          <span className="font-mono text-xs text-ink-500">
-            <Tally value={doneCount} className="text-ink" /> / {allTasks.length} done
-          </span>
-        </div>
-        <div
-          className="mb-4 h-1.5 overflow-hidden rounded-full bg-ink/[0.07]"
-          role="progressbar"
-          aria-valuenow={pct}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label="Plan progress"
-        >
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-accent to-accent-600 transition-[width] duration-500 ease-out"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-        {quickWins.length > 0 &&
-          pct < 100 &&
-          (quickWinsDone === quickWins.length ? (
-            // Threshold celebration: all quick wins banked — the first big milestone.
-            <p className="step-in flex items-center gap-2 text-sm text-emerald-300">
-              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white">
-                <Check className="animate-pop" width={10} height={10} />
+        <div className="flex items-center gap-4">
+          {/* #5 — the completion ring, with a live hover preview of each task's payoff. */}
+          <PlanProgressRing pct={pct} previewPct={hoverPreviewPct} />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="text-base font-semibold">Your step-by-step plan</h3>
+              {/* Critical #3: the counter springs up on every check — the running tally. */}
+              <span className="font-mono text-xs text-ink-500">
+                <Tally value={doneCount} className="text-ink" /> / {allTasks.length} done
               </span>
-              All {quickWins.length} quick win{quickWins.length === 1 ? "" : "s"} cleared — your biggest early
-              gains are banked. 🎉
-            </p>
-          ) : (
-            <p className="text-sm text-ink-500">
-              <span className="font-medium text-emerald-300">Start here:</span> {quickWins.length} quick win
-              {quickWins.length === 1 ? "" : "s"} you can knock out fast
-              <span className="text-ink-300">
-                {" "}
-                — <Tally value={quickWinsDone} />/{quickWins.length} done.
-              </span>
-            </p>
-          ))}
-        {pct === 100 && (
-          <p className="step-in mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
-            That's everything — your business is set up to be the one AI recommends. 🎉
-          </p>
-        )}
+            </div>
+            {hoverPreviewPct !== null ? (
+              <p className="step-in mt-1 text-sm text-accent">
+                Finish this one: <span className="font-mono font-semibold">{pct}%</span>
+                <span aria-hidden> → </span>
+                <span className="font-mono font-semibold">{hoverPreviewPct}%</span> complete
+              </p>
+            ) : pct === 100 ? (
+              <p className="mt-1 text-sm font-medium text-emerald-300">
+                That&apos;s everything — your business is set up to be the one AI recommends. 🎉
+              </p>
+            ) : quickWins.length > 0 && quickWinsDone === quickWins.length ? (
+              <p className="step-in mt-1 flex items-center gap-1.5 text-sm text-emerald-300">
+                <Check className="animate-pop" width={13} height={13} />
+                All {quickWins.length} quick win{quickWins.length === 1 ? "" : "s"} cleared — your biggest
+                early gains are banked. 🎉
+              </p>
+            ) : quickWins.length > 0 ? (
+              <p className="mt-1 text-sm text-ink-500">
+                <span className="font-medium text-emerald-300">Start here:</span> {quickWins.length} quick win
+                {quickWins.length === 1 ? "" : "s"} you can knock out fast{" "}
+                <span className="text-ink-300">
+                  — <Tally value={quickWinsDone} />/{quickWins.length} done.
+                </span>
+              </p>
+            ) : (
+              <p className="mt-1 text-sm text-ink-500">Hover any task to see how far it gets you.</p>
+            )}
+          </div>
+        </div>
       </div>
 
-      {pct < 100 && <TodayTray tasks={allTasks} done={done} onToggle={toggle} />}
+      {pct < 100 && <TodayTray tasks={allTasks} done={done} onToggle={toggle} onHover={setHoverId} />}
 
       {bandOrder.map((band, idx) => (
         <PriorityGroup
@@ -1206,6 +1385,7 @@ function PhasedPlanView({
           tasks={banded[band]}
           done={done}
           onToggle={toggle}
+          onHover={setHoverId}
           unlocked={bandUnlocked(band)}
           priorLabel={idx > 0 ? BAND_META[bandOrder[idx - 1]].label : undefined}
         />
@@ -1222,6 +1402,7 @@ function PriorityGroup({
   tasks,
   done,
   onToggle,
+  onHover,
   unlocked,
   priorLabel,
 }: {
@@ -1229,6 +1410,7 @@ function PriorityGroup({
   tasks: PlanTask[];
   done: Set<string>;
   onToggle: (t: PlanTask) => void;
+  onHover: (id: string | null) => void;
   unlocked: boolean;
   priorLabel?: string;
 }) {
@@ -1248,7 +1430,7 @@ function PriorityGroup({
       {open ? (
         <ul className="space-y-2">
           {tasks.map((t) => (
-            <TaskCard key={t.id} task={t} done={done.has(t.id)} onToggle={() => onToggle(t)} />
+            <TaskCard key={t.id} task={t} done={done.has(t.id)} onToggle={() => onToggle(t)} onHover={onHover} />
           ))}
         </ul>
       ) : (
@@ -1391,9 +1573,15 @@ function PlanPanel({
   domain,
   businessName,
   cmsType,
+  error,
   storageKey,
   onGenerate,
   onDownloadZip,
+  onPersonalize,
+  personalizing,
+  personalizeError,
+  personalizeProgress,
+  aiPersonalization,
 }: {
   deliverables: DeliverablesResponse | null;
   loading: boolean;
@@ -1401,12 +1589,20 @@ function PlanPanel({
   domain?: string;
   businessName: string;
   cmsType?: string | null;
+  error: string | null;
   storageKey: string;
   onGenerate: () => void;
   onDownloadZip: () => void;
+  onPersonalize: () => void;
+  personalizing: boolean;
+  personalizeError: string | null;
+  personalizeProgress: string | null;
+  aiPersonalization: boolean;
 }) {
   const [filesOpen, setFilesOpen] = useState(false);
 
+  // #7 — the empty state. "Build my plan" now resolves in seconds (deterministic), so the
+  // states the user actually meets are: idle → building (fast bar) → ready, or → error+retry.
   if (!deliverables) {
     return (
       <div className="rounded-xl border border-dashed border-ink/15 p-10 text-center">
@@ -1420,22 +1616,24 @@ function PlanPanel({
           {loading ? (
             <>
               <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-              {slowMode ? "Writing your plan with AI…" : "Building your plan…"}
+              Building your plan…
             </>
           ) : (
             <>
-              Build my plan
+              {error ? "Try again" : "Build my plan"}
               <ArrowRight />
             </>
           )}
         </button>
         {loading ? (
-          <BuildProgress slowMode={slowMode} />
+          <BuildProgress slowMode={false} />
+        ) : error ? (
+          <p className="step-in mx-auto mt-4 max-w-sm rounded-lg border border-rose-500/30 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-300">
+            {error}
+          </p>
         ) : (
           <p className="mx-auto mt-3 max-w-sm text-xs text-ink-300">
-            {slowMode
-              ? "AI personalization is on, so every page is custom-written — around 10 minutes. Want it instantly? Turn off “Personalize the wording with AI” under Your goals and rebuild."
-              : "Takes a few seconds."}
+            Ready in seconds — then tick tasks off as you go. You can download the files anytime.
           </p>
         )}
       </div>
@@ -1455,7 +1653,16 @@ function PlanPanel({
           <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} />
         )
       ) : (
-        <p className="mb-4 text-sm text-ink-500">Your plan is ready — download the files below.</p>
+        <div className="rounded-xl border border-dashed border-ink/15 p-8 text-center">
+          <h3 className="text-base font-semibold">Your plan is ready</h3>
+          <p className="mx-auto mt-2 max-w-md text-sm text-ink-500">
+            We couldn&apos;t lay this out as an interactive checklist this time, but your full kit is
+            ready to download below — or rebuild to try again.
+          </p>
+          <button onClick={onGenerate} disabled={loading} className="btn-ghost mt-4 text-[13px]">
+            ↻ Rebuild my plan
+          </button>
+        </div>
       )}
 
       <div className="mt-6 rounded-xl border border-ink/[0.08]">
@@ -1472,6 +1679,13 @@ function PlanPanel({
         </button>
         {filesOpen && (
           <div className="step-in border-t border-ink/[0.06] p-4">
+            <PersonalizeFiles
+              onPersonalize={onPersonalize}
+              personalizing={personalizing}
+              error={personalizeError}
+              progress={personalizeProgress}
+              emphasize={aiPersonalization}
+            />
             <div className="mb-3 flex justify-end">
               <button onClick={onDownloadZip} className="btn-primary !py-2 text-[13px]">
                 ↓ Download everything (.zip)
@@ -1499,6 +1713,77 @@ function PlanPanel({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Friendly labels for the personalization job's progress stages (backend emits draft/report).
+const PERSONALIZE_STAGE: Record<string, string> = {
+  draft: "Writing each page for your business…",
+  report: "Putting your personalized files together…",
+};
+
+// #7 — the optional, explicitly-async upgrade: rewrite the downloadable page drafts with AI.
+// The interactive plan above is always instant; this only changes the files. Runs as a
+// background job, so it shows honest progress and, if it fails, the ready-made files remain.
+function PersonalizeFiles({
+  onPersonalize,
+  personalizing,
+  error,
+  progress,
+  emphasize,
+}: {
+  onPersonalize: () => void;
+  personalizing: boolean;
+  error: string | null;
+  progress: string | null;
+  emphasize: boolean;
+}) {
+  return (
+    <div
+      className={`mb-4 rounded-xl border p-4 ${
+        emphasize ? "border-accent/30 bg-accent/[0.05]" : "border-ink/[0.08] bg-paper-200/40"
+      }`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <span className="flex items-center gap-2 text-sm font-medium text-ink">
+            <Sparkle className="text-accent" width={14} height={14} />
+            Personalize these files with AI
+          </span>
+          <p className="mt-1 max-w-md text-xs text-ink-300">
+            Your plan above is ready now. Want every downloadable page written for your business? We&apos;ll
+            draft them with AI — usually a few minutes, and your ready-made files stay available either way.
+          </p>
+        </div>
+        <button
+          onClick={onPersonalize}
+          disabled={personalizing}
+          className="btn-accent shrink-0 !py-2 text-[13px]"
+        >
+          {personalizing ? (
+            <>
+              <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+              Personalizing…
+            </>
+          ) : (
+            "✨ Personalize with AI"
+          )}
+        </button>
+      </div>
+      {personalizing && (
+        <>
+          {progress && PERSONALIZE_STAGE[progress] && (
+            <p className="mt-3 text-xs font-medium text-ink-500">{PERSONALIZE_STAGE[progress]}</p>
+          )}
+          <BuildProgress slowMode />
+        </>
+      )}
+      {error && !personalizing && (
+        <p className="step-in mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

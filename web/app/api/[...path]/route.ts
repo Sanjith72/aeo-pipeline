@@ -39,6 +39,7 @@ async function proxy(req: NextRequest, path: string[]): Promise<Response> {
 
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const startedAt = Date.now();
     try {
       const res = await fetch(target, { method, headers, body, redirect: "manual", cache: "no-store" });
       // Stream the backend response straight back (JSON, zip downloads, …). Drop hop-by-hop /
@@ -49,8 +50,16 @@ async function proxy(req: NextRequest, path: string[]): Promise<Response> {
       out.delete("content-length");
       return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
     } catch (e) {
-      lastErr = e; // only pre-response (connection-level) failures land here — safe to retry
-      if (attempt < MAX_ATTEMPTS) await sleep(RETRY_BACKOFF_MS[attempt - 1]);
+      lastErr = e;
+      // Only retry FAST failures: the keep-alive socket race resets the connection before any
+      // bytes flow (a few ms). A failure after a long wait means the backend likely received the
+      // request and is still working on it (e.g. a slow build) or undici's headersTimeout fired —
+      // replaying would DUPLICATE that work and pile load on (the old "Build my plan" storm). So
+      // surface it instead of retrying. (Long jobs now return immediately + poll, so this branch
+      // is belt-and-suspenders.)
+      const quick = Date.now() - startedAt < 5_000;
+      if (!quick || attempt >= MAX_ATTEMPTS) break;
+      await sleep(RETRY_BACKOFF_MS[attempt - 1]);
     }
   }
 
