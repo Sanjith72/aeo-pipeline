@@ -18,6 +18,7 @@ the SPARQL resolver takes an injectable fetch.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -74,16 +75,27 @@ _KEYWORD_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 
+# Each keyword must begin at a WORD BOUNDARY — otherwise naive substring matching fires on
+# mid-word coincidences ("spa" inside "workspace" → Beauty/Wellness; "it" inside "submit").
+# The boundary is only at the START, so the intentional stems still match as prefixes
+# ("cybersecur" → "cybersecurity", "manufactur" → "manufacturing").
+_VERTICAL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(r"\b(?:" + "|".join(re.escape(k) for k in keywords) + r")"), vertical)
+    for keywords, vertical in _KEYWORD_VERTICALS
+)
+
+
 def match_vertical(text: str) -> str | None:
     """Map a raw label / chunk of text to a specific vertical, or None. Generic-only
-    text (e.g. "business enterprise") yields None so the caller falls through."""
+    text (e.g. "business enterprise") yields None so the caller falls through. Keywords
+    match only at a word boundary, so "workspace" is not Beauty/Wellness."""
     if not text:
         return None
     low = text.lower()
     if low.strip() in GENERIC_LABELS:
         return None
-    for keywords, vertical in _KEYWORD_VERTICALS:
-        if any(k in low for k in keywords):
+    for pattern, vertical in _VERTICAL_PATTERNS:
+        if pattern.search(low):
             return vertical
     return None
 

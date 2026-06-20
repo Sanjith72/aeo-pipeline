@@ -33,6 +33,16 @@ def test_specific_verticals_map():
     assert match_vertical("software company") == "Software / SaaS"
 
 
+def test_keywords_match_only_at_word_boundary():
+    # The "spa" ⊂ "workspace" class of false positive — substring matching firing mid-word.
+    assert match_vertical("the all-in-one workspace for teams") is None
+    assert match_vertical("submit your application") is None  # "it"/"app" not mid-word hits
+    # …but a real day spa still resolves, and the intentional stems still prefix-match.
+    assert match_vertical("a luxury day spa and salon") == "Beauty / Wellness"
+    assert match_vertical("cybersecurity platform") == "Cybersecurity"  # stem prefix kept
+    assert match_vertical("manufacturing company") == "Manufacturing"
+
+
 def test_map_wikidata_prefers_industry_then_instance_and_skips_generic():
     # P452 generic, P31 specific → falls through the generic to the hospital instance.
     assert map_wikidata_labels(["business enterprise"], ["hospital"]) == "Healthcare"
