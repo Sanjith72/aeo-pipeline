@@ -16,6 +16,7 @@ from aeo.intelligence.site_facts import (
     gather_site_facts,
     location_from_blocks,
     location_from_text,
+    offer_from_description,
     services_from_blocks,
     services_from_headings,
     services_from_links,
@@ -231,6 +232,71 @@ def test_competitors_empty_when_no_signals():
     assert competitors_from_docs([FetchedDoc("https://acme.com/", html)], "https://acme.com/") == []
 
 
+def test_competitors_ignore_homepage_title_with_vs():
+    # Regression: a homepage whose <title> merely contains "vs" must NOT yield competitors
+    # ("Buy vs Rent Calculator" → phantom "Buy Calculator" / "Real Estate" before the fix).
+    html = """
+    <html><head><title>Buy vs Rent Calculator | XYZ Real Estate</title></head><body>
+      <h1>XYZ Real Estate</h1>
+      <a href="/tools/buy-vs-rent">Buy vs Rent Calculator</a>
+      <a href="/listings">Browse listings</a>
+    </body></html>
+    """
+    comps = competitors_from_docs([FetchedDoc("https://xyz.com/", html)], "https://xyz.com/")
+    assert comps == []
+
+
+def test_competitors_reject_generic_phrases():
+    # Even on a genuine comparison page, generic category phrases aren't competitors.
+    html = """
+    <html><head><title>Compare options</title></head><body>
+      <a href="/compare/real-estate-alternatives">Real Estate alternatives</a>
+    </body></html>
+    """
+    comps = competitors_from_docs([FetchedDoc("https://xyz.com/compare", html)], "https://xyz.com/")
+    assert all(c["name"].lower() not in {"real estate", "real", "estate"} for c in comps)
+
+
+def test_competitors_from_outbound_link_anchor_text():
+    # An OUTBOUND (different-domain) comparison link names the rival in its anchor TEXT,
+    # not its slug, so we scan the text for non-same-site links only. Here "Globex" is
+    # mined purely from the link text — the href slug ("/comparison") carries no brand.
+    html = """
+    <html><head><title>Compare CRMs</title></head><body>
+      <a href="https://reviews.example/comparison">Acme vs Globex</a>
+      <a href="https://blog.example/post">Acme vs Initech writeup</a>
+    </body></html>
+    """
+    comps = competitors_from_docs([FetchedDoc("https://acme.com/compare", html)], "https://acme.com/")
+    names = {c["name"] for c in comps}
+    assert "Globex" in names  # mined from the outbound comparison link's anchor text
+    assert "Initech" not in names  # /post is not a comparison slug → its text is ignored
+    assert "Acme" not in names  # the site's own brand is still excluded
+
+
+def test_offer_fallback_from_meta_description():
+    html = (
+        "<html><head><title>Acme</title>"
+        "<meta name='description' content='Custom kitchen cabinetry and countertop installation for homes.'>"
+        "</head><body><p>Welcome.</p></body></html>"
+    )
+    facts = extract_facts([FetchedDoc("https://acme.com/", html)], domain="acme.com")
+    assert facts.services, "offer must never be empty after a successful crawl"
+    assert "cabinetry" in facts.services[0].lower()
+
+
+def test_offer_from_description_first_clause_only():
+    soup_html = (
+        "<html><head>"
+        "<meta property='og:description' content='Bookkeeping for startups. Trusted by 500 founders.'>"
+        "</head><body></body></html>"
+    )
+    from aeo.utils.html import parse
+
+    out = offer_from_description(parse(soup_html))
+    assert out == ["Bookkeeping for startups"]
+
+
 def test_gather_site_facts_with_injected_fetch():
     pages = {
         "https://harbor.com/": _LD_LOCAL,
@@ -251,5 +317,5 @@ def test_gather_site_facts_unreachable_homepage_is_empty():
 
     facts = asyncio.run(gather_site_facts("nope.example", fetch=dead_fetch))
     assert facts.location is None
-    assert facts.services == []
+    assert facts.services == []  # no docs crawled → fallback never engages
     assert facts.competitors == []
