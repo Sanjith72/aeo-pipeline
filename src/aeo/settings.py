@@ -88,6 +88,10 @@ class LLMCfg(BaseModel):
     # to run it on the local model (slower but un-throttled; fine since the audit is async)
     # while the fast synchronous endpoints stay on the primary `provider`. Empty = use primary.
     bulk_provider: str = ""
+    # Hybrid reasoning tier: the agent Planner/Builder route their frontier calls here (e.g.
+    # AEO__LLM__PLANNING_PROVIDER=cloud) while the bulk audit path stays on bulk_provider and
+    # the fast sync endpoints stay on `provider`. Empty = use the primary `provider`.
+    planning_provider: str = ""
     # Ollama (local) backend
     host: str = "http://localhost:11434"
     model: str = "qwen2.5:3b"
@@ -193,6 +197,10 @@ class AgentsCfg(BaseModel):
     concurrency: int = 2
     step_timeout_sec: int = 120
     max_attempts: int = 3
+    # Phase 2B agent steps (each has a deterministic floor, so disabling only skips the LLM work).
+    research_enabled: bool = True   # discover + live-verify competitors before planning
+    build_enabled: bool = True      # draft staged page copy after planning
+    draft_limit: int = 5            # cap drafts per run (the dominant frontier cost)
 
 
 class ObsCfg(BaseModel):
