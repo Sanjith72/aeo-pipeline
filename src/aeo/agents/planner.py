@@ -25,11 +25,16 @@ def plan_tasks(brief: BusinessInput, *, llm: LLMClient | None = None) -> dict[st
     framework = resolve_framework(
         brief.key(), llm=llm, topic=brief.topic_hint(), category=brief.category
     )
-    plan = plan_from_brief(brief, framework=framework, llm=llm)
+    topic = brief.topic or framework.topic or brief.topic_hint()
+    plan = plan_from_brief(brief, framework=framework, llm=llm, engine_target="generic")
     plan_d = plan.to_dict()
     profile = plan_d["profile"]
     nodes = plan_d["blueprint"]["sitemap"]
 
+    _node_keys = (
+        "slug", "title", "page_type", "intent", "cluster",
+        "priority", "required_entities", "seed_questions",
+    )
     tasks = [
         {
             "id": f"page:{n['slug']}",
@@ -39,12 +44,14 @@ def plan_tasks(brief: BusinessInput, *, llm: LLMClient | None = None) -> dict[st
             "page_type": n["page_type"],
             "priority": n["priority"],
             "status": "proposed",
+            "node": {k: n.get(k) for k in _node_keys},
         }
         for n in sorted(nodes, key=lambda n: n.get("priority", 999))
     ]
 
     return {
         "domain": brief.key(),
+        "topic": topic,
         "scenario": profile.get("scenario"),
         "headline": profile.get("headline"),
         "blueprint_pages": plan_d["blueprint"]["ideal_pages"],
