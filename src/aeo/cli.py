@@ -427,6 +427,23 @@ def plan(
 
 
 @app.command()
+def agent(
+    name: str = typer.Argument(..., help="Business name, e.g. Acme"),
+    domain: str | None = typer.Option(None, "--domain", "-d", help="Domain, e.g. acme.com"),
+    topic: str | None = typer.Option(None, "--topic", "-t", help="Topic hint, e.g. ctem"),
+    category: str | None = typer.Option(None, "--category", "-c", help="Industry/category"),
+) -> None:
+    """Enqueue an assistive agent run (Planner stages a task graph for human review)."""
+    _bootstrap()
+    from .agents.runtime import start_agent_run
+    from .reference.business_input import BusinessInput
+
+    brief = BusinessInput(name=name, domain=domain, topic=topic, category=category).to_dict()
+    row = start_agent_run(brief)
+    typer.echo(f"agent run {row['id']} queued (status={row['status']}). Run `aeo worker` to process it.")
+
+
+@app.command()
 def deliverables(
     run_id: int = typer.Option(..., "--run-id", "-r", help="Scored/audited run to package"),
     out: Path = typer.Option(..., "--out", "-o", help="Output directory for the asset bundle"),
