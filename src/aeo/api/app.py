@@ -759,6 +759,55 @@ def audit_cancel(job_id: str) -> dict[str, Any]:
     return job.to_dict()
 
 
+# ── agent runs (Phase 2A: assistive copilot + human approval gate) ──────────────
+
+
+def _decide_agent_run(run_id: str, decision: str) -> dict[str, Any]:
+    """Approve/reject gate: only a 'staged' run can be decided, and only a human does it."""
+    from ..storage.repos import agent_runs as agent_runs_repo
+
+    row = agent_runs_repo.get(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown agent run")
+    if row["status"] != "staged":
+        raise HTTPException(status_code=409, detail=f"run is {row['status']}, not staged")
+    agent_runs_repo.set_status(run_id, decision)
+    return {"run_id": run_id, "status": decision}
+
+
+@app.post("/api/agent/run")
+def agent_run_start(req: BriefRequest) -> dict[str, Any]:
+    """Start an assistive agent run. The Planner stages a task graph for human review; nothing
+    is published. Returns the run id to poll."""
+    if req.domain:
+        _assert_crawlable_host(req.domain)  # SSRF parity — the run may crawl this domain later
+    from ..agents.runtime import start_agent_run
+
+    row = start_agent_run(_brief(req).to_dict())
+    return {"run_id": row["id"], "status": row["status"]}
+
+
+@app.get("/api/agent/run/{run_id}")
+def agent_run_status(run_id: str) -> dict[str, Any]:
+    """The run's status + its per-step trace (the staged task graph is in ``result``)."""
+    from ..storage.repos import agent_runs as agent_runs_repo
+
+    row = agent_runs_repo.get(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown agent run")
+    return {**row, "steps": agent_runs_repo.steps_for(run_id)}
+
+
+@app.post("/api/agent/run/{run_id}/approve")
+def agent_run_approve(run_id: str) -> dict[str, Any]:
+    return _decide_agent_run(run_id, "approved")
+
+
+@app.post("/api/agent/run/{run_id}/reject")
+def agent_run_reject(run_id: str) -> dict[str, Any]:
+    return _decide_agent_run(run_id, "rejected")
+
+
 @app.post("/api/events")
 def record_event(req: EventRequest) -> dict[str, Any]:
     """Record one product-analytics event (Block F). Best-effort by design: analytics
