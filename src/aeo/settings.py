@@ -185,6 +185,16 @@ class ScoringCfg(BaseModel):
     max_workers: int = 8
 
 
+class AgentsCfg(BaseModel):
+    # Phase 2 agent runtime: scoped LLM agents driven by a deterministic controller on the
+    # existing Postgres job queue (no new broker). concurrency caps how many AGENT_RUN jobs a
+    # worker drains at once; step_timeout_sec bounds a single agent step (Phase 2B enforces it
+    # per-LLM-call); max_attempts is the per-run retry budget before the run is marked failed.
+    concurrency: int = 2
+    step_timeout_sec: int = 120
+    max_attempts: int = 3
+
+
 class ObsCfg(BaseModel):
     # Observability. The custom ``agent_traces`` table + ``aeo trace`` are always on
     # (queryable per-page journey). This adds OPTIONAL OpenTelemetry OTLP export
@@ -260,6 +270,7 @@ class Settings(BaseSettings):
     intake: IntakeCfg = IntakeCfg()
     perplexity: PerplexityCfg = PerplexityCfg()
     scoring: ScoringCfg = ScoringCfg()
+    agents: AgentsCfg = AgentsCfg()
     reference_architecture: ReferenceArchitectureCfg = ReferenceArchitectureCfg()
     obs: ObsCfg = ObsCfg()
     api: ApiCfg = ApiCfg()
