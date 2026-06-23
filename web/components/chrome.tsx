@@ -74,6 +74,9 @@ export function TopBar() {
           <a href="#faq" className="nav-link hidden sm:block">
             FAQ
           </a>
+          <a href="/agents" className="nav-link hidden sm:block">
+            Agent Review
+          </a>
           <a href="#studio" className="btn-primary group !px-4 !py-2 text-[13px]">
             Get started
             <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" width={13} height={13} />

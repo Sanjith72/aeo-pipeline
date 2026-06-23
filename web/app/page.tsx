@@ -23,6 +23,7 @@ import { aeoScore } from "@/lib/score";
 import { Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/components/chrome";
 import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
+import { GamificationStrip } from "@/components/GamificationStrip";
 import { Combobox } from "@/components/ui/Combobox";
 import { useReducedMotion } from "@/components/motion/primitives";
 import { Check } from "@/components/ui/icons";
@@ -515,6 +516,14 @@ export default function Page() {
         {view === "results" ? (
           <>
             {error && <ErrorNote message={error} />}
+            {profile && (
+              <div className="mb-4 animate-fade-up">
+                <GamificationStrip
+                  domain={hasSite ? domain.trim() || undefined : undefined}
+                  aeoScore={aeoScore(profile)}
+                />
+              </div>
+            )}
             {planStateId && (
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-500/25 bg-emerald-500/[0.06] px-4 py-3">
                 <p className="text-sm text-ink-500">
