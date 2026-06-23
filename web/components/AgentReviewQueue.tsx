@@ -70,7 +70,7 @@ export function AgentReviewQueue() {
       setError(null);
       setStartMsg(null);
       try {
-        const { run_id } = await api.startAgentRun({
+        await api.startAgentRun({
           name,
           domain: form.domain.trim() || undefined,
           topic: form.topic.trim() || undefined,
@@ -79,15 +79,18 @@ export function AgentReviewQueue() {
           goals: [],
           use_llm: false,
         });
-        setStartMsg(`Run ${run_id} started — the agents are working. It will appear below in a minute or two.`);
+        setStartMsg(
+          "✓ Run started — the agents are researching, planning, drafting, and reviewing. It will appear in the queue below when it's ready.",
+        );
         setForm({ name: "", domain: "", topic: "" });
-        // Poll the queue so the new run surfaces automatically once it stages (~1–2 min).
+        // Poll the queue so the new run surfaces automatically once it stages. Local-model runs
+        // can take a few minutes, so keep checking for ~6 min before stopping.
         if (pollRef.current) clearInterval(pollRef.current);
         let ticks = 0;
         pollRef.current = setInterval(() => {
           ticks += 1;
           void refreshList();
-          if (ticks >= 24 && pollRef.current) clearInterval(pollRef.current);
+          if (ticks >= 72 && pollRef.current) clearInterval(pollRef.current);
         }, 5000);
       } catch (err) {
         setError((err as Error).message);
@@ -179,11 +182,8 @@ export function AgentReviewQueue() {
 
         {runs.length === 0 ? (
           <div className="card p-5 text-sm text-ink-300">
-            No staged runs yet. Start one with{" "}
-            <code className="rounded bg-ink/[0.06] px-1.5 py-0.5 font-mono text-[12px] text-ink-500">
-              aeo agent
-            </code>
-            .
+            No runs staged yet — start one above and it will appear here once the agents finish
+            (about a minute or two).
           </div>
         ) : (
           <ul className="space-y-2">
