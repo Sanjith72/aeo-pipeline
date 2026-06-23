@@ -1,12 +1,11 @@
 # Full AEO Studio stack in one command: Postgres + migrations + API + web UI.
 #
 #   cp .env.example .env                 # set POSTGRES_PASSWORD (and any API keys)
-#   docker compose up -d --build         # db -> migrate -> api -> web
+#   docker compose up -d --build         # db -> migrate -> api + web + worker
 #   open http://localhost:3000           # the UI
 #
-# Optional add-ons (off by default):
-#   docker compose --profile worker up -d worker  # crawl-queue drainer (not needed for the UI)
-#   docker compose run --rm app status            # ad-hoc CLI
+# Optional add-ons:
+#   docker compose run --rm app status            # ad-hoc CLI (the `cli` profile)
 
 x-app: &app
   build: .
@@ -79,13 +78,14 @@ services:
     depends_on:
       - api
 
-  # Long-running crawl-queue drainer — NOT needed for the UI flows (the deep audit runs
-  # in-process in the API). Opt in: `--profile worker`.
+  # Long-running drainer for the Postgres job queue. REQUIRED for the Phase 2 agent runtime
+  # (it drains AGENT_RUN jobs → research/plan/build/critic → staged for human review); the deep
+  # audit still runs in-process in the API. Part of the default stack so `docker compose up`
+  # processes agent runs out of the box.
   worker:
     <<: *app
     command: ["worker", "--idle-sleep", "5"]
     restart: unless-stopped
-    profiles: ["worker"]
     depends_on:
       db:
         condition: service_healthy
