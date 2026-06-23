@@ -379,13 +379,18 @@ def _cache_age(domain: str) -> dict[str, Any]:
     return {"last_crawled_at": when.isoformat(), "cache_age_hours": age_hours}
 
 
-def _framework_and_llm(brief: BusinessInput, use_llm: bool) -> tuple[Framework, Any]:
+def _framework_and_llm(
+    brief: BusinessInput, use_llm: bool, *, bounded: bool = False
+) -> tuple[Framework, Any]:
     """A brief-tailored framework (curated file if present, else an in-memory bootstrap
-    skeleton — LLM-tailored when enabled) + the resolved LLM client."""
-    from ..nlp.llm import get_client
+    skeleton — LLM-tailored when enabled) + the resolved LLM client. ``bounded=True`` picks
+    the short, fail-fast foreground client (:func:`get_interactive_client`) for latency-sensitive
+    callers (the synchronous /api/plan call, the polled personalize build), so a slow local
+    model degrades in bounded time instead of making the user wait minutes."""
+    from ..nlp.llm import get_client, get_interactive_client
     from ..reference.framework_bootstrap import resolve_framework
 
-    llm = get_client() if use_llm else None
+    llm = (get_interactive_client() if bounded else get_client()) if use_llm else None
     framework = resolve_framework(
         brief.key(), llm=llm, topic=brief.topic_hint(), category=brief.category
     )
@@ -409,9 +414,14 @@ def health() -> dict[str, Any]:
 
 @app.post("/api/plan")
 def plan(req: BriefRequest) -> dict[str, Any]:
-    """Scenario 1: a business brief → ideal-site blueprint + no_website strategy, no crawl."""
+    """Scenario 1: a business brief → ideal-site blueprint + no_website strategy, no crawl.
+
+    Synchronous and user-facing, so it uses the fail-fast foreground client (``bounded=True``):
+    a slow/hung local model degrades each LLM call (framework bootstrap, blueprint synthesis,
+    profile tiebreak) to deterministic output at ``interactive_timeout_sec`` rather than the
+    full per-call ``timeout_sec``."""
     brief = _brief(req)
-    framework, llm = _framework_and_llm(brief, req.use_llm)
+    framework, llm = _framework_and_llm(brief, req.use_llm, bounded=True)
     return plan_from_brief(brief, framework=framework, llm=llm).to_dict()
 
 
@@ -444,9 +454,15 @@ def _build_deliverables_payload(req: DeliverablesRequest, progress: Any = None) 
     blocking a request the proxy/keep-alive window would kill. ``progress`` (optional)
     receives ``(stage, counts)`` updates for the job poller."""
     from ..report.strategy import build_strategy
+    from ..settings import get_settings
 
+    cfg = get_settings().llm
     brief = _brief(req)
-    framework, llm = _framework_and_llm(brief, req.use_llm)
+    # The personalized (use_llm) build is the slow background job: bound it with the fail-fast
+    # foreground client + a concurrent, wall-clock-budgeted draft phase, so a slow/hung local
+    # model degrades to deterministic scaffolds in bounded time rather than running for many
+    # minutes. The instant path (use_llm=false) has no LLM, so the draft phase runs sequentially.
+    framework, llm = _framework_and_llm(brief, req.use_llm, bounded=True)
     plan_result = plan_from_brief(brief, framework=framework, llm=llm)
     if progress:
         progress("draft", {"pages": req.draft_limit})
@@ -455,6 +471,7 @@ def _build_deliverables_payload(req: DeliverablesRequest, progress: Any = None) 
         profile=plan_result.profile.to_dict(), origin=brief.domain or brief.key(),
         llm=llm, draft_limit=req.draft_limit,
         builder_mode=req.builder_mode, business=_business_dict(brief),
+        draft_workers=cfg.draft_concurrency, draft_budget_sec=cfg.draft_phase_budget_sec,
     )
     # #10 — the prioritized plan as structured JSON: phased, quick-wins flagged, each
     # task carrying current_state/action_required/how_to + AI-vs-human prompts. This

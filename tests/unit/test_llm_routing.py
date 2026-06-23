@@ -31,3 +31,24 @@ def test_get_bulk_client_falls_back_to_primary_when_unset(monkeypatch) -> None:
     finally:
         llm_mod.get_client.cache_clear()
         llm_mod.get_bulk_client.cache_clear()
+
+
+def test_get_interactive_client_uses_the_short_timeout() -> None:
+    # Foreground work (/api/plan, the personalize build) gets a fail-fast per-call timeout
+    # (interactive_timeout_sec), distinct from the bulk/audit timeout_sec, so a slow local
+    # model degrades fast.
+    cfg = LLMCfg(timeout_sec=120, interactive_timeout_sec=45)
+    interactive = LLMClient(cfg.model_copy(update={"timeout_sec": cfg.interactive_timeout_sec}))
+    assert interactive._cfg.timeout_sec == 45  # type: ignore[attr-defined]
+
+
+def test_get_interactive_client_falls_back_to_primary_when_not_shorter(monkeypatch) -> None:
+    # interactive_timeout_sec >= timeout_sec → no separate client (nothing to gain).
+    monkeypatch.setattr(llm_mod.get_settings().llm, "interactive_timeout_sec", 999)
+    llm_mod.get_client.cache_clear()
+    llm_mod.get_interactive_client.cache_clear()
+    try:
+        assert llm_mod.get_interactive_client() is llm_mod.get_client()
+    finally:
+        llm_mod.get_client.cache_clear()
+        llm_mod.get_interactive_client.cache_clear()

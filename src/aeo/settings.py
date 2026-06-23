@@ -100,6 +100,21 @@ class LLMCfg(BaseModel):
     timeout_sec: int = 120
     temperature: float = 0.1
     num_predict: int = 600
+    # ── Foreground (latency-sensitive) LLM work — fail-fast, distinct from bulk/audit ──
+    # The deep audit tolerates a slow local model (fire-and-forget batch on the bulk client).
+    # Foreground work where a user is waiting must NOT: the synchronous /api/plan brief→blueprint
+    # call, and the /api/deliverables/personalize build whose result is polled.
+    #   - interactive_timeout_sec: short, fail-fast per-generation timeout for the foreground
+    #     client (`get_interactive_client`), distinct from the bulk/audit `timeout_sec` above.
+    #     One try, no retry; used by /api/plan and the personalize build.
+    # The page-DRAFT fan-out (up to draft_limit pages) gets two more bounds on top:
+    #   - draft_concurrency: bounded worker pool for the concurrent draft phase.
+    #   - draft_phase_budget_sec: total wall-clock budget for the whole draft phase; once spent,
+    #     the not-yet-drafted pages fall back to the deterministic scaffold at once instead of
+    #     each waiting out its own timeout.
+    interactive_timeout_sec: int = 45
+    draft_concurrency: int = 4
+    draft_phase_budget_sec: int = 180
 
 
 class DatabaseCfg(BaseModel):
