@@ -201,6 +201,7 @@ class AgentsCfg(BaseModel):
     research_enabled: bool = True   # discover + live-verify competitors before planning
     build_enabled: bool = True      # draft staged page copy after planning
     draft_limit: int = 5            # cap drafts per run (the dominant frontier cost)
+    critic_enabled: bool = True     # gate staged drafts (independent + adversarial + claim audit) before human review
 
 
 class ObsCfg(BaseModel):

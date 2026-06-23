@@ -25,3 +25,9 @@ def test_agents_env_override(monkeypatch) -> None:
     monkeypatch.setenv("AEO__AGENTS__CONCURRENCY", "5")
     s = Settings()
     assert s.agents.concurrency == 5
+
+
+def test_agents_cfg_has_critic_flag() -> None:
+    from aeo.settings import AgentsCfg
+
+    assert AgentsCfg().critic_enabled is True
