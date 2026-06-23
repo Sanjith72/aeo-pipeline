@@ -11,6 +11,7 @@ import type {
   CompetitorSuggestResponse,
   DeliverablesJob,
   DeliverablesResponse,
+  GamificationView,
   MilestoneDashboard,
   MilestoneStatus,
   MilestoneVerifyResult,
@@ -318,6 +319,26 @@ export const api = {
     };
     es.onerror = () => es.close();
     return es;
+  },
+
+  // ── gamification (Phase 3) ────────────────────────────────────────────────
+  /** Companion state + awards for this browser session. Best-effort: empty on any failure. */
+  async getGamification(domain?: string): Promise<GamificationView> {
+    if (typeof window === "undefined") return { state: null, awards: [] };
+    const sid = getSessionId();
+    const q = `session_id=${encodeURIComponent(sid)}${domain ? `&domain=${encodeURIComponent(domain)}` : ""}`;
+    try {
+      const res = await fetch(`${BASE}/api/gamification?${q}`, { headers: headers() });
+      if (!res.ok) return { state: null, awards: [] };
+      return (await res.json()) as GamificationView;
+    } catch {
+      return { state: null, awards: [] };
+    }
+  },
+  /** Recompute verified-win awards + score tiers (idempotent). `aeoScore` is the canonical
+   *  number from lib/score.ts so the backend never invents one. Best-effort. */
+  reconcileGamification(domain: string, aeoScore?: number): Promise<GamificationView["state"] extends never ? never : unknown> {
+    return postJson("/api/gamification/reconcile", { session_id: getSessionId(), domain, aeo_score: aeoScore ?? null });
   },
 
   // ── instrumentation (Block F) ─────────────────────────────────────────────

@@ -402,3 +402,28 @@ export type AgentStreamMessage =
   | { type: "status"; status: string; current_step?: string | null }
   | { type: "done"; status: string; result?: AgentRunDetail["result"] }
   | { type: "error"; detail: string };
+
+// ── gamification (Phase 3: honest, verified-outcome rewards) ─────────────────
+export interface GamificationState {
+  session_id: string;
+  domain?: string | null;
+  maturity_stage: string;
+  aeo_score?: number | null;
+  aeo_band?: string | null;
+  momentum: number;
+  verified_wins: number;
+  citations_earned: number;
+}
+
+export interface GamificationAward {
+  id: number;
+  award_type: string;     // verified_win | citation | status_tier | maturity_up
+  criterion?: string | null;
+  score_delta?: number | null;
+  created_at?: string | null;
+}
+
+export interface GamificationView {
+  state: GamificationState | null;
+  awards: GamificationAward[];
+}
