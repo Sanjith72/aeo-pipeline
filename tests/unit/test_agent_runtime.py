@@ -36,30 +36,35 @@ def _row(brief=None, status="queued"):
     return {"id": "run1", "status": status, "brief": brief or {"name": "Acme", "domain": "acme.com"}}
 
 
-def _ctrl(repo, *, research=None, planner=None, builder=None, cfg=None):
+def _ctrl(repo, *, research=None, planner=None, builder=None, critic=None, cfg=None):
     from aeo.agents.runtime import AgentRunController
 
     return AgentRunController(
         research=research or (lambda brief, **kw: {"competitors": []}),
         planner=planner or (lambda brief: {"topic": "ctem", "tasks": [{"id": "t", "kind": "content"}]}),
         builder=builder or (lambda graph, **kw: graph),
+        critic=critic or (lambda graph, **kw: graph),
         repo=repo,
         llm_provider=lambda: None,
         cfg=cfg or AgentsCfg(),
     )
 
 
-def test_full_flow_records_research_plan_build_in_order() -> None:
+def test_full_flow_records_research_plan_build_critic_in_order() -> None:
     repo = FakeRepo(_row())
     research = lambda brief, **kw: {"competitors": [{"name": "R7", "domain": "rapid7.com"}]}
     planner = lambda brief: {"topic": "ctem", "tasks": [{"id": "page:/x", "kind": "content"}]}
     builder = lambda graph, **kw: {**graph, "built": True}
+    critic = lambda graph, **kw: {**graph, "critiqued": True}
 
-    out = _ctrl(repo, research=research, planner=planner, builder=builder).run("run1")
+    out = _ctrl(repo, research=research, planner=planner, builder=builder, critic=critic).run("run1")
 
     assert out["status"] == "staged"
     assert out["result"]["built"] is True
-    assert [(s["seq"], s["agent"]) for s in repo.steps] == [(1, "research"), (2, "planner"), (3, "builder")]
+    assert out["result"]["critiqued"] is True
+    assert [(s["seq"], s["agent"]) for s in repo.steps] == [
+        (1, "research"), (2, "planner"), (3, "builder"), (4, "critic")
+    ]
 
 
 def test_competitors_are_folded_into_the_brief() -> None:
@@ -77,7 +82,7 @@ def test_competitors_are_folded_into_the_brief() -> None:
 
 def test_flags_off_runs_planner_only() -> None:
     repo = FakeRepo(_row())
-    cfg = AgentsCfg(research_enabled=False, build_enabled=False)
+    cfg = AgentsCfg(research_enabled=False, build_enabled=False, critic_enabled=False)
     _ctrl(repo, cfg=cfg).run("run1")
     assert [(s["seq"], s["agent"]) for s in repo.steps] == [(1, "planner")]
 
@@ -88,7 +93,7 @@ def test_planner_failure_marks_failed_and_reraises() -> None:
     def boom(brief):
         raise RuntimeError("planner exploded")
 
-    cfg = AgentsCfg(research_enabled=False, build_enabled=False)
+    cfg = AgentsCfg(research_enabled=False, build_enabled=False, critic_enabled=False)
     with pytest.raises(RuntimeError, match="planner exploded"):
         _ctrl(repo, planner=boom, cfg=cfg).run("run1")
     assert repo.runs["run1"]["status"] == "failed"
