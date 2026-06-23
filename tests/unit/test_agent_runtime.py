@@ -1,13 +1,13 @@
-"""AgentRunController: plan→staged transitions and the failure path, via injected fakes."""
+"""AgentRunController: research → plan → build → staged, and the failure path. Injected fakes."""
 
 from __future__ import annotations
 
 import pytest
 
+from aeo.settings import AgentsCfg
+
 
 class FakeRepo:
-    """In-memory stand-in for storage.repos.agent_runs (only the methods the controller uses)."""
-
     def __init__(self, run: dict) -> None:
         self.runs = {run["id"]: dict(run)}
         self.steps: list[dict] = []
@@ -36,45 +36,69 @@ def _row(brief=None, status="queued"):
     return {"id": "run1", "status": status, "brief": brief or {"name": "Acme", "domain": "acme.com"}}
 
 
-def test_run_plans_and_stages() -> None:
+def _ctrl(repo, *, research=None, planner=None, builder=None, cfg=None):
     from aeo.agents.runtime import AgentRunController
 
+    return AgentRunController(
+        research=research or (lambda brief, **kw: {"competitors": []}),
+        planner=planner or (lambda brief: {"topic": "ctem", "tasks": [{"id": "t", "kind": "content"}]}),
+        builder=builder or (lambda graph, **kw: graph),
+        repo=repo,
+        llm_provider=lambda: None,
+        cfg=cfg or AgentsCfg(),
+    )
+
+
+def test_full_flow_records_research_plan_build_in_order() -> None:
     repo = FakeRepo(_row())
-    graph = {"tasks": [{"id": "page:home"}, {"id": "page:about"}]}
-    ctrl = AgentRunController(planner=lambda brief: graph, repo=repo)
+    research = lambda brief, **kw: {"competitors": [{"name": "R7", "domain": "rapid7.com"}]}
+    planner = lambda brief: {"topic": "ctem", "tasks": [{"id": "page:/x", "kind": "content"}]}
+    builder = lambda graph, **kw: {**graph, "built": True}
 
-    out = ctrl.run("run1")
+    out = _ctrl(repo, research=research, planner=planner, builder=builder).run("run1")
+
     assert out["status"] == "staged"
-    assert out["result"] == graph
-    assert repo.steps == [
-        {"run_id": "run1", "seq": 1, "agent": "planner", "tool": "plan_from_brief",
-         "status": "ok", "detail": {"task_count": 2}}
-    ]
+    assert out["result"]["built"] is True
+    assert [(s["seq"], s["agent"]) for s in repo.steps] == [(1, "research"), (2, "planner"), (3, "builder")]
 
 
-def test_run_records_failure_and_reraises() -> None:
-    from aeo.agents.runtime import AgentRunController
+def test_competitors_are_folded_into_the_brief() -> None:
+    repo = FakeRepo(_row())
+    seen = {}
 
+    def planner(brief):
+        seen["competitors"] = brief.competitors
+        return {"topic": "ctem", "tasks": []}
+
+    research = lambda brief, **kw: {"competitors": [{"name": "R7", "domain": "rapid7.com"}]}
+    _ctrl(repo, research=research, planner=planner).run("run1")
+    assert seen["competitors"] == ["rapid7.com"]
+
+
+def test_flags_off_runs_planner_only() -> None:
+    repo = FakeRepo(_row())
+    cfg = AgentsCfg(research_enabled=False, build_enabled=False)
+    _ctrl(repo, cfg=cfg).run("run1")
+    assert [(s["seq"], s["agent"]) for s in repo.steps] == [(1, "planner")]
+
+
+def test_planner_failure_marks_failed_and_reraises() -> None:
     repo = FakeRepo(_row())
 
     def boom(brief):
         raise RuntimeError("planner exploded")
 
-    ctrl = AgentRunController(planner=boom, repo=repo)
+    cfg = AgentsCfg(research_enabled=False, build_enabled=False)
     with pytest.raises(RuntimeError, match="planner exploded"):
-        ctrl.run("run1")
-
+        _ctrl(repo, planner=boom, cfg=cfg).run("run1")
     assert repo.runs["run1"]["status"] == "failed"
     assert repo.steps[0]["status"] == "failed"
     assert repo.steps[0]["error_class"] == "RuntimeError"
 
 
-def test_run_is_noop_on_terminal_status() -> None:
-    from aeo.agents.runtime import AgentRunController
-
+def test_terminal_status_is_a_noop() -> None:
     repo = FakeRepo(_row(status="approved"))
     called = []
-    ctrl = AgentRunController(planner=lambda brief: called.append(1) or {}, repo=repo)
-    out = ctrl.run("run1")
-    assert out["status"] == "approved"
-    assert called == []  # already resolved → the planner never runs
+    _ctrl(repo, planner=lambda brief: called.append(1) or {}).run("run1")
+    assert repo.runs["run1"]["status"] == "approved"
+    assert called == []
