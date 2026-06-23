@@ -354,3 +354,51 @@ export interface SiteFreshnessResponse {
   status?: string;
   has_report?: boolean;
 }
+
+// ── agent runs (Phase 2: assistive copilot + human review) ───────────────────
+export interface AgentStep {
+  seq: number;
+  agent: string;            // planner | research | builder | critic
+  tool?: string | null;
+  status: string;           // ok | failed | skipped
+  model?: string | null;
+  tokens?: number | null;
+  cost_usd?: number | null;
+  detail?: Record<string, unknown> | null;
+}
+
+export interface CriticVerdict {
+  passed: boolean;
+  independent_passed: boolean;
+  claims_flagged: boolean;
+  claims: string[];
+  needs_review: boolean;
+}
+
+export interface AgentTask {
+  id: string;
+  title: string;
+  slug?: string;
+  status: string;           // proposed | drafted | reviewed | flagged
+  draft?: { body_markdown?: string; draft_quality?: string; word_count?: number } | null;
+  critic?: CriticVerdict | null;
+}
+
+export interface AgentRunSummary {
+  id: string;
+  status: string;           // queued | planning | staged | approved | rejected | failed | cancelled
+  domain?: string | null;
+  current_step?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AgentRunDetail extends AgentRunSummary {
+  result?: { domain?: string; topic?: string; headline?: string; tasks?: AgentTask[] } | null;
+  steps?: AgentStep[];
+}
+
+export type AgentStreamMessage =
+  | { type: "step"; step: AgentStep }
+  | { type: "status"; status: string; current_step?: string | null }
+  | { type: "done"; status: string; result?: AgentRunDetail["result"] }
+  | { type: "error"; detail: string };

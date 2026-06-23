@@ -2,6 +2,9 @@
 // no business logic lives here. Calls are same-origin to the server proxy (app/api/[...path]).
 
 import type {
+  AgentRunDetail,
+  AgentRunSummary,
+  AgentStreamMessage,
   AuditJob,
   BriefPlan,
   BriefRequest,
@@ -279,6 +282,42 @@ export const api = {
     } catch {
       return { verified: [], count: 0 };
     }
+  },
+
+  // ── agent runs (Phase 2) ──────────────────────────────────────────────────
+  startAgentRun(req: BriefRequest): Promise<{ run_id: string; status: string }> {
+    return postJson<{ run_id: string; status: string }>("/api/agent/run", req);
+  },
+  async listAgentRuns(status = "staged"): Promise<{ runs: AgentRunSummary[] }> {
+    const res = await fetch(`${BASE}/api/agent/runs?status=${encodeURIComponent(status)}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as { runs: AgentRunSummary[] };
+  },
+  async getAgentRun(runId: string): Promise<AgentRunDetail> {
+    const res = await fetch(`${BASE}/api/agent/run/${encodeURIComponent(runId)}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as AgentRunDetail;
+  },
+  approveAgentRun(runId: string): Promise<{ run_id: string; status: string }> {
+    return postJson<{ run_id: string; status: string }>(`/api/agent/run/${encodeURIComponent(runId)}/approve`, {});
+  },
+  rejectAgentRun(runId: string): Promise<{ run_id: string; status: string }> {
+    return postJson<{ run_id: string; status: string }>(`/api/agent/run/${encodeURIComponent(runId)}/reject`, {});
+  },
+  /** Live run updates via SSE (browser only). The same-origin proxy injects auth; EventSource
+   *  can't set headers. Returns the EventSource so the caller can close() it on unmount. */
+  streamAgentRun(runId: string, onMessage: (msg: AgentStreamMessage) => void): EventSource | null {
+    if (typeof window === "undefined" || typeof EventSource === "undefined") return null;
+    const es = new EventSource(`${BASE}/api/agent/run/${encodeURIComponent(runId)}/stream`);
+    es.onmessage = (e) => {
+      try {
+        onMessage(JSON.parse(e.data) as AgentStreamMessage);
+      } catch {
+        /* ignore malformed frame */
+      }
+    };
+    es.onerror = () => es.close();
+    return es;
   },
 
   // ── instrumentation (Block F) ─────────────────────────────────────────────
