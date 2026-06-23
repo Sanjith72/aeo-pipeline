@@ -51,10 +51,10 @@ def reconcile(
     """Grant verified-win awards + score achievements, refresh state. Idempotent. ``_gam`` and
     ``_wins`` are injection seams for tests; in production they default to the real repos."""
     if _gam is None:
-        from ..storage.repos import gamification as _gam  # noqa: PLC0415
+        from ..storage.repos import gamification as _gam
     wins = _wins
     if wins is None:
-        from ..storage.repos import outcomes as outcomes_repo  # noqa: PLC0415
+        from ..storage.repos import outcomes as outcomes_repo
         wins = outcomes_repo.implemented_for_domain(domain) if domain else []
 
     new_awards: list[dict[str, Any]] = []
