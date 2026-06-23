@@ -15,6 +15,7 @@ export function AgentReviewQueue() {
   const [selected, setSelected] = useState<AgentRunDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"staged" | "approved" | "rejected">("staged");
   const esRef = useRef<EventSource | null>(null);
 
   // "Start a run" form state.
@@ -25,12 +26,12 @@ export function AgentReviewQueue() {
 
   const refreshList = useCallback(async () => {
     try {
-      const { runs } = await api.listAgentRuns("staged");
+      const { runs } = await api.listAgentRuns(statusFilter);
       setRuns(runs);
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [statusFilter]);
 
   useEffect(() => {
     void refreshList();
@@ -83,6 +84,7 @@ export function AgentReviewQueue() {
           "✓ Run started — the agents are researching, planning, drafting, and reviewing. It will appear in the queue below when it's ready.",
         );
         setForm({ name: "", domain: "", topic: "" });
+        setStatusFilter("staged"); // make sure the new run is visible in the right tab
         // Poll the queue so the new run surfaces automatically once it stages. Local-model runs
         // can take a few minutes, so keep checking for ~6 min before stopping.
         if (pollRef.current) clearInterval(pollRef.current);
@@ -171,7 +173,24 @@ export function AgentReviewQueue() {
         {/* ── queue sidebar ── */}
         <aside className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="label-mono">Review queue</h2>
+          <div className="flex gap-1">
+            {(["staged", "approved", "rejected"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => {
+                  setSelected(null);
+                  setStatusFilter(s);
+                }}
+                className={`rounded-lg border px-2.5 py-1 text-[12px] capitalize transition-colors ${
+                  statusFilter === s
+                    ? "border-accent bg-accent-50 text-ink"
+                    : "border-transparent text-ink-300 hover:text-ink"
+                }`}
+              >
+                {s === "staged" ? "Needs review" : s}
+              </button>
+            ))}
+          </div>
           <button
             onClick={() => void refreshList()}
             className="text-[12px] text-ink-300 transition-colors hover:text-ink"
@@ -182,8 +201,9 @@ export function AgentReviewQueue() {
 
         {runs.length === 0 ? (
           <div className="card p-5 text-sm text-ink-300">
-            No runs staged yet — start one above and it will appear here once the agents finish
-            (about a minute or two).
+            {statusFilter === "staged"
+              ? "No runs staged yet — start one above and it will appear here once the agents finish (about a minute or two)."
+              : `No ${statusFilter} runs yet.`}
           </div>
         ) : (
           <ul className="space-y-2">
