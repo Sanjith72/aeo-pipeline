@@ -39,8 +39,8 @@ log = get_logger(__name__)
 
 # Connect-phase ceiling for the local Ollama call: a DOWN daemon must fail in seconds, not
 # wait out the (much longer) generation read timeout. A fail-fast floor, not a tunable — the
-# read timeout itself stays configurable (LLMCfg.timeout_sec / the shorter draft_timeout_sec
-# used by the background page-drafting job).
+# read timeout itself stays configurable (LLMCfg.timeout_sec / the shorter interactive_timeout_sec
+# used by the foreground page-building paths).
 _CONNECT_TIMEOUT_SEC = 5.0
 
 
@@ -230,15 +230,16 @@ def get_bulk_client() -> LLMClient:
 
 
 @lru_cache(maxsize=1)
-def get_draft_client() -> LLMClient:
-    """The client for the LLM page-drafting phase — the background
-    ``/api/deliverables/personalize`` build. Same provider/model/host as :func:`get_client`,
-    but with a SHORT, fail-fast generation timeout (``draft_timeout_sec``) so a slow or hung
-    local model degrades to deterministic scaffolds in bounded time instead of letting the job
-    run for many minutes. Distinct from the bulk/audit path (:func:`get_bulk_client`), which
-    keeps the full ``timeout_sec``. Falls back to the primary client when the draft timeout
-    isn't actually shorter."""
+def get_interactive_client() -> LLMClient:
+    """The client for FOREGROUND, latency-sensitive LLM work — the synchronous ``/api/plan``
+    brief→blueprint call and the polled ``/api/deliverables/personalize`` build. Same
+    provider/model/host as :func:`get_client`, but with a SHORT, fail-fast generation timeout
+    (``interactive_timeout_sec``) so a slow or hung local model degrades to deterministic
+    output in bounded time instead of making a user wait minutes. Distinct from the bulk/audit
+    path (:func:`get_bulk_client`), which keeps the full ``timeout_sec`` (fire-and-forget
+    batch). Falls back to the primary client when the interactive timeout isn't actually
+    shorter."""
     cfg = get_settings().llm
-    if cfg.draft_timeout_sec >= cfg.timeout_sec:
+    if cfg.interactive_timeout_sec >= cfg.timeout_sec:
         return get_client()
-    return LLMClient(cfg.model_copy(update={"timeout_sec": cfg.draft_timeout_sec}))
+    return LLMClient(cfg.model_copy(update={"timeout_sec": cfg.interactive_timeout_sec}))

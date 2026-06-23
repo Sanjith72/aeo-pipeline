@@ -385,12 +385,12 @@ def _framework_and_llm(
 ) -> tuple[Framework, Any]:
     """A brief-tailored framework (curated file if present, else an in-memory bootstrap
     skeleton — LLM-tailored when enabled) + the resolved LLM client. ``bounded=True`` picks
-    the short, fail-fast draft client (:func:`get_draft_client`) used by the background
-    personalize build, so a slow local model degrades to scaffolds in bounded time instead of
-    letting the job run for many minutes."""
-    from ..nlp.llm import get_client, get_draft_client
+    the short, fail-fast foreground client (:func:`get_interactive_client`) for latency-sensitive
+    callers (the synchronous /api/plan call, the polled personalize build), so a slow local
+    model degrades in bounded time instead of making the user wait minutes."""
+    from ..nlp.llm import get_client, get_interactive_client
 
-    llm = (get_draft_client() if bounded else get_client()) if use_llm else None
+    llm = (get_interactive_client() if bounded else get_client()) if use_llm else None
     key = brief.key()
     if framework_file_path(key).exists():
         return load_framework(key), llm
@@ -415,9 +415,14 @@ def health() -> dict[str, Any]:
 
 @app.post("/api/plan")
 def plan(req: BriefRequest) -> dict[str, Any]:
-    """Scenario 1: a business brief → ideal-site blueprint + no_website strategy, no crawl."""
+    """Scenario 1: a business brief → ideal-site blueprint + no_website strategy, no crawl.
+
+    Synchronous and user-facing, so it uses the fail-fast foreground client (``bounded=True``):
+    a slow/hung local model degrades each LLM call (framework bootstrap, blueprint synthesis,
+    profile tiebreak) to deterministic output at ``interactive_timeout_sec`` rather than the
+    full per-call ``timeout_sec``."""
     brief = _brief(req)
-    framework, llm = _framework_and_llm(brief, req.use_llm)
+    framework, llm = _framework_and_llm(brief, req.use_llm, bounded=True)
     return plan_from_brief(brief, framework=framework, llm=llm).to_dict()
 
 
@@ -462,9 +467,9 @@ def _build_deliverables_payload(req: DeliverablesRequest, progress: Any = None) 
     cfg = get_settings().llm
     brief = _brief(req)
     # The personalized (use_llm) build is the slow background job: bound it with the fail-fast
-    # draft client + a concurrent, wall-clock-budgeted draft phase, so a slow/hung local model
-    # degrades to deterministic scaffolds in bounded time rather than running for many minutes.
-    # The instant path (use_llm=false) has no LLM, so the draft phase runs sequentially/fast.
+    # foreground client + a concurrent, wall-clock-budgeted draft phase, so a slow/hung local
+    # model degrades to deterministic scaffolds in bounded time rather than running for many
+    # minutes. The instant path (use_llm=false) has no LLM, so the draft phase runs sequentially.
     framework, llm = _framework_and_llm(brief, req.use_llm, bounded=True)
     plan_result = plan_from_brief(brief, framework=framework, llm=llm)
     if progress:
