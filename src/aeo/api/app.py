@@ -854,6 +854,40 @@ async def agent_run_stream(run_id: str) -> StreamingResponse:
     )
 
 
+# ── gamification (Phase 3: honest, verified-outcome rewards) ─────────────────────
+
+
+class GamifyReconcileRequest(BaseModel):
+    session_id: str
+    domain: str | None = None
+    aeo_score: int | None = None
+
+
+@app.get("/api/gamification")
+def gamification_get(session_id: str, domain: str | None = None) -> dict[str, Any]:
+    """The companion state + recent awards for a session. Best-effort: empty on any miss."""
+    from ..storage.repos import gamification as gamification_repo
+
+    try:
+        state = gamification_repo.get_state(session_id)
+        awards = gamification_repo.awards_for(session_id) if state else []
+    except Exception:  # gamification must never break the app
+        return {"state": None, "awards": []}
+    return {"state": state, "awards": awards}
+
+
+@app.post("/api/gamification/reconcile")
+def gamification_reconcile(req: GamifyReconcileRequest) -> dict[str, Any]:
+    """Recompute verified-win awards + score tiers for a session/domain. Idempotent +
+    best-effort (a failure resolves to a no-op so the UI never breaks)."""
+    from ..companion import rewards
+
+    try:
+        return rewards.reconcile(req.session_id, req.domain, aeo_score=req.aeo_score)
+    except Exception:
+        return {"new_awards": [], "unlocked": [], "state": None}
+
+
 @app.post("/api/events")
 def record_event(req: EventRequest) -> dict[str, Any]:
     """Record one product-analytics event (Block F). Best-effort by design: analytics
