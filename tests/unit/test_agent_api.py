@@ -67,3 +67,36 @@ def test_approve_409_when_not_staged(monkeypatch) -> None:
 
     monkeypatch.setattr(repo, "get", lambda rid: {"id": rid, "status": "approved"})
     assert client.post("/api/agent/run/run42/approve").status_code == 409
+
+
+def test_list_agent_runs_returns_repo_rows(monkeypatch) -> None:
+    from aeo.storage.repos import agent_runs as repo
+
+    monkeypatch.setattr(repo, "list_by_status", lambda status, limit=50: [{"id": "r1", "status": status}])
+    body = client.get("/api/agent/runs?status=staged").json()
+    assert body == {"runs": [{"id": "r1", "status": "staged"}]}
+
+
+def test_stream_emits_steps_then_done_for_a_terminal_run(monkeypatch) -> None:
+    from aeo.storage.repos import agent_runs as repo
+
+    monkeypatch.setattr(repo, "get", lambda rid: {"id": rid, "status": "staged",
+                                                  "current_step": "review", "result": {"tasks": []}})
+    monkeypatch.setattr(repo, "steps_for", lambda rid: [{"seq": 1, "agent": "planner", "status": "ok"}])
+
+    with client.stream("GET", "/api/agent/run/r1/stream") as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        body = "".join(r.iter_text())
+    assert '"type": "step"' in body
+    assert '"type": "done"' in body
+    assert '"status": "staged"' in body
+
+
+def test_stream_404s_for_unknown_run(monkeypatch) -> None:
+    from aeo.storage.repos import agent_runs as repo
+
+    monkeypatch.setattr(repo, "get", lambda rid: None)
+    with client.stream("GET", "/api/agent/run/nope/stream") as r:
+        body = "".join(r.iter_text())
+    assert '"type": "error"' in body

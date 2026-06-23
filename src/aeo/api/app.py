@@ -18,6 +18,7 @@ require a matching ``X-API-Key`` header (see :func:`require_api_key`). Unset = o
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import socket
@@ -27,7 +28,7 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from ..intelligence.brief import plan_from_brief
@@ -806,6 +807,51 @@ def agent_run_approve(run_id: str) -> dict[str, Any]:
 @app.post("/api/agent/run/{run_id}/reject")
 def agent_run_reject(run_id: str) -> dict[str, Any]:
     return _decide_agent_run(run_id, "rejected")
+
+
+_AGENT_TERMINAL = frozenset({"staged", "approved", "rejected", "failed", "cancelled"})
+
+
+def _sse(obj: dict[str, Any]) -> str:
+    return f"data: {json.dumps(obj, default=str)}\n\n"
+
+
+@app.get("/api/agent/runs")
+def agent_runs_list(status: str = "staged", limit: int = 50) -> dict[str, Any]:
+    """Agent runs in a given status (default 'staged' — the review queue)."""
+    from ..storage.repos import agent_runs as agent_runs_repo
+
+    return {"runs": agent_runs_repo.list_by_status(status, limit=max(1, min(limit, 200)))}
+
+
+@app.get("/api/agent/run/{run_id}/stream")
+async def agent_run_stream(run_id: str) -> StreamingResponse:
+    """Stream a run's steps + status as Server-Sent Events. Polls the durable agent tables
+    (so it works across the API↔worker process boundary) and closes once the run is terminal."""
+    from ..storage.repos import agent_runs as agent_runs_repo
+
+    async def gen():
+        seen = 0
+        for _ in range(600):  # ~10 min ceiling at 1s/poll
+            row = await asyncio.to_thread(agent_runs_repo.get, run_id)
+            if row is None:
+                yield _sse({"type": "error", "detail": "unknown agent run"})
+                return
+            steps = await asyncio.to_thread(agent_runs_repo.steps_for, run_id)
+            for step in steps[seen:]:
+                yield _sse({"type": "step", "step": step})
+            seen = len(steps)
+            yield _sse({"type": "status", "status": row["status"], "current_step": row.get("current_step")})
+            if row["status"] in _AGENT_TERMINAL:
+                yield _sse({"type": "done", "status": row["status"], "result": row.get("result")})
+                return
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/events")
