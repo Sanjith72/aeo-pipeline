@@ -2,6 +2,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent } from "react";
 
 import { api } from "../lib/api";
 import { summarizeRun } from "../lib/agentRun";
@@ -15,6 +16,12 @@ export function AgentReviewQueue() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
+
+  // "Start a run" form state.
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [form, setForm] = useState({ name: "", domain: "", topic: "" });
+  const [starting, setStarting] = useState(false);
+  const [startMsg, setStartMsg] = useState<string | null>(null);
 
   const refreshList = useCallback(async () => {
     try {
@@ -43,7 +50,53 @@ export function AgentReviewQueue() {
     });
   }, []);
 
-  useEffect(() => () => esRef.current?.close(), []);
+  useEffect(
+    () => () => {
+      esRef.current?.close();
+      if (pollRef.current) clearInterval(pollRef.current);
+    },
+    [],
+  );
+
+  const startRun = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault();
+      const name = form.name.trim();
+      if (!name) {
+        setError("A business name is required to start a run.");
+        return;
+      }
+      setStarting(true);
+      setError(null);
+      setStartMsg(null);
+      try {
+        const { run_id } = await api.startAgentRun({
+          name,
+          domain: form.domain.trim() || undefined,
+          topic: form.topic.trim() || undefined,
+          services: [],
+          competitors: [],
+          goals: [],
+          use_llm: false,
+        });
+        setStartMsg(`Run ${run_id} started — the agents are working. It will appear below in a minute or two.`);
+        setForm({ name: "", domain: "", topic: "" });
+        // Poll the queue so the new run surfaces automatically once it stages (~1–2 min).
+        if (pollRef.current) clearInterval(pollRef.current);
+        let ticks = 0;
+        pollRef.current = setInterval(() => {
+          ticks += 1;
+          void refreshList();
+          if (ticks >= 24 && pollRef.current) clearInterval(pollRef.current);
+        }, 5000);
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setStarting(false);
+      }
+    },
+    [form, refreshList],
+  );
 
   const decide = useCallback(
     async (id: string, decision: "approve" | "reject") => {
@@ -66,9 +119,54 @@ export function AgentReviewQueue() {
   const summary = selected ? summarizeRun(selected) : null;
 
   return (
-    <div className="grid grid-cols-1 gap-6 md:grid-cols-[20rem_1fr]">
-      {/* ── queue sidebar ── */}
-      <aside className="space-y-3">
+    <div className="space-y-6">
+      {/* ── start a new run ── */}
+      <form onSubmit={startRun} className="card p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="label-mono">Start a run</h2>
+          {startMsg && <span className="text-[12px] text-emerald-300">{startMsg}</span>}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
+          <div className="field-group">
+            <span className="field-label">Business name</span>
+            <input
+              className="input"
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="Acme"
+            />
+          </div>
+          <div className="field-group">
+            <span className="field-label">Domain (optional)</span>
+            <input
+              className="input"
+              value={form.domain}
+              onChange={(e) => setForm({ ...form, domain: e.target.value })}
+              placeholder="acme.com"
+              inputMode="url"
+            />
+          </div>
+          <div className="field-group">
+            <span className="field-label">Topic (optional)</span>
+            <input
+              className="input"
+              value={form.topic}
+              onChange={(e) => setForm({ ...form, topic: e.target.value })}
+              placeholder="ctem"
+            />
+          </div>
+          <button type="submit" disabled={starting} className="btn-accent !px-5 text-[13px]">
+            {starting ? "Starting…" : "Start run"}
+          </button>
+        </div>
+        <p className="mt-2.5 text-xs text-ink-300">
+          The agents research → plan → draft → critique, then stage the result here for your approval.
+        </p>
+      </form>
+
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-[20rem_1fr]">
+        {/* ── queue sidebar ── */}
+        <aside className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="label-mono">Review queue</h2>
           <button
@@ -231,6 +329,7 @@ export function AgentReviewQueue() {
           )
         )}
       </section>
+      </div>
     </div>
   );
 }
