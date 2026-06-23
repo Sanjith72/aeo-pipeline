@@ -243,3 +243,15 @@ def get_interactive_client() -> LLMClient:
     if cfg.interactive_timeout_sec >= cfg.timeout_sec:
         return get_client()
     return LLMClient(cfg.model_copy(update={"timeout_sec": cfg.interactive_timeout_sec}))
+
+
+@lru_cache(maxsize=1)
+def get_planning_client() -> LLMClient:
+    """The reasoning/drafting tier for the agent layer (Planner/Builder). Routed to
+    ``AEO__LLM__PLANNING_PROVIDER`` (e.g. ``cloud`` for a frontier model). Falls back to the
+    primary ``get_client()`` when unset or equal to the primary provider — so a hybrid
+    deployment pays for frontier reasoning without changing the fast sync endpoints."""
+    cfg = get_settings().llm
+    if not cfg.planning_provider or cfg.planning_provider == cfg.provider:
+        return get_client()
+    return LLMClient(cfg.model_copy(update={"provider": cfg.planning_provider}))

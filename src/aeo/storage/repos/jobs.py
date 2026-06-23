@@ -31,9 +31,9 @@ def enqueue(kind: str, payload: dict[str, Any], run_after: datetime | None = Non
 def claim(worker_id: str, kinds: list[str] | None = None) -> dict | None:
     """Atomic claim of the next ready job. Returns the row or None."""
     where_kind = "AND kind = ANY(%s)" if kinds else ""
-    params: tuple = (worker_id,)
-    if kinds:
-        params = (worker_id, kinds)
+    # Placeholders fill in textual order: the kind=ANY(%s) filter (when present) precedes
+    # the locked_by=%s assignment, so kinds must come before worker_id in params.
+    params: tuple = (kinds, worker_id) if kinds else (worker_id,)
 
     with transaction() as conn, conn.cursor() as cur:
         cur.execute(

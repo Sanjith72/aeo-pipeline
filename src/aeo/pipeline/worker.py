@@ -25,6 +25,7 @@ log = get_logger(__name__)
 
 CRAWL_BATCH = "crawl_batch"
 ANALYZE_RUN = "analyze_run"
+AGENT_RUN = "agent_run"
 
 
 def enqueue_batch(
@@ -46,6 +47,11 @@ def enqueue_analysis(run_id: int, max_attempts: int = 4) -> int:
     return jobs_repo.enqueue(ANALYZE_RUN, {"run_id": run_id}, max_attempts=max_attempts)
 
 
+def enqueue_agent_run(run_id: str, max_attempts: int = 3) -> int:
+    """Enqueue an assistive agent run (AgentRunController.run) for a worker to drive."""
+    return jobs_repo.enqueue(AGENT_RUN, {"run_id": run_id}, max_attempts=max_attempts)
+
+
 class Worker:
     def __init__(
         self,
@@ -54,7 +60,7 @@ class Worker:
         idle_sleep: float = 5.0,
     ) -> None:
         self.worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}"
-        self.kinds = kinds or [CRAWL_BATCH, ANALYZE_RUN]
+        self.kinds = kinds or [CRAWL_BATCH, ANALYZE_RUN, AGENT_RUN]
         self.idle_sleep = idle_sleep
         self._orch = Orchestrator()
 
@@ -93,6 +99,10 @@ class Worker:
             asyncio.run(self._orch.run_urls(payload["urls"], target=target, label=payload.get("label")))
         elif kind == ANALYZE_RUN:
             self._orch.analyze_run(int(payload["run_id"]))
+        elif kind == AGENT_RUN:
+            from ..agents.runtime import AgentRunController  # lazy: avoid import cycle
+
+            AgentRunController().run(str(payload["run_id"]))
         else:
             raise ValueError(f"unhandled job kind: {kind!r}")
 
