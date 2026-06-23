@@ -100,6 +100,19 @@ class LLMCfg(BaseModel):
     timeout_sec: int = 120
     temperature: float = 0.1
     num_predict: int = 600
+    # ── LLM page-drafting phase (the /api/deliverables/personalize background job) ──
+    # The instant "Build my plan" path is deterministic (no LLM); only the downloadable page
+    # DRAFTS use the model, in a background job. Bound that job so a slow/hung local model
+    # degrades to deterministic scaffolds in bounded time rather than running for many minutes:
+    #   - draft_timeout_sec: short, fail-fast per-generation timeout for the draft client
+    #     (`get_draft_client`), distinct from the bulk/audit `timeout_sec` above. One try, no retry.
+    #   - draft_concurrency: bounded worker pool for the concurrent draft phase.
+    #   - draft_phase_budget_sec: total wall-clock budget for the whole draft phase; once spent,
+    #     the not-yet-drafted pages fall back to the deterministic scaffold at once instead of
+    #     each waiting out its own timeout.
+    draft_timeout_sec: int = 45
+    draft_concurrency: int = 4
+    draft_phase_budget_sec: int = 180
 
 
 class DatabaseCfg(BaseModel):

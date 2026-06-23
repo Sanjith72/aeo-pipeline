@@ -37,6 +37,12 @@ from ..settings import LLMCfg, get_settings
 
 log = get_logger(__name__)
 
+# Connect-phase ceiling for the local Ollama call: a DOWN daemon must fail in seconds, not
+# wait out the (much longer) generation read timeout. A fail-fast floor, not a tunable — the
+# read timeout itself stays configurable (LLMCfg.timeout_sec / the shorter draft_timeout_sec
+# used by the background page-drafting job).
+_CONNECT_TIMEOUT_SEC = 5.0
+
 
 class _Backend(Protocol):
     model: str
@@ -68,12 +74,20 @@ class _OllamaBackend:
 
         from ..crawl.transport import sync_transport
 
+        # Fail-fast: bound the slow generation read by the configured timeout AND cap the
+        # connect phase, so a DOWN Ollama errors out in seconds instead of waiting the full
+        # timeout. One attempt, no retry — the deterministic scaffold is the safety net
+        # (deterministic-first contract), so a hung/slow model must never block a run.
+        timeout = httpx.Timeout(
+            self._cfg.timeout_sec,
+            connect=min(float(self._cfg.timeout_sec), _CONNECT_TIMEOUT_SEC),
+        )
         try:
-            with httpx.Client(timeout=self._cfg.timeout_sec, transport=sync_transport()) as client:
+            with httpx.Client(timeout=timeout, transport=sync_transport()) as client:
                 resp = client.post(f"{self._cfg.host}/api/generate", json=payload)
                 resp.raise_for_status()
                 return resp.json().get("response", "").strip()
-        except Exception as exc:  # never let the LLM break a run
+        except Exception as exc:  # never let the LLM break a run; one try only, no retry
             log.warning("llm_generate_failed", provider="ollama",
                         model=self._cfg.model, error=str(exc))
             return None
@@ -213,3 +227,18 @@ def get_bulk_client() -> LLMClient:
     if not cfg.bulk_provider or cfg.bulk_provider == cfg.provider:
         return get_client()
     return LLMClient(cfg.model_copy(update={"provider": cfg.bulk_provider}))
+
+
+@lru_cache(maxsize=1)
+def get_draft_client() -> LLMClient:
+    """The client for the LLM page-drafting phase — the background
+    ``/api/deliverables/personalize`` build. Same provider/model/host as :func:`get_client`,
+    but with a SHORT, fail-fast generation timeout (``draft_timeout_sec``) so a slow or hung
+    local model degrades to deterministic scaffolds in bounded time instead of letting the job
+    run for many minutes. Distinct from the bulk/audit path (:func:`get_bulk_client`), which
+    keeps the full ``timeout_sec``. Falls back to the primary client when the draft timeout
+    isn't actually shorter."""
+    cfg = get_settings().llm
+    if cfg.draft_timeout_sec >= cfg.timeout_sec:
+        return get_client()
+    return LLMClient(cfg.model_copy(update={"timeout_sec": cfg.draft_timeout_sec}))

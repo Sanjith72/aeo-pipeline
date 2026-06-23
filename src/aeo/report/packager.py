@@ -28,14 +28,18 @@ Design: docs/superpowers/specs/2026-06-11-owner-mode-launch-kit-design.md
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 from xml.sax.saxutils import escape
 
+from ..logging import get_logger
 from ..processor.coverage_diff import CoverageDiffResult
 from ..reference.blueprint import Blueprint
+
+log = get_logger(__name__)
 
 _DEFAULT_ORIGIN = "https://www.example.com"
 _MAX_PRIMARY_NAV = 8
@@ -224,7 +228,10 @@ def _schema_entities_md(blueprint: Blueprint) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _page_spec_md(node: Any, *, topic: str, origin: str, llm: Any) -> Asset:
+def _page_spec_md(node: Any, *, topic: str, origin: str, llm: Any) -> tuple[Asset, bool]:
+    """Build the dev-mode page spec asset. Returns ``(asset, llm_authored)`` — the flag is
+    True only when the model actually produced full prose (``draft_quality == "full"``), so
+    the draft phase can report LLM-vs-deterministic-fallback counts."""
     from ..recommender.draft import draft_missing_page
 
     draft = draft_missing_page(node, topic=topic, llm=llm, origin=origin)
@@ -235,7 +242,8 @@ def _page_spec_md(node: Any, *, topic: str, origin: str, llm: Any) -> Asset:
     )
     jsonld = json.dumps(p["jsonld"], indent=2)
     body = f"{header}{p['body_markdown']}\n\n## JSON-LD (paste into <head>)\n\n```json\n{jsonld}\n```\n"
-    return Asset(path=f"pages/{_slug_filename(draft.slug)}.md", content=body, kind="page_spec")
+    asset = Asset(path=f"pages/{_slug_filename(draft.slug)}.md", content=body, kind="page_spec")
+    return asset, draft.draft_quality == "full"
 
 
 def _strategy_md(profile: dict[str, Any]) -> str:
@@ -376,8 +384,9 @@ def _start_here_md(nodes: list[Any], business: dict[str, Any] | None, mode: str)
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _owner_page_md(node: Any, *, topic: str, origin: str, llm: Any) -> Asset:
-    """The diy/hire flavor of a page spec: same draft, owner-first framing, tech demoted."""
+def _owner_page_md(node: Any, *, topic: str, origin: str, llm: Any) -> tuple[Asset, bool]:
+    """The diy/hire flavor of a page spec: same draft, owner-first framing, tech demoted.
+    Returns ``(asset, llm_authored)`` (see :func:`_page_spec_md`)."""
     from ..recommender.draft import draft_missing_page
 
     draft = draft_missing_page(node, topic=topic, llm=llm, origin=origin)
@@ -395,7 +404,8 @@ def _owner_page_md(node: Any, *, topic: str, origin: str, llm: Any) -> Asset:
         "`platform-tips.md` shows exactly where to paste it on your platform.\n\n"
         f"```json\n{jsonld}\n```\n"
     )
-    return Asset(path=f"pages/{_slug_filename(draft.slug)}.md", content=body, kind="page_draft")
+    asset = Asset(path=f"pages/{_slug_filename(draft.slug)}.md", content=body, kind="page_draft")
+    return asset, draft.draft_quality == "full"
 
 
 def _ai_prompt_text(node: Any, business: dict[str, Any] | None, topic: str) -> str:
@@ -834,6 +844,83 @@ def build_plan(
     }
 
 
+# ── draft phase (concurrent, wall-clock budgeted, deterministic-first) ──────────
+
+
+def _render_drafts(
+    nodes: list[Any],
+    render: Callable[[Any, Any], tuple[Asset, bool]],
+    *,
+    llm: Any,
+    workers: int,
+    budget_sec: float | None,
+) -> list[Asset]:
+    """Render one per-page draft Asset for each node, order preserved.
+
+    ``render(node, client)`` builds the draft with ``client`` (or deterministically when
+    ``client`` is ``None``) and returns ``(asset, llm_authored)``. With a usable LLM and
+    ``workers > 1`` the LLM-backed drafts run concurrently under a bounded pool AND a total
+    wall-clock budget: once ``budget_sec`` elapses, pages not yet finished fall back to the
+    deterministic scaffold immediately, instead of each waiting out its own timeout. With no
+    usable LLM, ``workers <= 1``, or no budget, it runs sequentially — byte-identical to the
+    original loop. Deterministic-first: a draft is NEVER dropped; the worst case is a scaffold.
+
+    Emits one structured log at the start and end of the phase reporting LLM-vs-fallback
+    counts, so this degradation is observable in production (the background personalize job)."""
+    n = len(nodes)
+    if n == 0:
+        return []
+
+    import concurrent.futures as cf
+    from time import monotonic
+
+    has_llm = llm is not None and bool(getattr(llm, "enabled", False))
+    log.info("deliverables_drafts_start", nodes=n, llm_enabled=has_llm,
+             workers=workers, budget_sec=budget_sec)
+    started = monotonic()
+
+    # Sequential path — preserves today's exact output (offline tests, the instant
+    # deterministic plan, the .zip download). Drafting falls back to the scaffold internally
+    # when the model is off or fails.
+    if not has_llm or workers <= 1 or budget_sec is None:
+        pairs = [render(node, llm) for node in nodes]
+        llm_count = sum(1 for _, authored in pairs if authored)
+        log.info("deliverables_drafts_done", llm=llm_count, fallback=n - llm_count,
+                 total=n, budget_exceeded=False, elapsed_sec=round(monotonic() - started, 1))
+        return [asset for asset, _ in pairs]
+
+    # Concurrent path under a wall-clock budget.
+    results: list[Asset | None] = [None] * n
+    authored: list[bool] = [False] * n
+    budget_exceeded = False
+    ex = cf.ThreadPoolExecutor(max_workers=workers)
+    try:
+        fut_to_idx = {ex.submit(render, node, llm): i for i, node in enumerate(nodes)}
+        try:
+            for fut in cf.as_completed(fut_to_idx, timeout=budget_sec):
+                idx = fut_to_idx[fut]
+                try:
+                    results[idx], authored[idx] = fut.result()
+                except Exception:  # a draft hiccup must never sink the bundle → scaffold below
+                    results[idx] = None
+        except cf.TimeoutError:
+            budget_exceeded = True  # whatever is still pending falls back below
+    finally:
+        # wait=False so in-flight LLM calls (each bounded by the short draft timeout) never
+        # block the job's completion; cancel_futures drops anything not yet started.
+        ex.shutdown(wait=False, cancel_futures=True)
+
+    # Fill any gap (budget-exceeded or errored) with the deterministic scaffold, in order.
+    for i, node in enumerate(nodes):
+        if results[i] is None:
+            results[i], authored[i] = render(node, None)
+
+    llm_count = sum(1 for a in authored if a)
+    log.info("deliverables_drafts_done", llm=llm_count, fallback=n - llm_count,
+             total=n, budget_exceeded=budget_exceeded, elapsed_sec=round(monotonic() - started, 1))
+    return [asset for asset in results if asset is not None]
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 
@@ -848,14 +935,23 @@ def build_asset_bundle(
     name: str | None = None,
     builder_mode: str = "dev",
     business: dict[str, Any] | None = None,
+    draft_workers: int = 1,
+    draft_budget_sec: float | None = None,
 ) -> AssetBundle:
     """Assemble the launch-kit bundle from a blueprint (+ optional coverage diff and
     SiteProfile dict), shaped for whoever is building (``builder_mode``: dev | diy |
     ai | hire — see the module docstring). ``business`` ({name, category, location,
     services}) personalizes the owner-mode assets. ``draft_limit`` caps the per-page
     drafts/prompts (in dev/diy/hire the drafts are the expensive, LLM-backed step);
-    the rest of the bundle covers every page. Pure — call :meth:`AssetBundle.write`
-    to materialize it."""
+    the rest of the bundle covers every page.
+
+    ``draft_workers`` / ``draft_budget_sec`` bound the LLM-backed draft phase for the
+    background personalize job: ``draft_workers > 1`` runs the drafts concurrently and
+    ``draft_budget_sec`` caps the whole phase's wall-clock — once spent, the remaining pages
+    fall back to the deterministic scaffold instead of each waiting out its own timeout. The
+    defaults (1 worker, no budget) preserve the original sequential behavior exactly. Pure
+    (aside from a structured log on the draft phase) — call :meth:`AssetBundle.write` to
+    materialize it."""
     org = _origin(origin or (profile or {}).get("domain"))
     nodes = _target_nodes(blueprint, coverage)
     bundle_name = name or blueprint.topic
@@ -874,8 +970,11 @@ def build_asset_bundle(
     if builder_mode == "dev":
         assets = dev_assets
         if draft_limit > 0:
-            for node in nodes[:draft_limit]:
-                assets.append(_page_spec_md(node, topic=blueprint.topic, origin=org, llm=llm))
+            assets += _render_drafts(
+                nodes[:draft_limit],
+                lambda node, client: _page_spec_md(node, topic=blueprint.topic, origin=org, llm=client),
+                llm=llm, workers=draft_workers, budget_sec=draft_budget_sec,
+            )
         return AssetBundle(name=bundle_name, assets=assets)
 
     # Owner modes (diy / ai / hire): owner files at the root, the dev bundle kept
@@ -887,8 +986,11 @@ def build_asset_bundle(
 
     if builder_mode in ("diy", "hire"):
         assets.append(Asset("platform-tips.md", _platform_tips_md(), "tips"))
-        for node in nodes[:draft_limit]:
-            assets.append(_owner_page_md(node, topic=blueprint.topic, origin=org, llm=llm))
+        assets += _render_drafts(
+            nodes[:draft_limit],
+            lambda node, client: _owner_page_md(node, topic=blueprint.topic, origin=org, llm=client),
+            llm=llm, workers=draft_workers, budget_sec=draft_budget_sec,
+        )
 
     if builder_mode == "ai":
         assets.append(Asset("prompts/how-to-use.md", _prompts_howto_md(nodes[:draft_limit]), "tips"))

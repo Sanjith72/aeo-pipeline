@@ -31,3 +31,23 @@ def test_get_bulk_client_falls_back_to_primary_when_unset(monkeypatch) -> None:
     finally:
         llm_mod.get_client.cache_clear()
         llm_mod.get_bulk_client.cache_clear()
+
+
+def test_get_draft_client_uses_the_short_timeout() -> None:
+    # The background page-drafting job gets a fail-fast per-call timeout (draft_timeout_sec),
+    # distinct from the bulk/audit timeout_sec, so a slow local model degrades fast.
+    cfg = LLMCfg(timeout_sec=120, draft_timeout_sec=45)
+    draft = LLMClient(cfg.model_copy(update={"timeout_sec": cfg.draft_timeout_sec}))
+    assert draft._cfg.timeout_sec == 45  # type: ignore[attr-defined]
+
+
+def test_get_draft_client_falls_back_to_primary_when_not_shorter(monkeypatch) -> None:
+    # draft_timeout_sec >= timeout_sec → no separate client (nothing to gain).
+    monkeypatch.setattr(llm_mod.get_settings().llm, "draft_timeout_sec", 999)
+    llm_mod.get_client.cache_clear()
+    llm_mod.get_draft_client.cache_clear()
+    try:
+        assert llm_mod.get_draft_client() is llm_mod.get_client()
+    finally:
+        llm_mod.get_client.cache_clear()
+        llm_mod.get_draft_client.cache_clear()

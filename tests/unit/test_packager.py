@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import zipfile
 from types import SimpleNamespace
 from typing import ClassVar
@@ -225,6 +226,58 @@ def test_owner_mode_zip_contains_nested_paths() -> None:
         names = set(zf.namelist())
         assert "hire-someone/job-post.md" in names
         assert "for-your-developer/sitemap.xml" in names
+
+
+# ── draft phase: concurrency + wall-clock budget (fast-degrade, the personalize job) ──
+
+
+class _FakeLLM:
+    """Minimal LLMClient stand-in for the draft path: returns valid 'full' prose, optionally
+    after a delay (to drive the wall-clock-budget fallback). Mirrors the surface
+    ``draft_missing_page`` touches: ``enabled``, ``model``, ``generate_json``."""
+
+    enabled = True
+    model = "fake-model"
+
+    def __init__(self, delay: float = 0.0) -> None:
+        self._delay = delay
+
+    def generate_json(self, prompt: str, system: str | None = None) -> dict[str, object]:
+        if self._delay:
+            time.sleep(self._delay)
+        return {
+            "meta_description": "A concise, citable description.",
+            "intro": "A direct, liftable answer.",
+            "sections": [{"heading": "Overview", "body": "Real, published-quality prose."}],
+            "faq": [{"question": "What is it?", "answer": "A concise two-sentence answer."}],
+        }
+
+
+def test_draft_phase_concurrent_uses_llm_and_preserves_order() -> None:
+    bp = _blueprint()
+    bundle = build_asset_bundle(blueprint=bp, origin="acme.com", draft_limit=3,
+                                llm=_FakeLLM(), draft_workers=3, draft_budget_sec=10.0)
+    specs = [a for a in bundle.assets if a.kind == "page_spec"]
+    assert len(specs) == 3
+    # All drafted by the model (full prose), generator stamped in the spec header.
+    assert all("generator=fake-model" in s.content and "quality=full" in s.content for s in specs)
+    # Concurrency must not reorder: same order as the sequential build.
+    seq = build_asset_bundle(blueprint=bp, origin="acme.com", draft_limit=3, llm=_FakeLLM())
+    assert [s.path for s in specs] == [a.path for a in seq.assets if a.kind == "page_spec"]
+
+
+def test_draft_phase_budget_falls_back_without_hanging() -> None:
+    # A model far slower than the budget: the phase must return on the budget with every page
+    # rendered deterministically — never waiting out each draft's own (much longer) timeout.
+    bp = _blueprint()
+    start = time.monotonic()
+    bundle = build_asset_bundle(blueprint=bp, origin="acme.com", draft_limit=3,
+                                llm=_FakeLLM(delay=2.0), draft_workers=3, draft_budget_sec=0.3)
+    elapsed = time.monotonic() - start
+    specs = [a for a in bundle.assets if a.kind == "page_spec"]
+    assert len(specs) == 3                                       # nothing dropped
+    assert all("quality=scaffold" in s.content for s in specs)   # all degraded to deterministic
+    assert elapsed < 1.5                                         # returned on budget, no hang
 
 
 # ── phased plan (#8 phases · #9 quick wins · #4 AI-vs-human prompts · #10 JSON) ──

@@ -380,12 +380,17 @@ def _cache_age(domain: str) -> dict[str, Any]:
     return {"last_crawled_at": when.isoformat(), "cache_age_hours": age_hours}
 
 
-def _framework_and_llm(brief: BusinessInput, use_llm: bool) -> tuple[Framework, Any]:
+def _framework_and_llm(
+    brief: BusinessInput, use_llm: bool, *, bounded: bool = False
+) -> tuple[Framework, Any]:
     """A brief-tailored framework (curated file if present, else an in-memory bootstrap
-    skeleton — LLM-tailored when enabled) + the resolved LLM client."""
-    from ..nlp.llm import get_client
+    skeleton — LLM-tailored when enabled) + the resolved LLM client. ``bounded=True`` picks
+    the short, fail-fast draft client (:func:`get_draft_client`) used by the background
+    personalize build, so a slow local model degrades to scaffolds in bounded time instead of
+    letting the job run for many minutes."""
+    from ..nlp.llm import get_client, get_draft_client
 
-    llm = get_client() if use_llm else None
+    llm = (get_draft_client() if bounded else get_client()) if use_llm else None
     key = brief.key()
     if framework_file_path(key).exists():
         return load_framework(key), llm
@@ -452,9 +457,15 @@ def _build_deliverables_payload(req: DeliverablesRequest, progress: Any = None) 
     blocking a request the proxy/keep-alive window would kill. ``progress`` (optional)
     receives ``(stage, counts)`` updates for the job poller."""
     from ..report.strategy import build_strategy
+    from ..settings import get_settings
 
+    cfg = get_settings().llm
     brief = _brief(req)
-    framework, llm = _framework_and_llm(brief, req.use_llm)
+    # The personalized (use_llm) build is the slow background job: bound it with the fail-fast
+    # draft client + a concurrent, wall-clock-budgeted draft phase, so a slow/hung local model
+    # degrades to deterministic scaffolds in bounded time rather than running for many minutes.
+    # The instant path (use_llm=false) has no LLM, so the draft phase runs sequentially/fast.
+    framework, llm = _framework_and_llm(brief, req.use_llm, bounded=True)
     plan_result = plan_from_brief(brief, framework=framework, llm=llm)
     if progress:
         progress("draft", {"pages": req.draft_limit})
@@ -463,6 +474,7 @@ def _build_deliverables_payload(req: DeliverablesRequest, progress: Any = None) 
         profile=plan_result.profile.to_dict(), origin=brief.domain or brief.key(),
         llm=llm, draft_limit=req.draft_limit,
         builder_mode=req.builder_mode, business=_business_dict(brief),
+        draft_workers=cfg.draft_concurrency, draft_budget_sec=cfg.draft_phase_budget_sec,
     )
     # #10 — the prioritized plan as structured JSON: phased, quick-wins flagged, each
     # task carrying current_state/action_required/how_to + AI-vs-human prompts. This
