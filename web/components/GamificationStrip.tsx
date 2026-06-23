@@ -34,21 +34,23 @@ export function GamificationStrip({ domain, aeoScore }: { domain?: string; aeoSc
 
   const stage = (s.maturity_stage as MaturityStage) ?? "foundations";
   return (
-    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-neutral-200 px-4 py-3 text-sm">
-      <div>
-        <span className="text-neutral-400">AEO</span>{" "}
-        <CountUp to={s.aeo_score ?? 0} className="font-semibold" />{" "}
-        <span className="text-neutral-500">{s.aeo_band ?? ""}</span>
+    <div className="card flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 text-sm">
+      <div className="flex items-baseline gap-1.5">
+        <span className="label-mono !text-[10px]">AEO</span>
+        <CountUp to={s.aeo_score ?? 0} className="font-semibold text-ink" />
+        <span className="text-ink-500">{s.aeo_band ?? ""}</span>
       </div>
-      <div>
-        <span className="text-neutral-400">Verified wins</span>{" "}
-        <Tally value={s.verified_wins} className="font-semibold" />
+      <span className="hidden h-4 w-px bg-ink/10 sm:block" />
+      <div className="flex items-baseline gap-1.5">
+        <span className="label-mono !text-[10px]">Verified wins</span>
+        <Tally value={s.verified_wins} className="font-semibold text-ink" />
       </div>
+      <span className="hidden h-4 w-px bg-ink/10 sm:block" />
       <div className="flex items-center gap-2">
-        <span className="text-neutral-400">{MATURITY_LABEL[stage]}</span>
-        <span className="inline-block h-1.5 w-24 overflow-hidden rounded-full bg-neutral-100">
+        <span className="text-ink-500">{MATURITY_LABEL[stage]}</span>
+        <span className="inline-block h-1.5 w-24 overflow-hidden rounded-full bg-ink/10">
           <span
-            className="block h-full rounded-full bg-neutral-800"
+            className="block h-full rounded-full bg-accent transition-[width] duration-500"
             style={{ width: `${Math.round(maturityProgress(stage) * 100)}%` }}
           />
         </span>

@@ -66,100 +66,169 @@ export function AgentReviewQueue() {
   const summary = selected ? summarizeRun(selected) : null;
 
   return (
-    <div className="grid grid-cols-1 gap-6 md:grid-cols-[18rem_1fr]">
-      <aside className="space-y-2">
+    <div className="grid grid-cols-1 gap-6 md:grid-cols-[20rem_1fr]">
+      {/* ── queue sidebar ── */}
+      <aside className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">Review queue</h2>
-          <button onClick={() => void refreshList()} className="text-xs text-neutral-400 hover:text-neutral-700">
+          <h2 className="label-mono">Review queue</h2>
+          <button
+            onClick={() => void refreshList()}
+            className="text-[12px] text-ink-300 transition-colors hover:text-ink"
+          >
             Refresh
           </button>
         </div>
-        {runs.length === 0 && <p className="text-sm text-neutral-400">No staged runs.</p>}
-        <ul className="space-y-1">
-          {runs.map((r) => (
-            <li key={r.id}>
-              <button
-                onClick={() => open(r.id)}
-                className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${
-                  selected?.id === r.id ? "border-neutral-900 bg-neutral-50" : "border-neutral-200 hover:bg-neutral-50"
-                }`}
-              >
-                <span className="font-medium">{r.domain ?? r.id}</span>
-                <span className="ml-2 text-xs text-neutral-400">{r.status}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+
+        {runs.length === 0 ? (
+          <div className="card p-5 text-sm text-ink-300">
+            No staged runs yet. Start one with{" "}
+            <code className="rounded bg-ink/[0.06] px-1.5 py-0.5 font-mono text-[12px] text-ink-500">
+              aeo agent
+            </code>
+            .
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {runs.map((r) => {
+              const active = selected?.id === r.id;
+              return (
+                <li key={r.id}>
+                  <button
+                    onClick={() => open(r.id)}
+                    className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition-all duration-200 ease-out ${
+                      active
+                        ? "border-accent bg-accent-50 shadow-card"
+                        : "border-ink/10 bg-paper-100 hover:-translate-y-0.5 hover:border-ink/25 hover:shadow-card"
+                    }`}
+                  >
+                    <span className="truncate text-sm font-medium text-ink">{r.domain ?? r.id}</span>
+                    <span className="shrink-0 rounded-full border border-ink/10 bg-paper-200/70 px-2 py-0.5 text-[11px] uppercase tracking-wide text-ink-300">
+                      {r.status}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </aside>
 
+      {/* ── detail ── */}
       <section>
-        {error && <p className="mb-3 rounded bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
-        {!selected && <p className="text-sm text-neutral-400">Select a run to review.</p>}
-        {selected && summary && (
-          <div className="space-y-4">
-            <header className="flex items-center justify-between">
-              <div>
-                <h1 className="text-lg font-semibold">{selected.result?.headline ?? selected.domain ?? selected.id}</h1>
-                <p className="text-xs text-neutral-500">
-                  {summary.draftedCount} drafted · {summary.flaggedCount} flagged · ${summary.costUsd.toFixed(3)} ·{" "}
-                  {selected.status}
-                  {selected.current_step ? ` (${selected.current_step})` : ""}
-                </p>
-              </div>
-              {summary.isStaged && (
-                <div className="flex gap-2">
-                  <button
-                    disabled={busy}
-                    onClick={() => void decide(selected.id, "reject")}
-                    className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-50"
-                  >
-                    Reject
-                  </button>
-                  <button
-                    disabled={busy}
-                    onClick={() => void decide(selected.id, "approve")}
-                    className="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm text-white hover:bg-neutral-700 disabled:opacity-50"
-                  >
-                    Approve
-                  </button>
+        {error && (
+          <p className="mb-4 rounded-xl border border-rose-500/25 bg-rose-500/[0.08] px-4 py-2.5 text-sm text-rose-300">
+            {error}
+          </p>
+        )}
+
+        {!selected ? (
+          <div className="card grid min-h-[18rem] place-items-center p-10 text-center">
+            <div className="max-w-xs space-y-1.5">
+              <p className="text-sm font-medium text-ink">Select a run to review</p>
+              <p className="text-xs text-ink-300">
+                Each staged run shows its agent steps, the drafted pages, and the Critic&apos;s verdict.
+                Nothing publishes until you approve it.
+              </p>
+            </div>
+          </div>
+        ) : (
+          summary && (
+            <div className="space-y-5">
+              {/* header */}
+              <header className="card flex flex-wrap items-start justify-between gap-4 p-5">
+                <div className="min-w-0">
+                  <h1 className="truncate text-lg font-semibold text-ink">
+                    {selected.result?.headline ?? selected.domain ?? selected.id}
+                  </h1>
+                  <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-300">
+                    <span>{summary.draftedCount} drafted</span>
+                    <span className="text-ink/20">·</span>
+                    <span className={summary.flaggedCount > 0 ? "text-amber-300" : ""}>
+                      {summary.flaggedCount} flagged
+                    </span>
+                    <span className="text-ink/20">·</span>
+                    <span className="font-mono">${summary.costUsd.toFixed(3)}</span>
+                    <span className="text-ink/20">·</span>
+                    <span className="uppercase tracking-wide">
+                      {selected.status}
+                      {selected.current_step ? ` · ${selected.current_step}` : ""}
+                    </span>
+                  </p>
                 </div>
-              )}
-            </header>
+                {summary.isStaged && (
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      disabled={busy}
+                      onClick={() => void decide(selected.id, "reject")}
+                      className="btn-ghost !px-4 !py-2 text-[13px]"
+                    >
+                      Reject
+                    </button>
+                    <button
+                      disabled={busy}
+                      onClick={() => void decide(selected.id, "approve")}
+                      className="btn-accent !px-4 !py-2 text-[13px]"
+                    >
+                      Approve
+                    </button>
+                  </div>
+                )}
+              </header>
 
-            <ol className="flex flex-wrap gap-2 text-xs">
-              {(selected.steps ?? []).map((s) => (
-                <li key={s.seq} className="rounded-full border border-neutral-200 px-2 py-0.5">
-                  {s.agent} · {s.status}
-                  {s.cost_usd ? ` · $${s.cost_usd.toFixed(3)}` : ""}
-                </li>
-              ))}
-            </ol>
-
-            <ul className="space-y-3">
-              {(selected.result?.tasks ?? [])
-                .filter((t) => t.draft)
-                .map((t) => (
-                  <li key={t.id} className="rounded-xl border border-neutral-200 p-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-medium">{t.title}</h3>
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-xs ${
-                          t.critic?.needs_review ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"
-                        }`}
-                      >
-                        {t.critic?.needs_review ? "Needs review" : "Looks clean"}
-                      </span>
-                    </div>
-                    {t.critic?.claims_flagged && (
-                      <p className="mt-1 text-xs text-amber-700">Claims to verify: {t.critic.claims.join(", ")}</p>
-                    )}
-                    <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded bg-neutral-50 p-3 text-xs text-neutral-700">
-                      {t.draft?.body_markdown ?? ""}
-                    </pre>
+              {/* step trace */}
+              <ol className="flex flex-wrap gap-2">
+                {(selected.steps ?? []).map((s) => (
+                  <li
+                    key={s.seq}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-ink/10 bg-paper-100 px-2.5 py-1 text-[11px] text-ink-500"
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${
+                        s.status === "ok" ? "bg-emerald-400" : s.status === "failed" ? "bg-rose-400" : "bg-ink/30"
+                      }`}
+                    />
+                    <span className="font-medium text-ink">{s.agent}</span>
+                    {Number(s.cost_usd) > 0 ? (
+                      <span className="font-mono text-ink-300">${Number(s.cost_usd).toFixed(3)}</span>
+                    ) : null}
                   </li>
                 ))}
-            </ul>
-          </div>
+              </ol>
+
+              {/* drafted pages */}
+              <ul className="space-y-3">
+                {(selected.result?.tasks ?? [])
+                  .filter((t) => t.draft)
+                  .map((t) => {
+                    const needs = t.critic?.needs_review;
+                    return (
+                      <li key={t.id} className="card p-5">
+                        <div className="flex items-center justify-between gap-3">
+                          <h3 className="truncate font-medium text-ink">{t.title}</h3>
+                          <span
+                            className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${
+                              needs
+                                ? "border-amber-500/30 bg-amber-500/[0.12] text-amber-200"
+                                : "border-emerald-500/30 bg-emerald-500/[0.12] text-emerald-300"
+                            }`}
+                          >
+                            {needs ? "Needs review" : "Looks clean"}
+                          </span>
+                        </div>
+                        {t.critic?.claims_flagged && (
+                          <p className="mt-2 text-xs text-amber-200/90">
+                            <span className="font-medium">Claims to verify:</span> {t.critic.claims.join(", ")}
+                          </p>
+                        )}
+                        <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-ink/10 bg-paper-200/50 p-3.5 font-mono text-[12px] leading-relaxed text-ink-500">
+                          {t.draft?.body_markdown ?? ""}
+                        </pre>
+                      </li>
+                    );
+                  })}
+              </ul>
+            </div>
+          )
         )}
       </section>
     </div>

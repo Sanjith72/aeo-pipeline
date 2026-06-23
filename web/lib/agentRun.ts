@@ -19,6 +19,7 @@ export function summarizeRun(run: AgentRunDetail): RunSummary {
     taskCount: tasks.length,
     draftedCount: tasks.filter((t) => !!t.draft).length,
     flaggedCount: tasks.filter((t) => t.critic?.needs_review).length,
-    costUsd: steps.reduce((sum, s) => sum + (s.cost_usd ?? 0), 0),
+    // cost_usd comes back as a string (Postgres NUMERIC → JSON), so coerce before summing.
+    costUsd: steps.reduce((sum, s) => sum + Number(s.cost_usd ?? 0), 0),
   };
 }
