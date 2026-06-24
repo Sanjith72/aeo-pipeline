@@ -9,7 +9,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { Milestone, MilestoneDashboard as Dashboard, MilestoneStatus, MilestoneTask, StructuredPlan } from "@/lib/types";
+import { manualCopyHint, selectField, useCopyAction } from "@/lib/copy";
 import { Check } from "./ui/icons";
+import { TaskHowTo } from "./TaskHowTo";
 
 export const STATUS_META: Record<MilestoneStatus, { label: string; pill: string; dot: string }> = {
   pending: {
@@ -217,94 +219,6 @@ export function MilestoneDashboard({
   );
 }
 
-// ── clipboard copy with a graceful fallback ─────────────────────────────────────
-// navigator.clipboard.writeText rejects in restricted contexts (no transient user
-// activation, a sandboxed iframe, a tight permissions-policy). Failing silently leaves the
-// user clicking a dead button, so on rejection we instead SELECT the source text and prompt
-// a keyboard copy. All three copy buttons in this file share this one hook.
-
-type CopyPhase = "idle" | "copied" | "manual";
-
-// The keyboard hint, OS-aware. Only ever rendered after a click (the "manual" phase), so
-// reading `navigator` here can't cause an SSR/hydration mismatch on first paint.
-function manualCopyHint(): string {
-  const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
-  return mac ? "Press ⌘+C to copy" : "Press Ctrl+C to copy";
-}
-
-// Highlight a text field (input/textarea) so a manual Ctrl/⌘+C grabs its full value.
-function selectField(el: HTMLInputElement | HTMLTextAreaElement | null) {
-  if (!el) return;
-  el.focus();
-  el.select();
-}
-
-// Highlight the contents of a non-editable block (our <pre><code> snippet) via a Range.
-function selectBlock(el: HTMLElement | null) {
-  if (!el || typeof window === "undefined") return;
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  const sel = window.getSelection();
-  sel?.removeAllRanges();
-  sel?.addRange(range);
-}
-
-function clearWindowSelection() {
-  if (typeof window !== "undefined") window.getSelection()?.removeAllRanges();
-}
-
-function useCopyAction({
-  getText,
-  selectFallback,
-  clearSelection,
-  copiedMs = 1500,
-  onCopied,
-}: {
-  getText: () => string | null;
-  selectFallback: () => void;
-  clearSelection: () => void;
-  copiedMs?: number;
-  onCopied?: () => void;
-}): { phase: CopyPhase; copy: () => void } {
-  const [phase, setPhase] = useState<CopyPhase>("idle");
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
-
-  const copy = useCallback(() => {
-    const text = getText();
-    if (text == null) return;
-    if (timer.current) clearTimeout(timer.current);
-    const revert = (ms: number, after?: () => void) => {
-      timer.current = setTimeout(() => {
-        setPhase("idle");
-        after?.();
-      }, ms);
-    };
-    const succeed = () => {
-      setPhase("copied");
-      onCopied?.();
-      revert(copiedMs);
-    };
-    // No Clipboard API, or it rejected → select the text and ask for a keyboard copy,
-    // clearing the selection when the prompt reverts after 2s.
-    const fallback = () => {
-      selectFallback();
-      setPhase("manual");
-      revert(2000, clearSelection);
-    };
-    try {
-      const result = navigator.clipboard?.writeText(text);
-      if (result && typeof result.then === "function") result.then(succeed, fallback);
-      else fallback();
-    } catch {
-      fallback();
-    }
-  }, [getText, selectFallback, clearSelection, copiedMs, onCopied]);
-
-  return { phase, copy };
-}
-
 // Manage Developer Access — shows the current master share link and lets the owner kill a
 // leaked one and issue a fresh link in a single click (with a hard confirm). Sits above the
 // progress bar so link hygiene is the first thing an owner sees.
@@ -445,183 +359,22 @@ function TaskRow({
         </div>
         <StatusControl task={task} onSetStatus={onSetStatus} />
       </div>
-      {open && <TaskGuide task={task} shareUrl={shareUrl} />}
+      {open && (
+        <TaskHowTo
+          taskKey={task.task_key}
+          label={task.label}
+          currentState={task.current_state}
+          actionRequired={task.action_required}
+          howTo={task.how_to}
+          prompts={task.prompts}
+          diySteps={task.diy_steps}
+          rawSnippet={task.raw_snippet}
+          devBrief={task.dev_brief}
+          shareUrl={shareUrl}
+        />
+      )}
     </li>
   );
-}
-
-// The how-to expander: a two-tab panel. "I'll do it myself" (default) walks the owner
-// through the change on their own CMS with a copy-paste snippet; "Send to Developer" is the
-// paste-ready brief + read-only tracking link to hand off. Defaulting to self-serve nudges
-// owners to ship the small changes themselves.
-type GuideTab = "diy" | "developer";
-
-function TaskGuide({ task, shareUrl }: { task: MilestoneTask; shareUrl: string | null }) {
-  const [tab, setTab] = useState<GuideTab>("diy");
-  return (
-    <div className="step-in mt-3 space-y-3">
-      {task.how_to && (
-        <div className="rounded-lg border border-ink/[0.06] bg-paper-200/40 px-3.5 py-3 text-sm">
-          <span className="label-mono">How to do it</span>
-          <p className="mt-0.5 leading-relaxed text-ink-500">{task.how_to}</p>
-        </div>
-      )}
-      <div
-        role="tablist"
-        aria-label="Implementation options"
-        className="flex gap-1 rounded-lg border border-ink/10 bg-paper-200/60 p-1 text-[12px]"
-      >
-        {(
-          [
-            { id: "diy" as const, label: "I'll do it myself" },
-            { id: "developer" as const, label: "Send to Developer" },
-          ]
-        ).map(({ id, label }) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            onClick={() => setTab(id)}
-            className={`flex-1 rounded-md px-3 py-1.5 transition-all duration-200 ${
-              tab === id ? "bg-paper-100 font-medium text-ink shadow-card" : "text-ink-300 hover:text-ink-500"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      {tab === "diy" ? <DiyGuide task={task} /> : <DeveloperHandoff task={task} shareUrl={shareUrl} />}
-    </div>
-  );
-}
-
-// "I'll do it myself" — the CMS-aware numbered steps plus, when the task has one, the exact
-// snippet to paste in a dark code block with a one-click "Copy Code" button.
-function DiyGuide({ task }: { task: MilestoneTask }) {
-  const steps = task.diy_steps ?? [];
-  const snippet = task.raw_snippet ?? null;
-  const codeRef = useRef<HTMLElement>(null);
-  const { phase, copy } = useCopyAction({
-    getText: () => snippet,
-    selectFallback: () => selectBlock(codeRef.current),
-    clearSelection: clearWindowSelection,
-    copiedMs: 2000,
-    onCopied: () => api.track("diy_snippet_copied", { task_key: task.task_key }),
-  });
-
-  return (
-    <div className="rounded-lg border border-ink/[0.08] bg-paper-200/30 px-3.5 py-3 text-sm">
-      {steps.length > 0 ? (
-        <ol className="ml-4 list-decimal space-y-1.5 leading-relaxed text-ink-500 marker:text-ink-300">
-          {steps.map((step, i) => (
-            <li key={i} className="pl-1">
-              {step}
-            </li>
-          ))}
-        </ol>
-      ) : (
-        <p className="text-ink-500">{task.action_required}</p>
-      )}
-      {snippet && (
-        <div className="mt-3">
-          <div className="mb-1.5 flex items-center justify-between gap-2">
-            <span className="label-mono">Code snippet</span>
-            <button
-              type="button"
-              onClick={copy}
-              className="btn-primary !py-1 text-[11px]"
-              aria-label="Copy code snippet to clipboard"
-            >
-              {phase === "copied" ? "Copied!" : phase === "manual" ? manualCopyHint() : "Copy Code"}
-            </button>
-          </div>
-          <pre className="max-h-72 w-full overflow-auto rounded-md border border-ink/10 bg-paper p-3 font-mono text-[11px] leading-relaxed text-emerald-200 shadow-card">
-            <code ref={codeRef}>{snippet}</code>
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Developer Handoff — a paste-ready message (greeting + the server-generated technical
-// brief + the read-only tracking link) the owner hands to their web developer, with
-// one-click copy and a pre-filled mailto.
-function DeveloperHandoff({ task, shareUrl }: { task: MilestoneTask; shareUrl: string | null }) {
-  const brief = task.dev_brief?.trim() || task.action_required;
-  const message = buildHandoffMessage(brief, shareUrl);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { phase, copy } = useCopyAction({
-    getText: () => message,
-    selectFallback: () => selectField(textareaRef.current),
-    clearSelection: () => textareaRef.current?.setSelectionRange(0, 0),
-    onCopied: () => api.track("dev_handoff_copied", { task_key: task.task_key }),
-  });
-
-  const mailto =
-    `mailto:?subject=${encodeURIComponent(`Website update request: ${task.label}`)}` +
-    `&body=${encodeURIComponent(message)}`;
-
-  return (
-    <div className="rounded-lg border border-accent/30 bg-accent/[0.04] px-3.5 py-3 text-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="label-mono !text-accent">Developer handoff</span>
-        {shareUrl && (
-          <span className="font-mono text-[11px] text-ink-300">read-only tracking link included</span>
-        )}
-      </div>
-      <p className="mt-1 text-xs text-ink-500">
-        Hand this to your web developer — it has exact, paste-ready instructions
-        {shareUrl ? " and a live link to track progress." : "."}
-      </p>
-      <textarea
-        ref={textareaRef}
-        readOnly
-        value={message}
-        rows={9}
-        onFocus={(e) => e.currentTarget.select()}
-        className="mt-2 w-full resize-y rounded-md border border-ink/10 bg-paper p-2.5 font-mono text-[11px] leading-relaxed text-ink-700"
-        aria-label={`Developer brief for ${task.label}`}
-      />
-      <div className="mt-2 flex flex-wrap gap-2">
-        <button type="button" onClick={copy} className="btn-primary !py-1.5 text-[12px]">
-          {phase === "copied" ? "Copied ✓" : phase === "manual" ? manualCopyHint() : "Copy brief & link"}
-        </button>
-        <a
-          href={mailto}
-          onClick={() => api.track("dev_handoff_emailed", { task_key: task.task_key })}
-          className="btn-ghost !py-1.5 text-[12px]"
-        >
-          Send via email
-        </a>
-      </div>
-      {!shareUrl && (
-        <p className="mt-2 text-[11px] text-ink-300">
-          The shareable tracking link will appear here once your tracker finishes setting up.
-        </p>
-      )}
-    </div>
-  );
-}
-
-function buildHandoffMessage(brief: string, shareUrl: string | null): string {
-  const lines = [
-    "Hi,",
-    "",
-    "Could you make the following change to our website? The technical details are below.",
-    "",
-    brief,
-  ];
-  if (shareUrl) {
-    lines.push(
-      "",
-      "You can see this task (and our full implementation plan) on this live, read-only tracker — it updates automatically as changes go live:",
-      shareUrl,
-    );
-  }
-  lines.push("", "Thanks!");
-  return lines.join("\n");
 }
 
 // A compact 3-state segmented control. The owner can set any state; the weekly crawl can

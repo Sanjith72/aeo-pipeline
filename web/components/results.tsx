@@ -29,6 +29,7 @@ import { predictedLiftChip, reconcileLabel } from "@/lib/predictedLift";
 import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
 import { ArrowRight, Check, Sparkle } from "./ui/icons";
 import { MilestoneDashboard } from "./MilestoneDashboard";
+import { Detail, TaskHowTo } from "./TaskHowTo";
 
 const EFFORT_PILL: Record<string, string> = {
   low: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
@@ -1022,27 +1023,6 @@ function BlueprintPanel({ sitemap, topic }: { sitemap: SitemapNode[]; topic: str
 
 // ── the interactive, phased plan (#10 / #13) ────────────────────────────────────
 
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        navigator.clipboard?.writeText(text).then(
-          () => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          },
-          () => {},
-        );
-      }}
-      className="btn-ghost !px-2.5 !py-1 text-[11px]"
-    >
-      {copied ? "Copied ✓" : label}
-    </button>
-  );
-}
-
 function TaskCard({
   task,
   done,
@@ -1115,53 +1095,19 @@ function TaskCard({
       </div>
 
       {open && (
-        <div className="step-in space-y-3 border-t border-ink/[0.06] bg-paper-200/40 px-4 py-3.5 text-sm">
-          <Detail label="Where you are now" value={task.current_state} />
-          <Detail label="What to do" value={task.action_required} />
-          <Detail label="How to do it" value={task.how_to} />
-          {task.prompts && (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <PromptBox
-                title="Doing it with AI"
-                blurb="Paste this into ChatGPT or your builder's AI."
-                text={task.prompts.ai}
-                copyLabel="Copy prompt"
-              />
-              <PromptBox
-                title="Doing it yourself"
-                blurb="A plain checklist if you'd rather write it."
-                text={task.prompts.human}
-                copyLabel="Copy steps"
-              />
-            </div>
-          )}
+        <div className="border-t border-ink/[0.06] bg-paper-200/40 px-4 pb-3.5">
+          <TaskHowTo
+            taskKey={task.id}
+            label={task.label}
+            currentState={task.current_state}
+            actionRequired={task.action_required}
+            howTo={task.how_to}
+            prompts={task.prompts}
+            shareUrl={null}
+          />
         </div>
       )}
     </li>
-  );
-}
-
-function Detail({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <span className="label-mono">{label}</span>
-      <p className="mt-0.5 leading-relaxed text-ink-500">{value}</p>
-    </div>
-  );
-}
-
-function PromptBox({ title, blurb, text, copyLabel }: { title: string; blurb: string; text: string; copyLabel: string }) {
-  return (
-    <div className="rounded-lg border border-ink/[0.08] bg-paper-100 p-3">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-ink">{title}</span>
-        <CopyButton text={text} label={copyLabel} />
-      </div>
-      <p className="mb-2 text-[11px] text-ink-300">{blurb}</p>
-      <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-ink/[0.03] p-2 font-mono text-[11px] leading-relaxed text-ink-500">
-        {text}
-      </pre>
-    </div>
   );
 }
 
@@ -1406,6 +1352,36 @@ function PhasedPlanView({
 
   return (
     <div className="space-y-6">
+      {/* Resume-page headline (Spec #1): the MilestoneDashboard roadmap bar, but driven by
+          done-count, NOT crawl verification — the resume/no-domain path has no site to
+          re-crawl, so "verified" / "we re-check weekly" would be false here. Gated to
+          serverBacked so the local-only build path is unaffected. Updates live as tasks
+          are checked (pct/doneCount are reactive). */}
+      {serverBacked && (
+        <div className="card p-5 sm:p-6">
+          <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-base font-semibold">Your implementation roadmap</h3>
+            <span className="font-mono text-xs text-ink-500">
+              {doneCount} / {plan.total} done
+            </span>
+          </div>
+          <div
+            className="mb-4 h-2 overflow-hidden rounded-full bg-ink/[0.07]"
+            role="progressbar"
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="Implementation progress"
+          >
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-accent to-accent-600 transition-[width] duration-500 ease-out"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <p className="text-sm text-ink-500">Your progress is saved to this link, on any device.</p>
+        </div>
+      )}
+
       <div className="card p-5 sm:p-6">
         <div className="flex items-center gap-4">
           {/* #5 — the completion ring, with a live hover preview of each task's payoff. */}
@@ -1893,6 +1869,17 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
         <p className="mt-1 text-ink-500">
           Pick up where you left off — your progress is saved to this link, on any device.
         </p>
+        {/* Upgrade path (not "start over"): a resumed/brief-only plan can't get crawl
+            verification — routing to the site-backed build is what unlocks it. Framed as an
+            add-on so it never reads as discarding the saved plan above. */}
+        <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <a href="/#studio" className="btn-accent inline-flex">
+            Build a plan for your site →
+          </a>
+          <span className="text-xs text-ink-300">
+            Tie this plan to your site to unlock automatic weekly verification.
+          </span>
+        </div>
       </div>
 
       {state.profile && <ScoreRing profile={state.profile} className="mb-8" />}

@@ -39,6 +39,12 @@ class TaskSpec:
     verify_kind: str  # page | service | heading | manual
     verify_target: str | None
     position: int
+    # Carried through from build_plan so the dashboard's "Show me how" expander can show the
+    # same superset the no-domain plan view has. Defaulted (kwargs construction) + nullable:
+    # current_state is plain context; prompts is the {ai, human} pair page tasks carry (None
+    # for off-site visibility tasks, which have no implementation prompt).
+    current_state: str = ""
+    prompts: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -76,6 +82,7 @@ def plan_to_milestones(plan: dict[str, Any]) -> list[MilestoneSpec]:
         tasks: list[TaskSpec] = []
         for t_pos, task in enumerate(phase.get("tasks", []) or []):
             kind, target = _verify_signal(task)
+            prompts = task.get("prompts")
             tasks.append(
                 TaskSpec(
                     task_key=str(task.get("id", "")),
@@ -85,6 +92,8 @@ def plan_to_milestones(plan: dict[str, Any]) -> list[MilestoneSpec]:
                     verify_kind=kind,
                     verify_target=target,
                     position=t_pos,
+                    current_state=str(task.get("current_state") or ""),
+                    prompts=prompts if isinstance(prompts, dict) else None,
                 )
             )
         specs.append(

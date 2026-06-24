@@ -80,6 +80,44 @@ def test_plan_to_milestones_empty_plan():
     assert plan_to_milestones({}) == []
 
 
+def test_plan_to_milestones_carries_current_state_and_prompts():
+    # 0024: current_state + prompts ride through to the milestone specs so the unified
+    # TaskHowTo expander can render the "Where you are now" line and the "Doing it with AI"
+    # box on milestone tasks. Page tasks carry a prompts dict; visibility tasks carry none —
+    # and an absent prompts must stay None (never coerced to a dict), which is what the
+    # DIY-tab de-dup guard keys on to decide whether to show the AI box.
+    plan = {
+        "phases": [
+            {
+                "key": "week_1",
+                "title": "Week 1",
+                "tasks": [
+                    {
+                        "id": "page:/services/x",
+                        "label": "Create the “X” page",
+                        "action_required": "Create it.",
+                        "how_to": "Draft it.",
+                        "current_state": "This page doesn't exist on your site yet.",
+                        "prompts": {"ai": "Write the X page…", "human": "Write it yourself…"},
+                    },
+                    {
+                        "id": "vis:gbp",
+                        "label": "Claim your Google Business Profile",
+                        "action_required": "Claim it.",
+                        "how_to": "Step 1.",
+                        "current_state": "Unverified in Google's local data.",
+                    },
+                ],
+            }
+        ]
+    }
+    page_task, vis_task = plan_to_milestones(plan)[0].tasks
+    assert page_task.current_state == "This page doesn't exist on your site yet."
+    assert page_task.prompts == {"ai": "Write the X page…", "human": "Write it yourself…"}
+    assert vis_task.current_state == "Unverified in Google's local data."
+    assert vis_task.prompts is None
+
+
 # ── path normalization ──────────────────────────────────────────────────────
 
 
