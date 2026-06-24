@@ -202,6 +202,50 @@ async def browser_fetch_text(url: str) -> str | None:
     return None
 
 
+async def playwright_fetch_text(url: str, *, timeout_sec: int | None = None) -> str | None:
+    """Render ``url`` with a real headless Chromium and return the post-JS HTML, for the
+    intake prefill's LAST resort when ``browser_fetch_text`` is blocked. A genuine browser
+    (real TLS + JS engine) gets past walls that 403 a bare httpx client — measured: it
+    recovers planetfitness / warbyparker / allbirds, which block even browser headers.
+
+    Deliberately NO ``navigator.webdriver`` stealth patch: that patch is itself a detection
+    signal and made some walls (zillow) flip from 200 to 403, so plain realistic Chromium
+    wins. Costs ~6-8s, so callers invoke it only after the cheap fetch fails. Returns None
+    (never raises) when Chromium isn't installed or the render fails — the caller degrades to
+    empty facts exactly as before."""
+    timeout = (timeout_sec or get_settings().intake.playwright_timeout_sec) * 1000
+    try:
+        from playwright.async_api import async_playwright  # lazy: optional heavy dep
+    except Exception:
+        log.info("playwright_unavailable", url=url)
+        return None
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True, args=["--disable-blink-features=AutomationControlled"]
+            )
+            try:
+                ctx = await browser.new_context(
+                    user_agent=_BROWSER_HEADERS["User-Agent"],
+                    locale="en-US",
+                    viewport={"width": 1366, "height": 768},
+                )
+                page = await ctx.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+                # Let a JS challenge resolve / content paint, but never block past the budget.
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=min(6000, timeout))
+                except Exception:
+                    pass
+                return await page.content()
+            finally:
+                await browser.close()
+    except Exception as exc:
+        log.info("playwright_fetch_failed", url=url, error=str(exc))
+        return None
+
+
 async def gather_sitemap_urls(
     domain: str,
     *,

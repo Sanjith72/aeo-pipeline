@@ -71,7 +71,10 @@ _KEYWORD_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("non-profit", "nonprofit", "not-for-profit", "charity", "charitable", "ngo", "foundation"), "Nonprofit"),
     (("energy", "oil and gas", "petroleum", "utility", "renewable", "solar", "electric utility"), "Energy"),
     (("telecommunication", "telecom", "wireless carrier", "mobile network"), "Telecommunications"),
-    (("logistics", "transportation", "shipping", "freight", "courier", "delivery service", "trucking"), "Logistics / Transportation"),
+    # "shipping" alone matches the ubiquitous e-commerce phrase "free shipping" — require a
+    # freight/carrier context so a shoe shop isn't read as a logistics company.
+    (("logistics", "transportation", "freight", "courier", "delivery service", "trucking",
+      "freight shipping", "shipping company", "shipping line", "container shipping"), "Logistics / Transportation"),
     (("agricultur", "farming", "farm"), "Agriculture"),
     (("beauty", "cosmetic", "salon", "spa", "skincare", "wellness"), "Beauty / Wellness"),
     (("fitness", "gym", "personal training", "yoga studio"), "Fitness"),
@@ -94,7 +97,8 @@ _VERTICAL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
 def match_vertical(text: str) -> str | None:
     """Map a raw label / chunk of text to a specific vertical, or None. Generic-only
     text (e.g. "business enterprise") yields None so the caller falls through. Keywords
-    match only at a word boundary, so "workspace" is not Beauty/Wellness."""
+    match only at a word boundary, so "workspace" is not Beauty/Wellness. Order matters
+    (most-specific-first): a "retail bank" resolves to Finance, not Retail."""
     if not text:
         return None
     low = text.lower()

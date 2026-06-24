@@ -20,6 +20,7 @@ from typing import Any
 from ..extract import links as links_extractor
 from ..extract import schema_jsonld
 from ..logging import get_logger
+from ..settings import get_settings
 from ..utils.html import parse
 from ..utils.url import absolute, host_of, normalize, same_site
 from .industry import classify_vertical
@@ -181,9 +182,10 @@ def detect_cms(html_parts: list[str]) -> str:
 # far larger than a challenge stub, so the size floor keeps it from being dropped.
 _CHALLENGE_RE = re.compile(
     r"(?:just a moment|attention required|access denied|client challenge|"
-    r"checking your browser|enable javascript to|are you a human|"
+    r"checking your browser|enable javascript to|are you a human|human verification|"
     r"verify you are (?:a )?human|request unsuccessful|error 10\d\d|ddos protection|"
-    r"cf-browser-verification|please (?:enable cookies|complete the security check))",
+    r"pardon our interruption|cf-browser-verification|"
+    r"please (?:enable cookies|complete the security check))",
     re.I,
 )
 _CHALLENGE_MAX_BYTES = 20_000
@@ -582,8 +584,15 @@ def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
     # gallery) are vertical-specific and name-drop verticals in their own titles. The
     # homepage is where a company states what it IS. Abstain (None) when it's generic —
     # empty beats confidently wrong (a marketing platform read as "Restaurants").
-    homepage_desc = self_description_text(parse(docs[0].html)) if docs else ""
-    industry = classify_vertical(homepage_desc)
+    home_soup = parse(docs[0].html) if docs else None
+    # Title-first: the <title> is the single most authoritative self-description, so classify
+    # it alone first — a promo heading ("HIGH SCHOOL SUMMER PASS") then can't override the
+    # lead ("Planet Fitness | A Gym and Fitness Club"). Only when the title names no vertical
+    # do we widen to the fuller self-description (meta/og/hero).
+    title_desc = (home_soup.title.get_text(" ", strip=True) if home_soup and home_soup.title else "")
+    industry = classify_vertical(title_desc) or classify_vertical(
+        self_description_text(home_soup) if home_soup is not None else ""
+    )
     # NOTE: industry is classified from the homepage self-description ONLY — NOT from the
     # scraped service labels. A services-based recovery used to run here, but service labels
     # are frequently use-cases / served-segments, so keyword-matching them produced confident
@@ -653,17 +662,31 @@ async def gather_site_facts(
     Defaults to a browser-headers fetch (``browser_fetch_text``): this path reads arbitrary
     third-party marketing sites for the wizard prefill, and many of those serve a 403 / JS
     bot-challenge stub to the identified AEOBot UA while returning real HTML to a browser.
-    The audit crawler keeps the polite AEOBot UA via its own ``_default_fetch_text``."""
-    from ..crawl.discovery import browser_fetch_text, seed_url
+    The audit crawler keeps the polite AEOBot UA via its own ``_default_fetch_text``.
 
+    When the cheap fetch is blocked AND no custom ``fetch`` was injected, the homepage is
+    retried once with a real headless Chromium (``playwright_fetch_text``) — gated by
+    ``intake.playwright_fallback``. That render (~6-8s) recovers sites behind walls a bare
+    HTTP client can't pass (planetfitness/warbyparker/allbirds); it fires only on the
+    minority of blocked sites, so the common case never pays the cost."""
+    from ..crawl.discovery import browser_fetch_text, playwright_fetch_text, seed_url
+
+    injected = fetch is not None
     fetch = fetch or browser_fetch_text
     home = seed_url(domain)
     try:
         home_html = await fetch(home)
     except Exception as exc:  # network hiccup → empty facts, never fatal
         log.warning("site_facts_homepage_failed", domain=domain, error=str(exc))
-        return SiteFacts()
+        home_html = None
     # A blank homepage OR a bot-wall interstitial (200 challenge stub) → no usable content.
+    # Last resort on the real path: render the homepage with a headless browser, which gets
+    # past walls the HTTP client can't. Only the homepage — industry/offer live there, and a
+    # per-key-page render would blow the latency budget.
+    if is_challenge_page(home_html) and not injected and get_settings().intake.playwright_fallback:
+        rendered = await playwright_fetch_text(home)
+        if not is_challenge_page(rendered):
+            home_html = rendered
     # Classifying/offer-extracting from a "Client Challenge" stub yields garbage, so abstain.
     if is_challenge_page(home_html):
         return SiteFacts()

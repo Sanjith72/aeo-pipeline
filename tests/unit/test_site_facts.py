@@ -200,6 +200,22 @@ def test_industry_ignores_contaminated_services_list():
     assert facts.industry not in ("Restaurants", "Retail")
 
 
+def test_industry_title_wins_over_promo_heading():
+    # A gym whose <title> leads with "Gym and Fitness Club" must not be read as Education
+    # because of a later "HIGH SCHOOL SUMMER PASS" promo heading. Title-first classification.
+    html = """
+    <html><head>
+    <title>Planet Fitness | A Gym and Fitness Club for Everyone</title>
+    <meta name="description" content="Affordable gym memberships starting at $15 a month.">
+    </head><body>
+    <h1>The Judgement Free Zone</h1>
+    <h2>HIGH SCHOOL SUMMER PASS is here</h2>
+    </body></html>
+    """
+    facts = extract_facts([FetchedDoc("https://pf.com/", html)], domain="pf.com")
+    assert facts.industry == "Fitness"
+
+
 def test_industry_kept_when_self_description_names_the_vertical():
     # A real vertical in the title/meta is still detected — the fix is source-aware, it does
     # not just over-abstain.
@@ -395,3 +411,36 @@ def test_gather_site_facts_skips_challenge_homepage():
 
     facts = asyncio.run(gather_site_facts("walled.example", fetch=challenge_fetch))
     assert facts.services == [] and facts.industry is None  # no garbage from the stub
+
+
+def test_playwright_fallback_recovers_blocked_homepage(monkeypatch):
+    # On the real path (no injected fetch), a blocked httpx homepage falls back to a headless
+    # render. Both fetchers are monkeypatched, so no real browser/network is launched.
+    import aeo.crawl.discovery as disc
+
+    async def httpx_blocked(url: str):
+        return "<html><head><title>Just a moment...</title></head><body>checking your browser</body></html>"
+
+    async def rendered(url: str, **kw):
+        return (
+            "<html><head><title>Acme Plumbing — Drain Cleaning &amp; Repair</title></head>"
+            "<body><h1>Trusted local plumbers</h1></body></html>"
+        )
+
+    monkeypatch.setattr(disc, "browser_fetch_text", httpx_blocked)
+    monkeypatch.setattr(disc, "playwright_fetch_text", rendered)
+    facts = asyncio.run(gather_site_facts("acme.example"))  # not injected → fallback active
+    assert facts.industry == "Construction"  # "plumbing" recovered from the rendered title
+
+
+def test_playwright_fallback_not_used_when_fetch_injected():
+    # Injecting a fetch (tests/custom callers) must never trigger the real-browser fallback.
+    calls = {"n": 0}
+
+    async def injected(url: str):
+        calls["n"] += 1
+        return None  # always blocked
+
+    facts = asyncio.run(gather_site_facts("acme.example", fetch=injected))
+    assert facts.industry is None and facts.services == []
+    assert calls["n"] >= 1  # the injected fetch was used; no playwright detour

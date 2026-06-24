@@ -68,6 +68,13 @@ def test_builder_keyword_is_construction_specific():
     assert classify_vertical("Premier Pool Builder & spa installation") == "Construction"
 
 
+def test_free_shipping_is_not_logistics():
+    # "free shipping" is e-commerce boilerplate, not a logistics company.
+    assert classify_vertical("Comfortable shoes & apparel. FREE shipping & returns.") != "Logistics / Transportation"
+    # A genuine freight carrier still classifies.
+    assert classify_vertical("Global freight shipping and container logistics") == "Logistics / Transportation"
+
+
 def _cleveland_clinic_sparql() -> dict:
     # Shape mirrors WDQS JSON for Cleveland Clinic (Q13780930): industry=health care,
     # instance-of includes a generic class plus a hospital network.

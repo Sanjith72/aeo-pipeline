@@ -182,6 +182,13 @@ class IntakeCfg(BaseModel):
     enabled: bool = True
     thin_site_min_pages: int = 5
     thin_site_min_words: int = 300
+    # When the fast httpx prefill fetch is blocked (403 / JS bot-challenge stub) on a site
+    # whose wall a real browser gets past, fall back to a headless-Chromium render of the
+    # HOMEPAGE ONLY (industry/offer live there). Costs ~6-8s, so it fires only on the
+    # minority of blocked sites; the common case never pays it. Set AEO__INTAKE__
+    # PLAYWRIGHT_FALLBACK=false to disable (e.g. hosts without the browser installed).
+    playwright_fallback: bool = True
+    playwright_timeout_sec: int = 18
 
 
 class PerplexityCfg(BaseModel):
