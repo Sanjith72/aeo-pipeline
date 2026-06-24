@@ -189,6 +189,10 @@ class IntakeCfg(BaseModel):
     # PLAYWRIGHT_FALLBACK=false to disable (e.g. hosts without the browser installed).
     playwright_fallback: bool = True
     playwright_timeout_sec: int = 18
+    # Max concurrent headless renders off the shared browser pool (crawl.browser_pool). One
+    # browser process is reused; this caps simultaneous contexts so a burst of blocked-site
+    # prefills can't exhaust memory. Small by default — the fallback is rare.
+    playwright_pool_size: int = 2
 
 
 class PerplexityCfg(BaseModel):

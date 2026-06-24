@@ -23,6 +23,7 @@ import ipaddress
 import json
 import socket
 import time
+from contextlib import asynccontextmanager
 from datetime import UTC
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -108,7 +109,21 @@ def require_api_key(request: Request) -> None:
         raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
 
 
-app = FastAPI(title="AEO Pipeline API", version="0.2.0", dependencies=[Depends(require_api_key)])
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """App lifespan. On shutdown, close the shared headless-browser pool (used by the
+    intake-prefill fallback) so the Chromium subprocess doesn't outlive the server. No-op
+    when the pool was never used."""
+    yield
+    from ..crawl.browser_pool import close_pool
+
+    await close_pool()
+
+
+app = FastAPI(
+    title="AEO Pipeline API", version="0.2.0",
+    dependencies=[Depends(require_api_key)], lifespan=_lifespan,
+)
 
 
 # ── per-IP rate limiting (in-memory; single-process scale, mirrors the job registry) ──

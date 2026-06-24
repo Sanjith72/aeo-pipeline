@@ -433,6 +433,14 @@ def test_playwright_fallback_recovers_blocked_homepage(monkeypatch):
     assert facts.industry == "Construction"  # "plumbing" recovered from the rendered title
 
 
+def test_browser_pool_close_is_safe_when_unused():
+    # The shared pool is closed on API shutdown; closing a never-launched pool is a no-op.
+    from aeo.crawl.browser_pool import close_pool
+
+    asyncio.run(close_pool())
+    asyncio.run(close_pool())  # idempotent — must not raise
+
+
 def test_playwright_fallback_not_used_when_fetch_injected():
     # Injecting a fetch (tests/custom callers) must never trigger the real-browser fallback.
     calls = {"n": 0}

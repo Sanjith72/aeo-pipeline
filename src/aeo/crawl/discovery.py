@@ -208,42 +208,16 @@ async def playwright_fetch_text(url: str, *, timeout_sec: int | None = None) -> 
     (real TLS + JS engine) gets past walls that 403 a bare httpx client — measured: it
     recovers planetfitness / warbyparker / allbirds, which block even browser headers.
 
-    Deliberately NO ``navigator.webdriver`` stealth patch: that patch is itself a detection
-    signal and made some walls (zillow) flip from 200 to 403, so plain realistic Chromium
-    wins. Costs ~6-8s, so callers invoke it only after the cheap fetch fails. Returns None
-    (never raises) when Chromium isn't installed or the render fails — the caller degrades to
-    empty facts exactly as before."""
-    timeout = (timeout_sec or get_settings().intake.playwright_timeout_sec) * 1000
-    try:
-        from playwright.async_api import async_playwright  # lazy: optional heavy dep
-    except Exception:
-        log.info("playwright_unavailable", url=url)
-        return None
+    Backed by a process-wide shared browser pool (``crawl.browser_pool``): one long-lived
+    Chromium is reused across requests (per-render isolated contexts, bounded concurrency)
+    instead of a ~1.5s launch every call. Deliberately NO ``navigator.webdriver`` stealth
+    patch — that patch is itself a detection signal and flipped zillow 200→403, so plain
+    realistic Chromium wins. Returns None (never raises) when Chromium isn't installed or the
+    render fails, so the caller degrades to empty facts exactly as before."""
+    from .browser_pool import render_page
 
-    try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True, args=["--disable-blink-features=AutomationControlled"]
-            )
-            try:
-                ctx = await browser.new_context(
-                    user_agent=_BROWSER_HEADERS["User-Agent"],
-                    locale="en-US",
-                    viewport={"width": 1366, "height": 768},
-                )
-                page = await ctx.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
-                # Let a JS challenge resolve / content paint, but never block past the budget.
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=min(6000, timeout))
-                except Exception:
-                    pass
-                return await page.content()
-            finally:
-                await browser.close()
-    except Exception as exc:
-        log.info("playwright_fetch_failed", url=url, error=str(exc))
-        return None
+    timeout = (timeout_sec or get_settings().intake.playwright_timeout_sec) * 1000
+    return await render_page(url, user_agent=_BROWSER_HEADERS["User-Agent"], timeout_ms=timeout)
 
 
 async def gather_sitemap_urls(
