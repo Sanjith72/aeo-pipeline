@@ -31,14 +31,22 @@ DEAD = "dead"   # nothing crawlable — no-website path
 
 # Coarse industry label per inferred business model — the fallback when neither an
 # explicit category nor a specific topic is available.
+#
+# ONLY the models that are near-synonymous with a content vertical belong here. A business
+# model describes how a site MONETISES (capture leads, sell goods, run a SaaS) or its SIZE
+# (enterprise) — that is orthogonal to its INDUSTRY. The horizontal models below were the
+# bug: `lead_gen` ("Professional services"), `local`, `agency`, and `enterprise` each span
+# every vertical (a plumber, a law firm and a B2B consultancy are all `lead_gen`), and
+# `lead_gen` is the conservative default the classifier reaches for on the most common
+# sites — so mapping it to an industry stamped "Professional services" on nearly everything.
+# `enterprise -> "Enterprise"` was also the very "Enterprise leak" that industry.py works to
+# kill. Those models now resolve to None so the caller falls through to a real crawl-classified
+# vertical (homepage self-description + scraped service labels) or an empty, user-editable
+# field — empty beats confidently wrong.
 _INDUSTRY_BY_MODEL: dict[str, str] = {
     "saas": "Software / SaaS",
     "ecommerce": "E-commerce / Retail",
-    "local": "Local services",
-    "agency": "Agency / Consultancy",
     "publisher": "Media / Publishing",
-    "lead_gen": "Professional services",
-    "enterprise": "Enterprise",
 }
 
 # A page that encodes a location in its path: /locations/austin, /location/new-york.
@@ -86,13 +94,22 @@ def infer_industry(
     topic: str | None = None,
     category: str | None = None,
     business_model: str | None = None,
+    business_model_decided: bool = True,
     cfg: IntelligenceCfg | None = None,
 ) -> str | None:
     """Best-effort industry, derived deterministically. An explicit ``category`` (the
     user override) wins; then a specific crawl/onboarding ``topic`` (resolved through
     ``_TOPIC_DISPLAY_LABELS`` so a taxonomy key like ``"PEV"`` renders as its human label
     ``"Cybersecurity"`` rather than leaking the key); then a coarse label from the inferred
-    ``business_model``. ``None`` only when nothing is known."""
+    ``business_model``. ``None`` only when nothing is known.
+
+    ``business_model_decided`` is ``False`` when the business model was a *no-signal
+    default* (``detect_business_model`` falls back to ``LEAD_GEN`` with confidence 0 when
+    nothing fires). In that case we must NOT emit the coarse ``_INDUSTRY_BY_MODEL`` label:
+    ``lead_gen`` maps to "Professional services", so a default would stamp that label on
+    essentially every site whose URL slugs carry no business-model signal. Abstaining
+    (``None``) here lets the caller fall through to a real crawl-classified vertical or
+    leave the field empty for the user to fill — empty beats confidently wrong."""
     if category and category.strip():
         return category.strip()
     if topic and topic.strip().lower() not in _GENERIC_TOPICS:
@@ -100,7 +117,9 @@ def infer_industry(
         # Resolve a taxonomy key (e.g. "PEV") to its human label; an unmapped topic is
         # assumed already human-readable and echoed back unchanged.
         return _TOPIC_DISPLAY_LABELS.get(key.lower(), key)
-    if business_model:
+    # Only surface a coarse business-model label when the model was actually *decided* by a
+    # signal — never off the pure no-signal default (which would leak "Professional services").
+    if business_model and business_model_decided:
         return _INDUSTRY_BY_MODEL.get(business_model)
     return None
 
@@ -125,6 +144,7 @@ def infer_location(
 
 
 def _humanize(segment: str) -> str:
+    """Turn a location slug ("new-york") into a display label ("New York")."""
     return segment.replace("-", " ").replace("_", " ").strip().title() or segment
 
 

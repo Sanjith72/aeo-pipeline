@@ -506,6 +506,15 @@ def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
     # empty beats confidently wrong (a marketing platform read as "Restaurants").
     homepage_desc = self_description_text(parse(docs[0].html)) if docs else ""
     industry = classify_vertical(homepage_desc)
+    if not industry and services:
+        # Recovery ("try harder"): the homepage self-description named no vertical, so widen
+        # to the company's OWN scraped service labels (/services links, service nav, section
+        # headings). Lower precision than the self-description — a service label can name a
+        # served segment — so this is a SECOND pass that runs ONLY when the strict signal
+        # abstained, never overriding it. classify_vertical only ever returns a real keyword
+        # match (never a guess), so the worst case is it stays None; it recovers e.g. a law
+        # firm or clinic whose hero copy is vague but whose service pages are explicit.
+        industry = classify_vertical("", services=services)
     # "What do you offer?" must never come back empty from a crawl that found a page.
     # Tiered fallback: structured offerings (above) → first clause of the site's own
     # description → the classified industry label. The user edits whichever lands.
