@@ -121,24 +121,28 @@ def mark_from_recrawl(
         rows = cur.fetchall()
         for row in rows:
             criterion = row.get("criterion")
+            new_tier = tiers.get(criterion) if criterion else None
             new_status, method = decide_status(
                 row["baseline_hash"], current_hash,
                 criterion=criterion,
                 baseline_tier=row.get("baseline_tier"),
-                new_tier=tiers.get(criterion) if criterion else None,
+                new_tier=new_tier,
             )
             if new_status is None:
                 continue
+            # Pin the actual re-scored tier at the verdict (Feature #2), so the realized
+            # lift (detected_tier − baseline_tier) can be reconciled against the prediction.
             cur.execute(
                 """
                 UPDATE recommendation_outcomes
                 SET status = %s,
                     detection_method = %s,
                     detected_run_id = %s,
-                    detected_at = NOW()
+                    detected_at = NOW(),
+                    detected_tier = %s
                 WHERE id = %s
                 """,
-                (new_status, method, current_run_id, row["id"]),
+                (new_status, method, current_run_id, new_tier, row["id"]),
             )
             flipped += 1
     return flipped
@@ -171,7 +175,11 @@ def pending_for_url(url_normalized: str) -> list[dict[str, Any]]:
 def implemented_for_domain(domain: str, limit: int = 200) -> list[dict[str, Any]]:
     """Re-crawl-VERIFIED outcomes across a domain's pages — drives the 'Verified live'
     view. Only criterion-confirmed ``implemented`` rows are returned, so what the UI shows
-    is honest by construction. Matched by host so it spans every URL on the site."""
+    is honest by construction. Matched by host so it spans every URL on the site.
+
+    Joins each outcome's issuing recommendation for its PREDICTED lift, and returns the
+    pinned ``baseline_tier``/``detected_tier``, so the caller can show predicted vs actual
+    (Feature #2) — keeping the estimate accountable once a fix is verified."""
     from ...utils.url import host_of, normalize
 
     host = host_of(normalize(domain if "://" in domain else f"https://{domain}"))
@@ -179,10 +187,43 @@ def implemented_for_domain(domain: str, limit: int = 200) -> list[dict[str, Any]
         return []
     with transaction() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT id, url_normalized, criterion, detected_at "
-            "FROM recommendation_outcomes "
-            "WHERE status = %s AND (url_normalized LIKE %s OR url_normalized LIKE %s) "
-            "ORDER BY detected_at DESC NULLS LAST LIMIT %s",
+            "SELECT o.id, o.url_normalized, o.criterion, o.detected_at, "
+            "o.baseline_tier, o.detected_tier, r.predicted_delta "
+            "FROM recommendation_outcomes o "
+            "LEFT JOIN recommendations r ON r.id = o.rec_id "
+            "WHERE o.status = %s AND (o.url_normalized LIKE %s OR o.url_normalized LIKE %s) "
+            "ORDER BY o.detected_at DESC NULLS LAST LIMIT %s",
             (IMPLEMENTED, f"https://{host}%", f"http://{host}%", limit),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def pending_fixes_for_domain(domain: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Pending (not-yet-verified) per-page fixes across a domain, each with its PREDICTED
+    rubric-point lift — the 'before you act' side of Feature #2. Highest predicted lift
+    first (unknown/NULL last) so the UI surfaces high-impact fixes over merely quick ones.
+
+    De-duplicated to the most recent pending outcome per (url, criterion) so re-issuing a
+    rec across audit runs never shows the same fix twice. Matched by host across the site."""
+    from ...utils.url import host_of, normalize
+
+    host = host_of(normalize(domain if "://" in domain else f"https://{domain}"))
+    if not host:
+        return []
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM ("
+            "  SELECT DISTINCT ON (o.url_normalized, o.criterion) "
+            "         o.url_normalized, o.criterion, "
+            "         r.predicted_delta, r.predicted_low, r.predicted_high, r.predicted_basis, "
+            "         r.payload->>'action_required' AS action_required "
+            "  FROM recommendation_outcomes o "
+            "  JOIN recommendations r ON r.id = o.rec_id "
+            "  WHERE o.status = %s AND (o.url_normalized LIKE %s OR o.url_normalized LIKE %s) "
+            "  ORDER BY o.url_normalized, o.criterion, o.id DESC "
+            ") f "
+            "ORDER BY f.predicted_delta DESC NULLS LAST, f.url_normalized "
+            "LIMIT %s",
+            (PENDING, f"https://{host}%", f"http://{host}%", limit),
         )
         return [dict(row) for row in cur.fetchall()]

@@ -24,6 +24,13 @@ from .independent import (
     derive_question,
     validate_independent,
 )
+from .predict import (
+    BASIS_NO_LIFT,
+    BASIS_SIMULATED,
+    BASIS_UNKNOWN,
+    PredictedLift,
+    predict_lifts,
+)
 from .simulate import apply_recommendation
 from .validator import (
     REVIEW_NEEDED,
@@ -36,6 +43,9 @@ from .validator import (
 )
 
 __all__ = [
+    "BASIS_NO_LIFT",
+    "BASIS_SIMULATED",
+    "BASIS_UNKNOWN",
     "REVIEW_NEEDED",
     "REVIEW_NONE",
     "STATUS_COULD_NOT_IMPROVE",
@@ -46,12 +56,14 @@ __all__ = [
     "CitationVerdict",
     "IndependentCheck",
     "IndependentVerdict",
+    "PredictedLift",
     "ValidationOutcome",
     "adversarial_audit",
     "apply_recommendation",
     "check_citation_signals",
     "derive_question",
     "extract_citation_urls",
+    "predict_lifts",
     "validate_independent",
     "validate_page",
 ]

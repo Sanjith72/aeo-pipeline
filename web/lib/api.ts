@@ -266,18 +266,19 @@ export const api = {
       return { fresh: false };
     }
   },
-  /** Re-crawl-verified outcomes for a domain — the "Verified live" view (Spec #2).
-   *  Best-effort: any failure resolves to an empty set so results never break over it. */
+  /** Re-crawl-verified outcomes + predicted pending fixes for a domain — the "Fix impact"
+   *  view (Spec #2 "Verified live" · Feature #2). Best-effort: any failure resolves to an
+   *  empty set so results never break over it. */
   async recheckStatus(domain: string): Promise<RecheckStatusResponse> {
-    if (typeof window === "undefined" || !domain) return { verified: [], count: 0 };
+    if (typeof window === "undefined" || !domain) return { verified: [], pending: [], count: 0 };
     try {
       const res = await fetch(`${BASE}/api/recheck-status?domain=${encodeURIComponent(domain)}`, {
         headers: headers(),
       });
-      if (!res.ok) return { verified: [], count: 0 };
+      if (!res.ok) return { verified: [], pending: [], count: 0 };
       return (await res.json()) as RecheckStatusResponse;
     } catch {
-      return { verified: [], count: 0 };
+      return { verified: [], pending: [], count: 0 };
     }
   },
 

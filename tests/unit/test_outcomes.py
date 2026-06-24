@@ -64,6 +64,13 @@ class TestReposImportable:
         assert callable(outcomes_repo.for_page)
         assert callable(outcomes_repo.pending_for_url)
         assert callable(outcomes_repo.implemented_for_domain)
+        # Feature #2 — the 'before you act' predicted-fix lookup.
+        assert callable(outcomes_repo.pending_fixes_for_domain)
+
+    def test_recommendations_repo_exposes_set_prediction(self):
+        from aeo.storage.repos import recommendations as recs_repo
+
+        assert callable(recs_repo.set_prediction)
 
 
 class TestMigration0013:

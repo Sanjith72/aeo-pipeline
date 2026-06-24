@@ -344,8 +344,14 @@ class TestPersist:
                 {"rec_id": rec_id, "status": status, "validated": validated, "score_after": score_after}
             )
 
+        predicted: list[dict] = []
+
+        def fake_set_prediction(rec_id, *, point, low, high, basis):
+            predicted.append({"rec_id": rec_id, "point": point, "low": low, "high": high, "basis": basis})
+
         monkeypatch.setattr("aeo.storage.repos.recommendations.create", fake_create)
         monkeypatch.setattr("aeo.storage.repos.recommendations.set_validation", fake_set_validation)
+        monkeypatch.setattr("aeo.storage.repos.recommendations.set_prediction", fake_set_prediction)
 
         b = make_bundle(
             qa_blocks={
@@ -369,3 +375,11 @@ class TestPersist:
         assert stamped[0]["status"] == "validated"
         assert stamped[0]["validated"] is True
         assert stamped[0]["score_after"] == out.score_after
+        # Feature #2 — each rec is stamped with its predicted lift, aligned to out.predicted.
+        assert len(predicted) == 1
+        assert predicted[0]["rec_id"] == 1
+        assert predicted[0]["basis"] == out.predicted[0].basis
+        assert predicted[0]["point"] == out.predicted[0].point
+        # The verified schema fix improved the page, so its predicted lift is a real estimate.
+        assert out.predicted[0].basis == "simulated"
+        assert out.predicted[0].point is not None and out.predicted[0].point > 0

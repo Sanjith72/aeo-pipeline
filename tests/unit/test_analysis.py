@@ -172,6 +172,7 @@ class TestAnalyzePage:
 
         monkeypatch.setattr("aeo.storage.repos.recommendations.create", fake_create)
         monkeypatch.setattr("aeo.storage.repos.recommendations.set_validation", fake_set_validation)
+        monkeypatch.setattr("aeo.storage.repos.recommendations.set_prediction", lambda *a, **kw: None)
 
         bundle = make_bundle(qa_blocks={"pair_count": 0})
         score = score_of(bundle)
@@ -233,6 +234,7 @@ class TestAnalyzeRun:
         monkeypatch.setattr("aeo.storage.repos.reports.put", lambda *a, **kw: 1)
         monkeypatch.setattr("aeo.storage.repos.recommendations.create", lambda *a, **kw: 1)
         monkeypatch.setattr("aeo.storage.repos.recommendations.set_validation", lambda *a, **kw: None)
+        monkeypatch.setattr("aeo.storage.repos.recommendations.set_prediction", lambda *a, **kw: None)
         monkeypatch.setattr("aeo.storage.repos.traces.record", lambda **kw: None)
 
     def test_tallies_pages(self, monkeypatch):

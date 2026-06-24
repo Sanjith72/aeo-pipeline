@@ -12,6 +12,7 @@ import type {
   BriefPlan,
   BundleAsset,
   DeliverablesResponse,
+  PendingFix,
   PlanStateResponse,
   PlanTask,
   RecheckStatusResponse,
@@ -24,6 +25,7 @@ import type {
 } from "@/lib/types";
 import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
 import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/score";
+import { predictedLiftChip, reconcileLabel } from "@/lib/predictedLift";
 import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
 import { ArrowRight, Check, Sparkle } from "./ui/icons";
 import { MilestoneDashboard } from "./MilestoneDashboard";
@@ -140,10 +142,73 @@ export function ScoreRing({
   );
 }
 
-// Spec #2 "Verified live": fixes a re-crawl has confirmed actually landed (criterion-honest).
+// Feature #2 "Fix impact": pending fixes carry a PREDICTED "+X pts" lift (so the owner can
+// pick high-impact work before acting); re-crawl-verified fixes (Spec #2) show predicted vs
+// actual (so the estimate stays honest). Both arrive from /api/recheck-status; either may be
+// empty, and the whole panel disappears when there's nothing to show.
+function FixImpact({ data }: { data: RecheckStatusResponse }) {
+  const pending = data.pending ?? [];
+  const verified = data.verified ?? [];
+  if (pending.length === 0 && verified.length === 0) return null;
+  return (
+    <div className="mb-6 space-y-3">
+      {pending.length > 0 && <PredictedFixes fixes={pending} />}
+      {verified.length > 0 && <VerifiedLive verified={verified} />}
+    </div>
+  );
+}
+
+// The "before you act" half: the highest-predicted-lift fixes still to do. The chip is "+X
+// pts" only for a real simulated estimate; an advisory we can't simulate shows "—", never a
+// fabricated 0 (see lib/predictedLift).
+function PredictedFixes({ fixes }: { fixes: PendingFix[] }) {
+  return (
+    <div className="rounded-xl border border-accent/30 bg-accent/[0.05] p-5">
+      <div className="mb-2 flex items-center gap-2 text-accent">
+        <Sparkle width={14} height={14} />
+        <span className="text-sm font-medium">Biggest wins left — estimated score lift before you act</span>
+      </div>
+      <ul className="space-y-1.5 text-xs text-ink-500">
+        {fixes.slice(0, 6).map((f, i) => {
+          const chip = predictedLiftChip(f.predicted);
+          return (
+            <li key={`${f.url}-${f.criterion ?? "x"}-${i}`} className="flex items-center justify-between gap-3">
+              <span className="min-w-0 truncate">
+                {f.criterion ? <span className="text-ink-300">{humanizeToken(f.criterion)} — </span> : null}
+                {f.action_required || f.url}
+              </span>
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums ${
+                  chip.known
+                    ? "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30"
+                    : "bg-ink/[0.05] text-ink-400 ring-1 ring-ink/10"
+                }`}
+                title={
+                  chip.band
+                    ? `Estimated ${chip.band} points on this page's rubric`
+                    : chip.known
+                      ? undefined
+                      : "No deterministic estimate for this fix yet"
+                }
+              >
+                {chip.label}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-2 text-[11px] text-ink-300">
+        An estimate from simulating each fix on the page's 0–50 rubric — we confirm the real gain on the next re-crawl.
+      </p>
+    </div>
+  );
+}
+
+// Spec #2 "Verified live": fixes a re-crawl has confirmed actually landed (criterion-honest),
+// now with predicted vs actual where both are known.
 function VerifiedLive({ verified }: { verified: VerifiedOutcome[] }) {
   return (
-    <div className="mb-6 rounded-xl border border-emerald-500/30 bg-emerald-500/[0.07] p-5">
+    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/[0.07] p-5">
       <div className="mb-2 flex items-center gap-2 text-emerald-300">
         <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-white">
           <Check width={10} height={10} />
@@ -153,12 +218,20 @@ function VerifiedLive({ verified }: { verified: VerifiedOutcome[] }) {
         </span>
       </div>
       <ul className="space-y-1 text-xs text-ink-400">
-        {verified.slice(0, 6).map((v, i) => (
-          <li key={`${v.url}-${i}`} className="truncate">
-            <span className="text-emerald-300/80">✓</span> {v.criterion ? `${v.criterion} — ` : ""}
-            {v.url}
-          </li>
-        ))}
+        {verified.slice(0, 6).map((v, i) => {
+          const reconcile = reconcileLabel(v);
+          return (
+            <li key={`${v.url}-${i}`} className="flex items-center justify-between gap-3">
+              <span className="min-w-0 truncate">
+                <span className="text-emerald-300/80">✓</span> {v.criterion ? `${humanizeToken(v.criterion)} — ` : ""}
+                {v.url}
+              </span>
+              {reconcile && (
+                <span className="shrink-0 font-mono text-[11px] tabular-nums text-emerald-300/80">{reconcile}</span>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -217,9 +290,9 @@ export function ResultsView({
   // (criterion-honest). Surface any confirmed-implemented outcomes for this domain in the
   // overview. Best-effort — the API resolves to an empty set on any miss, so this never
   // breaks the results view.
-  const [verified, setVerified] = useState<RecheckStatusResponse>({ verified: [], count: 0 });
+  const [recheck, setRecheck] = useState<RecheckStatusResponse>({ verified: [], pending: [], count: 0 });
   useEffect(() => {
-    if (profile?.domain) api.recheckStatus(profile.domain).then(setVerified).catch(() => {});
+    if (profile?.domain) api.recheckStatus(profile.domain).then(setRecheck).catch(() => {});
   }, [profile?.domain]);
 
   // #6 — the old "reserve the tallest panel height" floor was removed: it left a large dead
@@ -278,7 +351,7 @@ export function ResultsView({
         {tab === "overview" && profile && (
           <>
             <ScoreRing profile={profile} className="mb-6" />
-            {verified.count > 0 && <VerifiedLive verified={verified.verified} />}
+            <FixImpact data={recheck} />
             <OverviewPanel profile={profile} auditJob={auditJob} />
           </>
         )}

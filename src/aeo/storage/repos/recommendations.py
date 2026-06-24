@@ -62,6 +62,31 @@ def set_validation(
         )
 
 
+def set_prediction(
+    rec_id: int,
+    *,
+    point: float | None,
+    low: float | None,
+    high: float | None,
+    basis: str,
+) -> None:
+    """Pin a recommendation's PREDICTED rubric-point lift (Feature #2) at issue time.
+
+    ``point``/``low``/``high`` are ``None`` when the simulator could not estimate
+    (``basis='unknown'``); a real-but-zero estimate (``basis='no_deterministic_lift'``)
+    stores ``0`` so the distinction survives for later predicted-vs-actual calibration."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE recommendations
+            SET predicted_delta = %s, predicted_low = %s, predicted_high = %s,
+                predicted_basis = %s, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (point, low, high, basis, rec_id),
+        )
+
+
 def for_page(page_id: int, run_id: int) -> list[dict]:
     """All recommendations for a page/run, oldest first (attempt order)."""
     with transaction() as conn, conn.cursor() as cur:

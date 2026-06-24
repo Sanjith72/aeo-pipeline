@@ -79,6 +79,7 @@ class TestAnalyzePageIndependent:
         monkeypatch.setattr("aeo.storage.repos.reports.put", lambda *a, **kw: 1)
         monkeypatch.setattr("aeo.storage.repos.recommendations.create", lambda *a, **kw: 1)
         monkeypatch.setattr("aeo.storage.repos.recommendations.set_validation", lambda *a, **kw: None)
+        monkeypatch.setattr("aeo.storage.repos.recommendations.set_prediction", lambda *a, **kw: None)
 
         b = passing_bundle()
         score = score_page(b, 7, llm=DISABLED, rubric=RUBRIC)
