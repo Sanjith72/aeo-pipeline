@@ -49,7 +49,8 @@ _KEYWORD_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("bank", "banking", "financial service", "finance", "investment", "asset management",
       "fintech", "credit union", "lending", "mortgage", "wealth management", "brokerage"), "Finance"),
     (("real estate", "realty", "realtor", "property management", "property developer"), "Real Estate"),
-    (("restaurant", "fast food", "cafe", "café", "catering", "food service", "diner", "bistro"), "Restaurants"),
+    (("restaurant", "fast food", "cafe", "café", "catering", "food service", "diner", "bistro",
+      "taqueria", "pizzeria", "steakhouse", "eatery", "food truck", "coffeehouse", "coffee shop"), "Restaurants"),
     (("e-commerce", "ecommerce", "online store", "online shop", "marketplace", "online retail"), "E-commerce"),
     (("retail", "supermarket", "grocery", "department store", "retailer"), "Retail"),
     (("law firm", "legal service", "attorney", "lawyer", "litigation", "law practice"), "Legal"),
@@ -57,7 +58,12 @@ _KEYWORD_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("software", "saas", "information technology", "cloud computing", "internet company",
       "technology company", "computer software", "web development", "it service"), "Software / SaaS"),
     (("manufactur", "industrial", "factory", "fabrication"), "Manufacturing"),
-    (("construction", "contractor", "builder", "roofing", "plumbing", "hvac", "remodeling"), "Construction"),
+    # "builder" alone is too broad — it mislabels "website/app/page/form builder" SaaS as
+    # Construction (squarespace, figma). Require a construction-specific form instead (these
+    # still cover the trades: home/house/pool/deck/fence builder, general contractor).
+    (("construction", "contractor", "home builder", "homebuilder", "house builder",
+      "pool builder", "deck builder", "fence builder", "custom home",
+      "roofing", "plumbing", "hvac", "remodeling", "general contractor"), "Construction"),
     (("hotel", "hospitality", "tourism", "travel agency", "airline", "resort", "lodging"), "Hospitality / Travel"),
     (("marketing", "advertising", "public relations", "seo agency", "digital agency", "branding"), "Marketing / Advertising"),
     (("media", "publishing", "newspaper", "broadcast", "magazine", "entertainment", "film", "music"), "Media / Publishing"),

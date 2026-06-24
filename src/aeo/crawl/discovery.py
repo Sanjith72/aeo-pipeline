@@ -158,6 +158,50 @@ async def _default_fetch_text(url: str) -> str | None:
     return None
 
 
+# A realistic desktop-browser header set for the FAST intake prefill (gather_site_facts).
+# The audit crawler keeps the identified AEOBot UA — polite, and used on sites the operator
+# owns or is engaged to audit. But the wizard's one-shot "read the homepage to prefill the
+# About-you fields" must work on arbitrary third-party marketing sites, and many of those
+# gate a plain bot UA: they 403 or serve a JS bot-challenge stub to AEOBot while returning
+# the real HTML to a browser UA + Accept headers (measured: zillow.com 403→200, a Cloudflare
+# "Client Challenge" stub → the full page). Advanced bot walls (Akamai/PerimeterX) still
+# block; we then degrade to empty facts, exactly as before.
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+async def browser_fetch_text(url: str) -> str | None:
+    """Like :func:`_default_fetch_text` but presents a desktop-browser header set, for the
+    fast intake prefill that reads third-party marketing pages a bot UA gets blocked from.
+    Same IPv4 transport seam and timeout; returns the body on 200, else None."""
+    cfg = get_settings().crawler
+    from .transport import async_transport
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=cfg.discovery.timeout_sec,
+            follow_redirects=True,
+            headers=_BROWSER_HEADERS,
+            transport=async_transport(),
+        ) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                return resp.text
+            log.info("browser_fetch_non200", url=url, status=resp.status_code)
+    except Exception as exc:
+        log.warning("browser_fetch_failed", url=url, error=str(exc))
+    return None
+
+
 async def gather_sitemap_urls(
     domain: str,
     *,

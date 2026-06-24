@@ -14,6 +14,7 @@ from aeo.intelligence.site_facts import (
     detect_cms,
     extract_facts,
     gather_site_facts,
+    is_challenge_page,
     location_from_blocks,
     location_from_text,
     offer_from_description,
@@ -319,3 +320,78 @@ def test_gather_site_facts_unreachable_homepage_is_empty():
     assert facts.location is None
     assert facts.services == []  # no docs crawled → fallback never engages
     assert facts.competitors == []
+
+
+# ── services: drop customer SEGMENTS, keep real offerings ─────────────────────────────
+
+
+def test_services_drop_customer_segments_keep_offerings():
+    # A "Solutions for X" nav lists who-you-serve (sizes, served verticals, departments) —
+    # not offerings. Those are dropped; the genuine offering survives.
+    html = """
+    <html><body><nav><ul>
+      <li><a href="#">Services</a><ul>
+        <li><a href="/x">Email Marketing</a></li>
+        <li><a href="/x">Restaurants</a></li>
+        <li><a href="/x">Small Business</a></li>
+        <li><a href="/x">Engineering</a></li>
+        <li><a href="/x">Managed IT</a></li>
+        <li><a href="/x">See all solutions</a></li>
+      </ul></li>
+    </ul></nav></body></html>
+    """
+    svcs = services_from_nav([FetchedDoc("https://acme.com/", html)])
+    svcs = [s for s in svcs if s]
+    assert "Email Marketing" in svcs and "Managed IT" in svcs  # real offerings kept
+    # served segments / nav CTA dropped (exact-match, so multi-word "Managed IT" is safe)
+    for seg in ("Restaurants", "Small Business", "Engineering", "See all solutions"):
+        assert seg not in svcs
+
+
+def test_offer_fallback_truncates_on_word_boundary():
+    # A long meta description is cut at a word boundary, never mid-word ("…care, incl").
+    html = (
+        "<html><head><meta name='description' "
+        "content='We help patients get affordable dental care, including checkups and dentures.'>"
+        "</head><body></body></html>"
+    )
+    from aeo.utils.html import parse
+
+    out = offer_from_description(parse(html))
+    assert out and len(out[0]) <= 60
+    assert out[0] == out[0].rstrip()  # no trailing partial fragment / stray space
+    # the cut lands between whole words — the last token is complete
+    assert not out[0].endswith("includ") and not out[0].endswith("inclu")
+
+
+def test_offer_fallback_rejects_nav_stopword_title():
+    # "Home | Jones Day" → first clause "Home" is a nav label, not an offer → no fallback.
+    html = "<html><head><title>Home | Jones Day</title></head><body></body></html>"
+    from aeo.utils.html import parse
+
+    assert offer_from_description(parse(html)) == []
+
+
+# ── bot-wall / challenge stub detection ───────────────────────────────────────────────
+
+
+def test_is_challenge_page_detects_small_stub():
+    assert is_challenge_page("<html><head><title>Just a moment...</title></head><body></body></html>")
+    assert is_challenge_page("<html><body>Client Challenge</body></html>")
+    assert is_challenge_page(None)
+    assert is_challenge_page("")
+
+
+def test_is_challenge_page_keeps_real_page():
+    # A large page is real even if it happens to mention a marker phrase in copy.
+    big = "<html><body>" + ("Our access denied policy explained. " * 1000) + "</body></html>"
+    assert not is_challenge_page(big)
+    assert not is_challenge_page("<html><body>A normal small business homepage.</body></html>")
+
+
+def test_gather_site_facts_skips_challenge_homepage():
+    async def challenge_fetch(url: str):
+        return "<html><head><title>Just a moment...</title></head><body>Checking your browser</body></html>"
+
+    facts = asyncio.run(gather_site_facts("walled.example", fetch=challenge_fetch))
+    assert facts.services == [] and facts.industry is None  # no garbage from the stub
