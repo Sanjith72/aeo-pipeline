@@ -49,7 +49,8 @@ _KEYWORD_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("bank", "banking", "financial service", "finance", "investment", "asset management",
       "fintech", "credit union", "lending", "mortgage", "wealth management", "brokerage"), "Finance"),
     (("real estate", "realty", "realtor", "property management", "property developer"), "Real Estate"),
-    (("restaurant", "fast food", "cafe", "café", "catering", "food service", "diner", "bistro"), "Restaurants"),
+    (("restaurant", "fast food", "cafe", "café", "catering", "food service", "diner", "bistro",
+      "taqueria", "pizzeria", "steakhouse", "eatery", "food truck", "coffeehouse", "coffee shop"), "Restaurants"),
     (("e-commerce", "ecommerce", "online store", "online shop", "marketplace", "online retail"), "E-commerce"),
     (("retail", "supermarket", "grocery", "department store", "retailer"), "Retail"),
     (("law firm", "legal service", "attorney", "lawyer", "litigation", "law practice"), "Legal"),
@@ -57,7 +58,12 @@ _KEYWORD_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("software", "saas", "information technology", "cloud computing", "internet company",
       "technology company", "computer software", "web development", "it service"), "Software / SaaS"),
     (("manufactur", "industrial", "factory", "fabrication"), "Manufacturing"),
-    (("construction", "contractor", "builder", "roofing", "plumbing", "hvac", "remodeling"), "Construction"),
+    # "builder" alone is too broad — it mislabels "website/app/page/form builder" SaaS as
+    # Construction (squarespace, figma). Require a construction-specific form instead (these
+    # still cover the trades: home/house/pool/deck/fence builder, general contractor).
+    (("construction", "contractor", "home builder", "homebuilder", "house builder",
+      "pool builder", "deck builder", "fence builder", "custom home",
+      "roofing", "plumbing", "hvac", "remodeling", "general contractor"), "Construction"),
     (("hotel", "hospitality", "tourism", "travel agency", "airline", "resort", "lodging"), "Hospitality / Travel"),
     (("marketing", "advertising", "public relations", "seo agency", "digital agency", "branding"), "Marketing / Advertising"),
     (("media", "publishing", "newspaper", "broadcast", "magazine", "entertainment", "film", "music"), "Media / Publishing"),
@@ -65,7 +71,10 @@ _KEYWORD_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("non-profit", "nonprofit", "not-for-profit", "charity", "charitable", "ngo", "foundation"), "Nonprofit"),
     (("energy", "oil and gas", "petroleum", "utility", "renewable", "solar", "electric utility"), "Energy"),
     (("telecommunication", "telecom", "wireless carrier", "mobile network"), "Telecommunications"),
-    (("logistics", "transportation", "shipping", "freight", "courier", "delivery service", "trucking"), "Logistics / Transportation"),
+    # "shipping" alone matches the ubiquitous e-commerce phrase "free shipping" — require a
+    # freight/carrier context so a shoe shop isn't read as a logistics company.
+    (("logistics", "transportation", "freight", "courier", "delivery service", "trucking",
+      "freight shipping", "shipping company", "shipping line", "container shipping"), "Logistics / Transportation"),
     (("agricultur", "farming", "farm"), "Agriculture"),
     (("beauty", "cosmetic", "salon", "spa", "skincare", "wellness"), "Beauty / Wellness"),
     (("fitness", "gym", "personal training", "yoga studio"), "Fitness"),
@@ -88,7 +97,8 @@ _VERTICAL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
 def match_vertical(text: str) -> str | None:
     """Map a raw label / chunk of text to a specific vertical, or None. Generic-only
     text (e.g. "business enterprise") yields None so the caller falls through. Keywords
-    match only at a word boundary, so "workspace" is not Beauty/Wellness."""
+    match only at a word boundary, so "workspace" is not Beauty/Wellness. Order matters
+    (most-specific-first): a "retail bank" resolves to Finance, not Retail."""
     if not text:
         return None
     low = text.lower()

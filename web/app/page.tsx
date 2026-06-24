@@ -156,6 +156,24 @@ export default function Page() {
       })
       .catch(() => {});
   }, []);
+  // Deep-link auto-build: a saved plan's "Build a plan for your site" link arrives as
+  // /?domain=…&name=…&autobuild=1#studio. Read it once, strip the params (so a refresh doesn't
+  // re-run the build), and kick off the full crawl→audit unattended.
+  const autoBuildStarted = useRef(false);
+  useEffect(() => {
+    if (autoBuildStarted.current || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("autobuild") !== "1") return;
+    const target = params.get("domain")?.trim();
+    if (!target) return;
+    autoBuildStarted.current = true;
+    const nameVal = params.get("name")?.trim() || "";
+    window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+    void autoBuild(target, nameVal);
+    // autoBuild is a stable closure over component state setters; run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const auditJobIdRef = useRef<string | null>(null);
   // The domain string we last ran the prefill crawl for — so we can detect a site change
   // (Back-and-edit, or just typing a new URL) and drop stale prefills before re-crawling.
@@ -344,10 +362,14 @@ export default function Page() {
     }
   }
 
-  async function runDeepAudit(): Promise<boolean> {
+  // domainArg/nameArg let the auto-build path (deep-link from a saved plan) drive the audit
+  // with explicit values, since its own setState calls aren't yet committed in this closure.
+  async function runDeepAudit(domainArg?: string, nameArg?: string): Promise<boolean> {
+    const d = (domainArg ?? domain).trim();
+    const n = (nameArg ?? name).trim() || deriveName(d);
     const { job_id } = await api.startAudit({
-      domain: domain.trim(),
-      name: name.trim() || deriveName(domain),
+      domain: d,
+      name: n,
       force: forceRecrawl,
     });
     auditJobIdRef.current = job_id;
@@ -378,6 +400,101 @@ export default function Page() {
       }
     }
     return true;
+  }
+
+  // One-click build from a saved plan's "Build a plan for your site" link. Mirrors the manual
+  // path (fast crawl → comprehensive audit) but runs unattended: prefill is best-effort and we
+  // jump straight to the live-progress audit. A dead crawl falls back to the instant brief.
+  async function autoBuild(target: string, nameVal: string) {
+    setHasSite(true);
+    setDomain(target);
+    if (nameVal) setName(nameVal);
+    lastProfiledDomainRef.current = target;
+    setError(null);
+    setPlan(null);
+    setDeliverables(null);
+    setAuditJob(null);
+    setDeepProfile(null);
+
+    setPrefilling(true);
+    setPrefillDone(false);
+    let res: ProfileResponse | null = null;
+    // Competitors auto-selected for the unattended build. The picker is skipped on this
+    // path, so we tick them here instead of letting the user choose.
+    let competitorPicks: CompetitorPick[] = [];
+    try {
+      res = await api.profile({ domain: target, use_llm: useLlm });
+      setProfileResult(res);
+      if (res.industry) setCategory(res.industry);
+      if (res.location) setLocation(res.location);
+      if (res.services && res.services.length > 0) setServicesText(res.services.join(", "));
+      // Prefer competitors mined from the user's own site (strongest signal). When the
+      // crawl names none, fall back to the same recommendation call the CompetitorPicker
+      // makes so the autobuild still compares against real industry peers — matching what
+      // the user would have ticked had they walked the wizard.
+      if (res.competitors && res.competitors.length > 0) {
+        competitorPicks = res.competitors.map((c) => ({
+          name: c.name,
+          domain: c.domain || undefined,
+          source: "suggested" as const,
+        }));
+      } else {
+        try {
+          const sug = await api.suggestCompetitors({
+            name: (nameVal || deriveName(target)).trim(),
+            domain: target,
+            category: res.industry || undefined,
+            location: res.location || undefined,
+            services: res.services && res.services.length > 0 ? res.services : undefined,
+            count: 8,
+          });
+          competitorPicks = sug.competitors.map((c) => ({
+            name: c.name,
+            domain: c.domain || undefined,
+            source: "suggested" as const,
+          }));
+        } catch {
+          /* recommendations are best-effort — the build still runs without competitors */
+        }
+      }
+      if (competitorPicks.length > 0) setCompetitors(competitorPicks);
+      if (!nameVal) setName(deriveName(target));
+      setPrefillDone(true);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    } catch {
+      /* network-only failure — continue to the audit, which can still read the site */
+    } finally {
+      setPrefilling(false);
+    }
+
+    // Land on the final step so the live audit progress (AnalysisProgress) is what renders.
+    setStep(STEPS.length - 1);
+    setLoading(true);
+    try {
+      if (res?.route === "dead") {
+        // No readable site — the instant brief is the best we can do.
+        setPlan(
+          await api.plan({
+            name: nameVal || deriveName(target),
+            domain: target,
+            category: res.industry || undefined,
+            location: res.location || undefined,
+            services: res.services ?? [],
+            competitors: competitorPicks.map((c) => c.domain?.trim() || c.name),
+            goals: [],
+            use_llm: useLlm,
+          }),
+        );
+      } else {
+        const ok = await runDeepAudit(target, nameVal);
+        if (!ok) return; // audit failed — error already surfaced
+      }
+      setView("results");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function generateDeliverables() {

@@ -59,6 +59,22 @@ def test_classify_vertical_from_text_and_services():
     assert classify_vertical("just some words about us") is None
 
 
+def test_builder_keyword_is_construction_specific():
+    # "builder" alone is too broad: a "website builder" SaaS must NOT read as Construction,
+    # while genuine construction trades (home/pool/deck builder) still do.
+    assert classify_vertical("Squarespace — the all-in-one website builder") != "Construction"
+    assert classify_vertical("The fastest app builder for teams") != "Construction"
+    assert classify_vertical("Acme Home Builders — custom homes in Austin") == "Construction"
+    assert classify_vertical("Premier Pool Builder & spa installation") == "Construction"
+
+
+def test_free_shipping_is_not_logistics():
+    # "free shipping" is e-commerce boilerplate, not a logistics company.
+    assert classify_vertical("Comfortable shoes & apparel. FREE shipping & returns.") != "Logistics / Transportation"
+    # A genuine freight carrier still classifies.
+    assert classify_vertical("Global freight shipping and container logistics") == "Logistics / Transportation"
+
+
 def _cleveland_clinic_sparql() -> dict:
     # Shape mirrors WDQS JSON for Cleveland Clinic (Q13780930): industry=health care,
     # instance-of includes a generic class plus a hospital network.

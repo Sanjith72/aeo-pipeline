@@ -20,6 +20,7 @@ from typing import Any
 from ..extract import links as links_extractor
 from ..extract import schema_jsonld
 from ..logging import get_logger
+from ..settings import get_settings
 from ..utils.html import parse
 from ..utils.url import absolute, host_of, normalize, same_site
 from .industry import classify_vertical
@@ -88,6 +89,44 @@ _SERVICE_STOPWORDS = frozenset({
     "services", "products", "solutions", "our services", "our work", "portfolio",
     "team", "reviews", "testimonials", "gallery", "shop", "cart", "account",
 })
+
+# Customer SEGMENTS — who a business SELLS TO, not what it DOES. "Solutions for X" /
+# "By industry" / "By team" menus list these (company sizes, served verticals, internal
+# departments), and the nav/link scrapers otherwise sweep them into `services`
+# (Mailchimp → "Restaurants"/"Small Business"; Slack → "Engineering"/"IT"). Matched on the
+# WHOLE normalised label (exact), so multi-word offerings that merely contain one of these
+# words survive untouched ("Managed IT", "Content Marketing", "Real Estate Photography").
+# Deliberately omits the ambiguous profession words (marketing/legal/finance/sales/design/
+# security/consulting) — those are real one-word offerings for agencies/firms, so dropping
+# them would erase a marketing agency's "Marketing" or a security firm's "Security".
+_SEGMENT_STOPWORDS = frozenset({
+    # company-size / buyer tiers
+    "small business", "small businesses", "midsize", "mid market", "mid-market", "midmarket",
+    "enterprise", "enterprises", "startup", "startups", "smb", "smbs", "freelancer",
+    "freelancers", "individuals", "personal", "agencies", "teams", "for teams",
+    "for individuals", "for business", "for enterprise",
+    # served industries / verticals (the audience a "Solutions for X" menu enumerates)
+    "restaurants", "retail", "ecommerce", "e-commerce", "nonprofit", "nonprofits",
+    "non-profit", "non-profits", "non profit", "healthcare", "health care", "hospitality",
+    "education", "manufacturing", "real estate", "automotive", "government", "public sector",
+    "professional services", "financial services", "entertainment", "leisure",
+    "entertainment + leisure", "media", "telecom", "telecommunications", "logistics",
+    "construction", "insurance", "banking", "travel",
+    # company DEPARTMENTS that a "by team" menu lists — rarely a thing the company sells
+    "engineering", "it", "information technology", "customer service", "customer support",
+    "human resources", "operations", "procurement", "project management",
+})
+
+# Navigational call-to-action labels a link scraper mistakes for an offering ("See all
+# solutions", "Explore products", "Learn more"). Anchored to a leading CTA verb + an
+# all/more tail so a real offering is never caught (e.g. "All-on-4 Dental Implants" stays —
+# its "All" is not followed by an all/more token).
+_CTA_RE = re.compile(
+    r"^(?:see|view|browse|explore|discover)\s+(?:all|our|more)\b"
+    r"|^(?:learn|read|show)\s+more\b"
+    r"|^get\s+started\b|^request\s+a?\s*demo\b",
+    re.I,
+)
 _MAX_SERVICES = 8
 _MAX_COMPETITORS = 6
 
@@ -134,6 +173,31 @@ def detect_cms(html_parts: list[str]) -> str:
         if rx.search(blob):
             return name
     return CMS_UNKNOWN
+
+
+# Bot-wall / interstitial stub pages: a 200 response that is actually a JS challenge or a
+# block notice, not the site. Their tiny body would otherwise become the "offer" ("Client
+# Challenge") or feed the industry classifier garbage. We detect the well-known stubs by
+# marker text AND small size — a real page that merely mentions "access denied" in copy is
+# far larger than a challenge stub, so the size floor keeps it from being dropped.
+_CHALLENGE_RE = re.compile(
+    r"(?:just a moment|attention required|access denied|client challenge|"
+    r"checking your browser|enable javascript to|are you a human|human verification|"
+    r"verify you are (?:a )?human|request unsuccessful|error 10\d\d|ddos protection|"
+    r"pardon our interruption|cf-browser-verification|"
+    r"please (?:enable cookies|complete the security check))",
+    re.I,
+)
+_CHALLENGE_MAX_BYTES = 20_000
+
+
+def is_challenge_page(html: str | None) -> bool:
+    """True when ``html`` is an obvious bot-wall / interstitial stub (Cloudflare "Just a
+    moment", "Client Challenge", "Access Denied", …) rather than the real site. Empty input
+    counts as unusable."""
+    if not html:
+        return True
+    return bool(_CHALLENGE_RE.search(html[:_CHALLENGE_MAX_BYTES])) and len(html) < _CHALLENGE_MAX_BYTES
 
 
 @dataclass(slots=True)
@@ -244,7 +308,11 @@ def services_from_blocks(blocks: list[dict]) -> list[str]:
 
 def _clean_service(label: str) -> str | None:
     label = re.sub(r"\s+", " ", label).strip(" \t\n·|-—–»")
-    if not label or len(label) > 48 or label.lower() in _SERVICE_STOPWORDS:
+    low = label.lower()
+    if not label or len(label) > 48 or low in _SERVICE_STOPWORDS:
+        return None
+    # A customer segment (who they serve) or a nav CTA is not an offering.
+    if low in _SEGMENT_STOPWORDS or _CTA_RE.search(label):
         return None
     if not re.search(r"[A-Za-z]", label):
         return None
@@ -355,8 +423,20 @@ def offer_from_description(soup: Any) -> list[str]:
     if not text:
         return []
     clause = _DESC_CLAUSE_SPLIT.split(text)[0]
-    clause = re.sub(r"\s+", " ", clause).strip(" \t\n·|-—–»")[:60].strip(" \t\n·|-—–»")
-    return [clause] if clause and re.search(r"[A-Za-z]", clause) else []
+    clause = re.sub(r"\s+", " ", clause).strip(" \t\n·|-—–»")
+    if len(clause) > 60:
+        head = clause[:60]
+        # Back off to the previous word boundary so we never end mid-word ("…Chipotle Me").
+        if not clause[60:61].isspace():
+            sp = head.rfind(" ")
+            if sp > 0:
+                head = head[:sp]
+        clause = head
+    clause = clause.strip(" \t\n·|-—–»")
+    # A title like "Home | Jones Day" yields a nav-stopword clause ("Home") — not an offer.
+    if not clause or clause.lower() in _SERVICE_STOPWORDS or not re.search(r"[A-Za-z]", clause):
+        return []
+    return [clause]
 
 
 def _dedupe_keep_order(items: list[str], limit: int) -> list[str]:
@@ -504,17 +584,23 @@ def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
     # gallery) are vertical-specific and name-drop verticals in their own titles. The
     # homepage is where a company states what it IS. Abstain (None) when it's generic —
     # empty beats confidently wrong (a marketing platform read as "Restaurants").
-    homepage_desc = self_description_text(parse(docs[0].html)) if docs else ""
-    industry = classify_vertical(homepage_desc)
-    if not industry and services:
-        # Recovery ("try harder"): the homepage self-description named no vertical, so widen
-        # to the company's OWN scraped service labels (/services links, service nav, section
-        # headings). Lower precision than the self-description — a service label can name a
-        # served segment — so this is a SECOND pass that runs ONLY when the strict signal
-        # abstained, never overriding it. classify_vertical only ever returns a real keyword
-        # match (never a guess), so the worst case is it stays None; it recovers e.g. a law
-        # firm or clinic whose hero copy is vague but whose service pages are explicit.
-        industry = classify_vertical("", services=services)
+    home_soup = parse(docs[0].html) if docs else None
+    # Title-first: the <title> is the single most authoritative self-description, so classify
+    # it alone first — a promo heading ("HIGH SCHOOL SUMMER PASS") then can't override the
+    # lead ("Planet Fitness | A Gym and Fitness Club"). Only when the title names no vertical
+    # do we widen to the fuller self-description (meta/og/hero).
+    title_desc = (home_soup.title.get_text(" ", strip=True) if home_soup and home_soup.title else "")
+    industry = classify_vertical(title_desc) or classify_vertical(
+        self_description_text(home_soup) if home_soup is not None else ""
+    )
+    # NOTE: industry is classified from the homepage self-description ONLY — NOT from the
+    # scraped service labels. A services-based recovery used to run here, but service labels
+    # are frequently use-cases / served-segments, so keyword-matching them produced confident
+    # WRONG verticals ("AI app builder" → Construction; a "Marketing" team segment →
+    # Marketing/Advertising; "Marketing Sites" → Marketing). Empty beats confidently wrong,
+    # so we abstain (None) instead — the user fills a blank far more readily than they catch a
+    # wrong guess. (The classify_vertical(services=) capability stays for callers that pass a
+    # trusted, curated services list, e.g. an onboarding brief.)
     # "What do you offer?" must never come back empty from a crawl that found a page.
     # Tiered fallback: structured offerings (above) → first clause of the site's own
     # description → the classified industry label. The user edits whichever lands.
@@ -571,17 +657,38 @@ async def gather_site_facts(
 ) -> SiteFacts:
     """Fetch the homepage + a few key pages and derive :class:`SiteFacts`. Best-effort:
     an unreachable homepage (or any error) yields empty facts rather than raising, so the
-    wizard prefill never blocks the flow."""
-    from ..crawl.discovery import _default_fetch_text, seed_url
+    wizard prefill never blocks the flow.
 
-    fetch = fetch or _default_fetch_text
+    Defaults to a browser-headers fetch (``browser_fetch_text``): this path reads arbitrary
+    third-party marketing sites for the wizard prefill, and many of those serve a 403 / JS
+    bot-challenge stub to the identified AEOBot UA while returning real HTML to a browser.
+    The audit crawler keeps the polite AEOBot UA via its own ``_default_fetch_text``.
+
+    When the cheap fetch is blocked AND no custom ``fetch`` was injected, the homepage is
+    retried once with a real headless Chromium (``playwright_fetch_text``) — gated by
+    ``intake.playwright_fallback``. That render (~6-8s) recovers sites behind walls a bare
+    HTTP client can't pass (planetfitness/warbyparker/allbirds); it fires only on the
+    minority of blocked sites, so the common case never pays the cost."""
+    from ..crawl.discovery import browser_fetch_text, playwright_fetch_text, seed_url
+
+    injected = fetch is not None
+    fetch = fetch or browser_fetch_text
     home = seed_url(domain)
     try:
         home_html = await fetch(home)
     except Exception as exc:  # network hiccup → empty facts, never fatal
         log.warning("site_facts_homepage_failed", domain=domain, error=str(exc))
-        return SiteFacts()
-    if not home_html:
+        home_html = None
+    # A blank homepage OR a bot-wall interstitial (200 challenge stub) → no usable content.
+    # Last resort on the real path: render the homepage with a headless browser, which gets
+    # past walls the HTTP client can't. Only the homepage — industry/offer live there, and a
+    # per-key-page render would blow the latency budget.
+    if is_challenge_page(home_html) and not injected and get_settings().intake.playwright_fallback:
+        rendered = await playwright_fetch_text(home)
+        if not is_challenge_page(rendered):
+            home_html = rendered
+    # Classifying/offer-extracting from a "Client Challenge" stub yields garbage, so abstain.
+    if is_challenge_page(home_html):
         return SiteFacts()
 
     docs = [FetchedDoc(url=home, html=home_html)]
@@ -590,7 +697,7 @@ async def gather_site_facts(
             html = await fetch(url)
         except Exception:
             html = None
-        if html:
+        if html and not is_challenge_page(html):
             docs.append(FetchedDoc(url=url, html=html))
 
     try:

@@ -283,7 +283,10 @@ export function ResultsView({
     ...(deliverables?.strategy && deliverables.strategy.groups.length > 0
       ? [{ id: "strategy" as const, label: "Strategy" }]
       : []),
-    { id: "kit" as const, label: "Your plan" },
+    // The plan/tracker (PlanPanel) used to live in its own "Your plan" (kit) tab; it now
+    // renders on the default Overview tab so it loads without a tab switch. A bare-plan
+    // fallback (no profile → no Overview tab) keeps it reachable.
+    ...(profile ? [] : [{ id: "kit" as const, label: "Your plan" }]),
   ];
   const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
 
@@ -296,10 +299,43 @@ export function ResultsView({
     if (profile?.domain) api.recheckStatus(profile.domain).then(setRecheck).catch(() => {});
   }, [profile?.domain]);
 
+  // The plan/tracker now lives on the default Overview tab, so build it automatically on
+  // load — it's deterministic and ready in seconds, so the user shouldn't have to click
+  // "Build my plan" to see it. Fires once; if the build errors, PlanPanel shows its inline
+  // retry rather than this effect re-looping.
+  const autoBuiltRef = useRef(false);
+  useEffect(() => {
+    if (autoBuiltRef.current || deliverables || delivLoading || delivError) return;
+    autoBuiltRef.current = true;
+    onGenerateDeliverables();
+  }, [deliverables, delivLoading, delivError, onGenerateDeliverables]);
+
   // #6 — the old "reserve the tallest panel height" floor was removed: it left a large dead
   // space below shorter tabs (most visibly "Your plan" before a plan is built). The sticky
   // tab bar keeps the user oriented across switches, so panels now simply size to their own
   // content and no empty gap remains.
+
+  // The plan/tracker — rendered on the Overview tab (its home now), and reused on the
+  // no-profile fallback "Your plan" tab. Defined once so there's a single PlanPanel.
+  const planPanel = (
+    <PlanPanel
+      deliverables={deliverables}
+      loading={delivLoading}
+      slowMode={aiPersonalization}
+      domain={domain?.trim() || undefined}
+      businessName={businessName}
+      cmsType={cmsType}
+      error={delivError}
+      storageKey={`aeo-plan:${businessName.toLowerCase()}`}
+      onGenerate={onGenerateDeliverables}
+      onDownloadZip={onDownloadZip}
+      onPersonalize={onPersonalize}
+      personalizing={personalizing}
+      personalizeError={personalizeError}
+      personalizeProgress={personalizeProgress}
+      aiPersonalization={aiPersonalization}
+    />
+  );
 
   return (
     <div className="step-in">
@@ -353,31 +389,18 @@ export function ResultsView({
           <>
             <ScoreRing profile={profile} className="mb-6" />
             <FixImpact data={recheck} />
+            {/* The plan/tracker loads here by default — no tab switch needed; kept above the
+                profile detail so it stays prominent without separating the score from its
+                lift story (FixImpact) above. */}
+            {planPanel}
             <OverviewPanel profile={profile} auditJob={auditJob} />
           </>
         )}
         {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
         {tab === "actions" && profile && <RoadmapPanel profile={profile} />}
         {tab === "strategy" && deliverables?.strategy && <StrategyPanel strategy={deliverables.strategy} />}
-        {tab === "kit" && (
-          <PlanPanel
-            deliverables={deliverables}
-            loading={delivLoading}
-            slowMode={aiPersonalization}
-            domain={domain?.trim() || undefined}
-            businessName={businessName}
-            cmsType={cmsType}
-            error={delivError}
-            storageKey={`aeo-plan:${businessName.toLowerCase()}`}
-            onGenerate={onGenerateDeliverables}
-            onDownloadZip={onDownloadZip}
-            onPersonalize={onPersonalize}
-            personalizing={personalizing}
-            personalizeError={personalizeError}
-            personalizeProgress={personalizeProgress}
-            aiPersonalization={aiPersonalization}
-          />
-        )}
+        {/* Fallback only when there's no profile (no Overview tab) — see the tabs list. */}
+        {tab === "kit" && planPanel}
       </div>
     </div>
   );
@@ -825,8 +848,8 @@ function RoadmapPanel({ profile }: { profile: SiteProfile }) {
     <div>
       <p className="mb-5 text-sm text-ink-500">
         Your big moves as a roadmap — in the order that pays off fastest. Start at the top; each phase
-        builds on the one before. The step-by-step, page-by-page version lives under{" "}
-        <span className="font-medium text-ink">Your plan</span>.
+        builds on the one before. The step-by-step, page-by-page version is on the{" "}
+        <span className="font-medium text-ink">Overview</span> tab.
       </p>
       <div className="space-y-4">
         {phases.map((p, pi) => {
@@ -1873,7 +1896,19 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
             verification — routing to the site-backed build is what unlocks it. Framed as an
             add-on so it never reads as discarding the saved plan above. */}
         <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          <a href="/#studio" className="btn-accent inline-flex">
+          {/* When the saved plan is tied to a domain, hand it straight to the studio with an
+              `autobuild` flag so the homepage crawls + builds automatically — no re-typing the
+              URL. A brief-only plan (no domain) still routes to the studio to enter one. */}
+          <a
+            href={
+              state.domain
+                ? `/?domain=${encodeURIComponent(state.domain)}${
+                    state.business_name ? `&name=${encodeURIComponent(state.business_name)}` : ""
+                  }&autobuild=1#studio`
+                : "/#studio"
+            }
+            className="btn-accent inline-flex"
+          >
             Build a plan for your site →
           </a>
           <span className="text-xs text-ink-300">
