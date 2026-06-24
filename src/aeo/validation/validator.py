@@ -41,6 +41,7 @@ from ..scoring import score_page
 from ..scoring.rubric import Rubric, load_rubric
 from ..settings import LLMCfg, get_settings
 from ..storage.models import ExtractionBundle
+from .predict import PredictedLift, predict_lifts
 from .simulate import apply_recommendation
 
 log = get_logger(__name__)
@@ -76,6 +77,10 @@ class ValidationOutcome:
     review_status: str          # needs_review | none
     recommendations: list[Recommendation] = field(default_factory=list)
     rec_ids: list[int] = field(default_factory=list)  # persisted ids ([] if not persisted)
+    # Feature #2 — per-rec PREDICTED rubric-point lift, aligned 1:1 with
+    # ``recommendations`` (empty when there are no recs). Deterministic, derived from
+    # the same simulate -> re-score machinery used for the page-level before/after.
+    predicted: list[PredictedLift] = field(default_factory=list)
 
 
 def validate_page(
@@ -141,6 +146,25 @@ def validate_page(
     status = STATUS_IMPROVED if improved else STATUS_COULD_NOT_IMPROVE
     rec_status = _REC_VALIDATED if improved else _REC_NEEDS_REVIEW
 
+    # Feature #2 — derive each rec's predicted rubric-point lift from the same
+    # deterministic re-score machinery (one rec at a time, cumulative-marginal), so
+    # the UI can show "+X pts" before the user acts. Aligned 1:1 with best_recs.
+    predicted = (
+        predict_lifts(
+            bundle,
+            best_recs,
+            rubric=rubric,
+            reference=reference,
+            run_id=run_id,
+            baseline_total=det_before,
+            gap=gap,
+            llm=_DETERMINISTIC_LLM,
+            score_fn=score_fn,
+        )
+        if best_recs
+        else []
+    )
+
     log.info(
         "validation_complete",
         page_id=page_id,
@@ -159,7 +183,7 @@ def validate_page(
         baseline_tiers = {name: c.value for name, c in baseline_score.criteria.items()}
         rec_ids = _persist(
             page_id, run_id, best_recs, attempts, det_before, det_after,
-            rec_status, improved, baseline_tiers,
+            rec_status, improved, baseline_tiers, predicted,
         )
 
     return ValidationOutcome(
@@ -173,6 +197,7 @@ def validate_page(
         review_status=REVIEW_NEEDED,
         recommendations=best_recs,
         rec_ids=rec_ids,
+        predicted=predicted,
     )
 
 
@@ -186,14 +211,21 @@ def _persist(
     rec_status: str,
     improved: bool,
     baseline_tiers: dict[str, int],
+    predicted: list[PredictedLift],
 ) -> list[int]:
-    """Write the proposed recs, then stamp each with its validation outcome."""
+    """Write the proposed recs, then stamp each with its validation outcome and its
+    predicted rubric-point lift (Feature #2). ``predicted`` is aligned 1:1 with
+    ``recs``; the prediction is pinned here, at issue time, so a later re-crawl can
+    hold it accountable (predicted vs actual)."""
     from ..storage.repos import recommendations as recs_repo
 
     rec_ids = persist_recs(page_id, run_id, recs, attempt=attempt, score_before=score_before)
-    for rid in rec_ids:
+    for rid, pred in zip(rec_ids, predicted, strict=True):  # 1 prediction per persisted rec
         recs_repo.set_validation(
             rid, status=rec_status, validated=improved, score_after=score_after
+        )
+        recs_repo.set_prediction(
+            rid, point=pred.point, low=pred.low, high=pred.high, basis=pred.basis
         )
     _open_outcomes(page_id, run_id, rec_ids, recs, baseline_tiers)
     return rec_ids

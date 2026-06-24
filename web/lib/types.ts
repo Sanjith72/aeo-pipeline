@@ -334,15 +334,40 @@ export interface ResumeResponse {
   domain?: string | null;
 }
 
-// GET /api/recheck-status?domain= — re-crawl-verified outcomes (Spec #2 "Verified live").
+// Feature #2 — the deterministic predicted rubric-point lift for one fix, shown BEFORE
+// the user acts. Mirrors aeo.validation.predict.PredictedLift. point/low/high are null
+// when the simulator couldn't estimate (basis 'unknown') — render "—", never a fake 0.
+export interface PredictedLift {
+  point: number | null;
+  low: number | null;
+  high: number | null;
+  unit: string; // "rubric_points"
+  basis: string; // "simulated" | "no_deterministic_lift" | "unknown"
+}
+
+// A pending (not-yet-done) per-page fix with its predicted lift — the "pick high-impact
+// work" side of Feature #2 (GET /api/recheck-status .pending[]).
+export interface PendingFix {
+  url: string;
+  criterion: string | null;
+  action_required: string;
+  predicted: PredictedLift;
+}
+
+// GET /api/recheck-status?domain= — re-crawl-verified outcomes (Spec #2 "Verified live"),
+// now carrying predicted vs actual rubric-point lift (Feature #2) so the estimate stays
+// accountable once a fix is verified.
 export interface VerifiedOutcome {
   url: string;
   criterion: string | null;
   detected_at: string | null;
+  predicted_delta?: number | null;
+  actual_delta?: number | null;
 }
 
 export interface RecheckStatusResponse {
   verified: VerifiedOutcome[];
+  pending?: PendingFix[];
   count: number;
 }
 

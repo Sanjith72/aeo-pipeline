@@ -1214,21 +1214,64 @@ def site_freshness(domain: str) -> dict[str, Any]:
 
 @app.get("/api/recheck-status")
 def recheck_status(domain: str) -> dict[str, Any]:
-    """The 'Verified live' view (Spec #2 Slice C): recommendation outcomes a re-crawl has
-    confirmed implemented for this domain. Honest by construction — only criterion-verified
-    outcomes appear. Best-effort: any failure returns an empty set so the results UI never
-    breaks over it."""
-    from ..storage.repos import outcomes as outcomes_repo
+    """The 'Verified live' + 'predicted fixes' view (Spec #2 Slice C · Feature #2) for a
+    domain's recommendation outcomes:
 
+      * ``verified`` — re-crawl-confirmed ``implemented`` fixes (criterion-honest), each
+        now carrying ``predicted_delta`` vs ``actual_delta`` (rubric points) so the
+        estimate stays accountable once a fix lands;
+      * ``pending``  — not-yet-done fixes with their PREDICTED '+X pts' lift (highest
+        first), so the user can pick high-impact work before acting.
+
+    Best-effort: any failure returns empty sets so the results UI never breaks over it.
+    ``count`` remains the verified count (back-compat)."""
+    from ..storage.repos import outcomes as outcomes_repo
+    from ..validation.predict import PredictedLift
+
+    empty: dict[str, Any] = {"verified": [], "pending": [], "count": 0}
     dom = domain.strip()
     if not dom:
-        return {"verified": [], "count": 0}
+        return empty
     try:
-        rows = outcomes_repo.implemented_for_domain(dom)
-    except Exception:  # surfacing verified fixes must never break the results view
-        return {"verified": [], "count": 0}
-    verified = [
-        {"url": r["url_normalized"], "criterion": r.get("criterion"), "detected_at": r.get("detected_at")}
-        for r in rows
-    ]
-    return {"verified": verified, "count": len(verified)}
+        verified_rows = outcomes_repo.implemented_for_domain(dom)
+        pending_rows = outcomes_repo.pending_fixes_for_domain(dom)
+    except Exception:  # surfacing fixes must never break the results view
+        return empty
+
+    def _f(value: Any) -> float | None:
+        return float(value) if value is not None else None
+
+    verified = []
+    for r in verified_rows:
+        bt, dt = r.get("baseline_tier"), r.get("detected_tier")
+        actual = (int(dt) - int(bt)) if bt is not None and dt is not None else None
+        verified.append(
+            {
+                "url": r["url_normalized"],
+                "criterion": r.get("criterion"),
+                "detected_at": r.get("detected_at"),
+                "predicted_delta": _f(r.get("predicted_delta")),
+                "actual_delta": actual,
+            }
+        )
+
+    pending = []
+    for r in pending_rows:
+        pd = r.get("predicted_delta")
+        basis = r.get("predicted_basis") or ("simulated" if pd is not None else "unknown")
+        predicted = PredictedLift(
+            point=_f(pd),
+            low=_f(r.get("predicted_low")),
+            high=_f(r.get("predicted_high")),
+            basis=basis,
+        )
+        pending.append(
+            {
+                "url": r["url_normalized"],
+                "criterion": r.get("criterion"),
+                "action_required": r.get("action_required") or "",
+                "predicted": predicted.model_dump(),
+            }
+        )
+
+    return {"verified": verified, "pending": pending, "count": len(verified)}

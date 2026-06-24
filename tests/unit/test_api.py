@@ -610,10 +610,11 @@ def test_site_freshness_is_best_effort_without_db() -> None:
 
 
 def test_recheck_status_is_best_effort_without_db() -> None:
-    # 'Verified live' (Spec #2) must never break the results view — empty set on any failure.
+    # 'Verified live' + predicted fixes (Spec #2 · Feature #2) must never break the results
+    # view — empty sets on any failure (verified, pending, count all present).
     r = client.get("/api/recheck-status", params={"domain": "no-such-domain.example"})
     assert r.status_code == 200
-    assert r.json() == {"verified": [], "count": 0}
+    assert r.json() == {"verified": [], "pending": [], "count": 0}
 
 
 def test_create_plan_state_rejects_an_oversized_payload() -> None:
