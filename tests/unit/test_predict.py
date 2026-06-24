@@ -227,15 +227,17 @@ class TestPredictLifts:
 
 
 # ---------------------------------------------------------------------------
-# TestMigration0019
+# TestMigration0023
 # ---------------------------------------------------------------------------
 
 
-class TestMigration0019:
+class TestMigration0023:
+    # 0023, not 0019: the agent-runs PR also landed a 0019, so this migration was
+    # renumbered to the next free slot to avoid a schema_versions PK collision.
     def _sql(self) -> str:
         paths = {v: p for v, _n, p in migrate._discover()}
-        assert "0019" in paths, "migration 0019 not discovered"
-        return paths["0019"].read_text(encoding="utf-8")
+        assert "0023" in paths, "migration 0023 not discovered"
+        return paths["0023"].read_text(encoding="utf-8")
 
     def test_adds_predicted_columns_additively(self):
         sql = self._sql()
