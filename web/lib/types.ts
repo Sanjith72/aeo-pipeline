@@ -149,6 +149,11 @@ export interface MilestoneTask {
   // tag), or null for off-site tasks; plus the CMS-aware, numbered walkthrough.
   raw_snippet?: string | null;
   diy_steps?: string[];
+  // Carried from build_plan (migration 0024) so the shared TaskHowTo expander renders the
+  // same superset as the no-domain plan view: the "Where you are now" context line and the
+  // optional "Doing it with AI" prompt. prompts is page-task-only (absent on vis:* tasks).
+  current_state?: string;
+  prompts?: { ai: string; human: string };
 }
 
 export interface Milestone {

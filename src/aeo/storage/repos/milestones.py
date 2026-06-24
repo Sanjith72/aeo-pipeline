@@ -10,6 +10,7 @@ progress bar and per-phase status can't drift from the task rows.
 
 from __future__ import annotations
 
+import json
 import secrets
 from typing import Any
 
@@ -77,20 +78,24 @@ def sync_plan(client_id: int, specs: list[MilestoneSpec]) -> dict[str, int]:
                     """
                     INSERT INTO milestone_tasks
                         (milestone_id, task_key, label, action_required, how_to,
-                         verify_kind, verify_target, position)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         verify_kind, verify_target, position, current_state, prompts)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                     ON CONFLICT (milestone_id, task_key) DO UPDATE SET
                         label = EXCLUDED.label,
                         action_required = EXCLUDED.action_required,
                         how_to = EXCLUDED.how_to,
                         verify_kind = EXCLUDED.verify_kind,
                         verify_target = EXCLUDED.verify_target,
-                        position = EXCLUDED.position
+                        position = EXCLUDED.position,
+                        current_state = EXCLUDED.current_state,
+                        prompts = EXCLUDED.prompts
                         -- status / status_source / detection are deliberately preserved.
                     """,
                     (
                         milestone_id, t.task_key, t.label, t.action_required, t.how_to,
                         t.verify_kind, t.verify_target, t.position,
+                        t.current_state or None,
+                        json.dumps(t.prompts) if t.prompts is not None else None,
                     ),
                 )
                 tasks += 1
@@ -151,6 +156,11 @@ def _task_dict(row: dict) -> dict[str, Any]:
         "status": row["status"],
         "status_source": row["status_source"],
         "detected_at": row["detected_at"].isoformat() if row.get("detected_at") else None,
+        # 0024 — carried from build_plan so the shared TaskHowTo expander can render the
+        # "Where you are now" context and the "Doing it with AI" prompt on milestone tasks
+        # too. JSONB reads back as a dict via psycopg2's default typecaster (no json.loads).
+        "current_state": row.get("current_state"),
+        "prompts": row.get("prompts"),
     }
 
 
