@@ -1873,7 +1873,19 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
             verification — routing to the site-backed build is what unlocks it. Framed as an
             add-on so it never reads as discarding the saved plan above. */}
         <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          <a href="/#studio" className="btn-accent inline-flex">
+          {/* When the saved plan is tied to a domain, hand it straight to the studio with an
+              `autobuild` flag so the homepage crawls + builds automatically — no re-typing the
+              URL. A brief-only plan (no domain) still routes to the studio to enter one. */}
+          <a
+            href={
+              state.domain
+                ? `/?domain=${encodeURIComponent(state.domain)}${
+                    state.business_name ? `&name=${encodeURIComponent(state.business_name)}` : ""
+                  }&autobuild=1#studio`
+                : "/#studio"
+            }
+            className="btn-accent inline-flex"
+          >
             Build a plan for your site →
           </a>
           <span className="text-xs text-ink-300">
