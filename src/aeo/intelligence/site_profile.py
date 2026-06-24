@@ -132,8 +132,12 @@ def build_site_profile(
         coverage=coverage, classification=classification, cfg=cfg,
     )
     # #2 — derive industry/location from the crawl; an explicit value passed in wins.
+    # ``decided_by == "default"`` means no business-model signal fired (the conservative
+    # LEAD_GEN fallback) — don't let that stamp the coarse "Professional services" label;
+    # abstain so the endpoint can fall through to a real crawl-classified vertical.
     industry = infer_industry(
-        pages, topic=topic, category=category, business_model=intent.model.value, cfg=cfg
+        pages, topic=topic, category=category, business_model=intent.model.value,
+        business_model_decided=(intent.decided_by != "default"), cfg=cfg,
     )
     resolved_location = location if (location and location.strip()) else infer_location(pages, cfg=cfg)
     return SiteProfile(
