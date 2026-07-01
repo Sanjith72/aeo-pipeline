@@ -12,22 +12,24 @@ const config: Config = {
         serif: ["var(--font-serif)", "Georgia", "serif"],
       },
       colors: {
-        // Dark theme: luminous ink on deep-navy night paper — the blueprint glows.
-        // Token ROLES are unchanged (ink = text, paper = surfaces), so every
-        // existing class keeps working; only the values inverted.
-        // ink-300 is the dimmest text allowed on any paper shade — keep it ≥4.5:1
-        // (WCAG AA) against paper/paper-100; don't darken it for mood.
-        ink: { DEFAULT: "#eef1f7", 700: "#c8cfdd", 500: "#98a2b8", 300: "#7d88a3", 100: "#2a3349" },
-        paper: { DEFAULT: "#0a0e17", 100: "#111727", 200: "#0d1120", 300: "#1a2236" },
-        // One confident signal — brightened for dark backgrounds; 600 is the
-        // HOVER step, so on dark it goes lighter, not darker.
-        accent: { DEFAULT: "#5b78ff", 600: "#7d93ff", 50: "#19234a" },
+        // Black & white: neutral off-white ink on true-black paper, with PURE WHITE
+        // reserved as the single "accent" signal — the brightest tone, used sparingly
+        // (CTAs, links, the hero word, the starfield bloom) so emphasis comes from
+        // brightness + the serif italic, not hue. Token ROLES are unchanged (ink = text,
+        // paper = surfaces, accent = signal), so every existing class keeps working.
+        // ink-300 is the dimmest text allowed on any paper shade — kept ≥4.5:1 (WCAG AA).
+        ink: { DEFAULT: "#e9e9ec", 700: "#c7c7cd", 500: "#9a9aa2", 300: "#86868e", 100: "#28282e" },
+        paper: { DEFAULT: "#0a0a0c", 100: "#121214", 200: "#0e0e10", 300: "#1a1a1e" },
+        // The signal — pure white (the brightest tone; body ink sits just below it so
+        // accents pop). NOTE: white is light, so anything using `bg-accent` must carry
+        // DARK text (text-paper), never white. See `.btn-accent` in globals.css.
+        accent: { DEFAULT: "#ffffff", 600: "#ffffff", 50: "#1c1c22" },
       },
       boxShadow: {
-        card: "0 1px 2px rgba(0,0,0,0.5), 0 10px 28px -16px rgba(0,0,0,0.65)",
-        lift: "0 2px 8px rgba(0,0,0,0.5), 0 24px 56px -20px rgba(0,0,0,0.75)",
-        // accent halo for primary CTAs — on dark it reads as light, not shadow
-        glow: "0 1px 2px rgba(0,0,0,0.4), 0 10px 36px -8px rgba(91,120,255,0.55)",
+        card: "0 1px 2px rgba(0,0,0,0.55), 0 10px 28px -16px rgba(0,0,0,0.7)",
+        lift: "0 2px 8px rgba(0,0,0,0.55), 0 24px 56px -20px rgba(0,0,0,0.8)",
+        // soft white halo for primary CTAs — on black it reads as light, not shadow
+        glow: "0 1px 2px rgba(0,0,0,0.4), 0 10px 36px -8px rgba(255,255,255,0.18)",
       },
       borderRadius: { xl2: "1.25rem" },
       letterSpacing: { measure: "0.18em" },
@@ -53,6 +55,11 @@ const config: Config = {
           "0%, 100%": { transform: "translateY(-6px)" },
           "50%": { transform: "translateY(8px)" },
         },
+        // Gentle bob on the Horizon hero's SCROLL cue.
+        "horizon-bob": {
+          "0%, 100%": { transform: "translateY(0)" },
+          "50%": { transform: "translateY(5px)" },
+        },
       },
       animation: {
         "fade-up": "fade-up 0.6s cubic-bezier(0.16,1,0.3,1) both",
@@ -65,6 +72,7 @@ const config: Config = {
         shimmer: "shimmer 1.6s linear infinite",
         "float-y": "float-y 7s ease-in-out infinite",
         "float-y-slow": "float-y 11s ease-in-out infinite",
+        "horizon-bob": "horizon-bob 2.4s ease-in-out infinite",
       },
     },
   },

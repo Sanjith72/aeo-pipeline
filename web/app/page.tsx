@@ -736,7 +736,7 @@ export default function Page() {
                             >
                               <span
                                 className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors ${
-                                  on ? "border-accent bg-accent text-white" : "border-ink/25 bg-paper-100"
+                                  on ? "border-accent bg-accent text-paper" : "border-ink/25 bg-paper-100"
                                 }`}
                               >
                                 {on && <Check className="animate-pop" width={12} height={12} />}
@@ -1053,7 +1053,7 @@ function Stepper({ current, onJump }: { current: number; onJump: (i: number) => 
               >
                 <span
                   className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-mono text-[11px] transition-colors duration-200 ${
-                    done ? "bg-accent text-white" : active ? "bg-paper-100 text-ink" : "border border-ink/15 text-ink-300"
+                    done ? "bg-accent text-paper" : active ? "bg-paper-100 text-ink" : "border border-ink/15 text-ink-300"
                   }`}
                 >
                   {done ? <Check className="animate-pop" width={12} height={12} /> : String(i + 1).padStart(2, "0")}

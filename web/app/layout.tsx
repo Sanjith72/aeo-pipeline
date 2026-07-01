@@ -14,7 +14,7 @@ const mono = IBM_Plex_Mono({ subsets: ["latin"], variable: "--font-mono", weight
 const serif = Instrument_Serif({ subsets: ["latin"], variable: "--font-serif", weight: "400", style: ["normal", "italic"], display: "swap" });
 
 export const viewport: Viewport = {
-  themeColor: "#0a0e17",
+  themeColor: "#0a0a0c",
 };
 
 export const metadata: Metadata = {

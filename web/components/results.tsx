@@ -26,7 +26,7 @@ import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanize
 import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/score";
 import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
 import { ArrowRight, Check, Sparkle } from "./ui/icons";
-import { MilestoneDashboard } from "./MilestoneDashboard";
+import { TrackerView } from "./quest/TrackerView";
 
 const EFFORT_PILL: Record<string, string> = {
   low: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
@@ -211,7 +211,9 @@ export function ResultsView({
       : []),
     { id: "kit" as const, label: "Your plan" },
   ];
-  const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
+  // Land directly on "Your plan" — the Quest map tracker, which auto-builds on open — so the
+  // plan is the first thing the user sees rather than the overview.
+  const [tab, setTab] = useState<TabId>("kit");
 
   // Spec #2 "Verified live": a re-crawl can confirm a recommended fix actually landed
   // (criterion-honest). Surface any confirmed-implemented outcomes for this domain in the
@@ -1601,8 +1603,19 @@ function PlanPanel({
 }) {
   const [filesOpen, setFilesOpen] = useState(false);
 
-  // #7 — the empty state. "Build my plan" now resolves in seconds (deterministic), so the
-  // states the user actually meets are: idle → building (fast bar) → ready, or → error+retry.
+  // Auto-build the plan the moment this panel opens — no "Build my plan" click needed. The
+  // build is deterministic + instant, so the user lands straight on the (Quest map) tracker.
+  // Fires once; a failed build still falls back to the manual "Try again" button below.
+  const autoBuilt = useRef(false);
+  useEffect(() => {
+    if (!deliverables && !loading && !error && !autoBuilt.current) {
+      autoBuilt.current = true;
+      onGenerate();
+    }
+  }, [deliverables, loading, error, onGenerate]);
+
+  // #7 — the empty state. The plan auto-builds on open (above), so the states the user meets
+  // are: building (fast bar) → ready, or → error+retry.
   if (!deliverables) {
     return (
       <div className="rounded-xl border border-dashed border-ink/15 p-10 text-center">
@@ -1648,7 +1661,7 @@ function PlanPanel({
         // weekly crawl auto-verifies. Without one (brief-only flow), fall back to the
         // local, offline checklist so the experience still works with no DB/site.
         domain ? (
-          <MilestoneDashboard domain={domain} plan={deliverables.plan} businessName={businessName} cmsType={cmsType} />
+          <TrackerView domain={domain} plan={deliverables.plan} businessName={businessName} cmsType={cmsType} />
         ) : (
           <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} />
         )

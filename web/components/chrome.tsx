@@ -8,14 +8,10 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import {
-  CountUp,
   EASE_OUT,
-  Magnetic,
-  Parallax,
   Reveal,
   Stagger,
   Item,
-  TextReveal,
   Tilt,
   m,
   useReducedMotion,
@@ -23,8 +19,9 @@ import {
   useSpring,
 } from "@/components/motion/primitives";
 import { FAQ_ITEMS } from "@/lib/faq";
+import { HorizonHero } from "./ui/horizon-hero";
 import { useScrolled } from "./ui/hooks";
-import { ArrowRight, Sparkle } from "./ui/icons";
+import { ArrowRight } from "./ui/icons";
 
 /** The "drawing number" stamped on every sheet — sections read as numbered
  *  blueprint pages: 01 hero, 02 how, 03 studio, 04 trust, 05 FAQ. */
@@ -48,7 +45,9 @@ export function TopBar() {
   return (
     <header
       className={`sticky top-0 z-40 border-b transition-all duration-300 ${
-        scrolled ? "border-ink/[0.08] bg-paper-100/85 shadow-card backdrop-blur-md" : "border-transparent bg-paper/70 backdrop-blur-sm"
+        scrolled
+          ? "border-ink/[0.08] bg-paper/50 shadow-card backdrop-blur-md backdrop-saturate-150"
+          : "border-transparent bg-paper/10 backdrop-blur-sm"
       }`}
     >
       <m.span
@@ -87,106 +86,13 @@ export function TopBar() {
   );
 }
 
+// The hero is now the scroll-driven cosmic flythrough (components/ui/horizon-hero): a sticky 100vh
+// stage where the camera flies through a monochrome starfield while the headline crossfades
+// ANSWER → VISIBLE → CHOSEN. The WebGL piece is lazy-loaded there (next/dynamic, ssr:false) so
+// three.js stays out of the server bundle and the text/LCP paints before the canvas mounts. Kept as
+// a thin wrapper so page.tsx's <Hero /> integration point is unchanged.
 export function Hero() {
-  // Reduced motion: the second headline line fades instead of rising out of its
-  // line-box (a y:110% start inside overflow-hidden must never be the fallback).
-  const reduced = useReducedMotion();
-  const stats: [ReactNode, string][] = [
-    // The honest two-phase promise: a score the moment we crawl, the full plan in ~10 min.
-    // The one number on the page earns a count-up; the other stats stay still.
-    ["Seconds", "to your AI visibility score"],
-    [<CountUp key="min" to={10} suffix=" min" />, "for your full action plan"],
-    ["Plain English", "no tech background needed"],
-  ];
-  return (
-    <section className="grain relative overflow-hidden border-b border-ink/[0.06]">
-      <div className="blueprint-grid blueprint-grid-fade absolute inset-0" aria-hidden />
-      {/* aurora: glow fields drifting behind the grid — the dark theme's pulse */}
-      <div
-        className="aurora pointer-events-none absolute -top-32 right-[-12%] h-[34rem] w-[34rem] rounded-full bg-accent/[0.16] blur-3xl"
-        aria-hidden
-      />
-      <div
-        className="aurora pointer-events-none absolute -bottom-40 left-[-10%] h-96 w-96 rounded-full bg-accent/[0.1] blur-3xl"
-        aria-hidden
-        style={{ animationDuration: "26s", animationDelay: "-9s" }}
-      />
-
-      {/* floating glass chip — layered depth: CSS float + scroll parallax (desktop only) */}
-      <div className="pointer-events-none absolute right-[7%] top-28 hidden select-none lg:block" aria-hidden>
-        <Parallax range={26}>
-          <div className="glass animate-float-y-slow flex items-center gap-2 rounded-xl px-3.5 py-2.5 shadow-card">
-            <Sparkle className="text-accent" />
-            <span className="text-[13px] font-medium text-ink">The answer customers see first</span>
-          </div>
-        </Parallax>
-      </div>
-
-      <div className="relative mx-auto max-w-6xl px-5 py-20 sm:py-28">
-        {/* orchestrated entrance: label → headline (word by word) → copy → CTAs → stats */}
-        <div className="max-w-3xl">
-          <Reveal y={12}>
-            <SheetTag no="01">AI search visibility</SheetTag>
-          </Reveal>
-          <h1 className="mt-5 text-balance font-display text-4xl font-semibold leading-[1.05] tracking-tight sm:text-6xl">
-            <TextReveal as="span" className="block" text="When customers ask AI," delay={0.1} />
-            <span className="block">
-              {/* the second line rises as one unit so the serif accent + underline stay glued */}
-              <span className="inline-block overflow-hidden pb-2 align-bottom">
-                <m.span
-                  className="inline-block"
-                  initial={reduced ? { opacity: 0 } : { y: "110%" }}
-                  whileInView={reduced ? { opacity: 1 } : { y: 0 }}
-                  viewport={{ once: true }}
-                  transition={{ duration: reduced ? 0.5 : 0.65, ease: EASE_OUT, delay: 0.32 }}
-                >
-                  be{" "}
-                  <span className="relative inline-block font-serif italic tracking-[-0.01em] text-accent">
-                    the answer
-                    <span className="hero-underline absolute inset-x-0 -bottom-1 h-[3px] rounded-full bg-accent/30" aria-hidden />
-                  </span>
-                  .
-                </m.span>
-              </span>
-            </span>
-          </h1>
-          <Reveal delay={0.25}>
-            <p className="mt-6 max-w-2xl text-lg leading-relaxed text-ink-500">
-              More customers now ask ChatGPT, Perplexity, and Google AI instead of scrolling through
-              search results. AEO Studio tells you exactly what your website needs so AI assistants
-              recommend <em className="not-italic text-ink">your</em> business first — no jargon, no guesswork.
-            </p>
-          </Reveal>
-          <Reveal delay={0.35}>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <Magnetic>
-                <a href="#studio" className="btn-accent group !px-6 !py-3 text-[15px]">
-                  Get my free plan
-                  <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" />
-                </a>
-              </Magnetic>
-              <a href="#how" className="btn-ghost !px-6 !py-3 text-[15px]">
-                See how it works
-              </a>
-            </div>
-          </Reveal>
-        </div>
-
-        <Reveal delay={0.45}>
-          <dl className="mt-16 grid max-w-2xl grid-cols-1 gap-px overflow-hidden rounded-xl2 border border-ink/[0.08] bg-ink/[0.06] sm:grid-cols-3">
-            {stats.map(([big, small]) => (
-              <div key={small} className="group bg-paper-100 px-5 py-5 transition-colors duration-200 hover:bg-paper">
-                <dt className="font-display text-xl font-semibold tabular-nums transition-colors duration-200 group-hover:text-accent sm:text-2xl">
-                  {big}
-                </dt>
-                <dd className="mt-0.5 text-sm text-ink-500">{small}</dd>
-              </div>
-            ))}
-          </dl>
-        </Reveal>
-      </div>
-    </section>
-  );
+  return <HorizonHero />;
 }
 
 export function HowItWorks() {

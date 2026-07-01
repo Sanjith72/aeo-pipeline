@@ -105,6 +105,9 @@ export interface PlanTask {
   quick_win: boolean;
   effort: "low" | "medium" | "high";
   priority?: number;
+  // 0–1 expected impact on citations/visibility (aeo.report.packager._impact_score) — drives
+  // coin-burst size + enemy scale in the gamified Map view (see lib/quest).
+  impact_score: number;
   current_state: string;
   action_required: string;
   how_to: string;

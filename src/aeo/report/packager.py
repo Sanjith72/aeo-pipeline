@@ -721,6 +721,20 @@ def _is_quick_win(effort: str, priority: float, cfg: dict[str, Any]) -> bool:
     return _EFFORT_RANK.get(effort, 1) <= max_rank and priority >= cfg["quick_win_min_priority"]
 
 
+# How much a task is expected to move the citation/visibility needle, on a 0–1 scale.
+# Anchored on the engine's own page priority, with two honest adjustments: quick wins
+# (high-priority + low-effort) get a small boost, and high-effort cornerstone pages
+# (pillars/products) a slight uplift since they tend to be high-impact. Floored at 0.15
+# so every task still renders a visible enemy in the map view. Pure + deterministic.
+_IMPACT_EFFORT_ADJ = {"low": -0.02, "medium": 0.0, "high": 0.04}
+
+
+def _impact_score(priority: float, effort: str, quick_win: bool) -> float:
+    base = max(0.0, min(1.0, priority))
+    score = base + (0.05 if quick_win else 0.0) + _IMPACT_EFFORT_ADJ.get(effort, 0.0)
+    return round(max(0.15, min(1.0, score)), 3)
+
+
 def _page_plan_task(
     node: Any, rank: int, *, business: dict[str, Any] | None, topic: str, cfg: dict[str, Any]
 ) -> dict[str, Any]:
@@ -732,14 +746,19 @@ def _page_plan_task(
     priority = float(_node_attr(node, "priority", 0.0) or 0.0)
     effort = _EFFORT_BY_TYPE.get(page_type, "medium")
     phase = _phase_for_rank(rank, cfg)
+    quick_win = _is_quick_win(effort, priority, cfg)
     return {
         "id": f"page:{slug}",
         "label": f"Create the “{title}” page",
         "detail": f"web address ending {slug}",
         "phase": phase,
-        "quick_win": _is_quick_win(effort, priority, cfg),
+        "quick_win": quick_win,
         "effort": effort,
         "priority": round(priority, 3),
+        # 0–1 expected impact on citations/visibility — drives coin-burst size + enemy scale
+        # in the gamified map view (see web/lib/quest). Distinct from `priority` so it can
+        # diverge later without overloading the engine's raw priority.
+        "impact_score": _impact_score(priority, effort, quick_win),
         # Block A's three plain-language fields, for a page that doesn't exist yet.
         "current_state": "This page doesn't exist on your site yet.",
         "action_required": f"Create the “{title}” page at a web address ending {slug}.",
@@ -759,28 +778,28 @@ def _page_plan_task(
 _VIS_PLAN_TASKS: list[dict[str, Any]] = [
     {
         "id": "vis:gbp", "label": "Claim your Google Business Profile", "phase": PHASE_WEEK_1,
-        "quick_win": True, "effort": "low",
+        "quick_win": True, "effort": "low", "impact_score": 0.95,
         "current_state": "Your business may not appear (or appears unverified) in Google's local data.",
         "action_required": "Claim and fully fill out your Google Business Profile.",
         "how_to": "Follow step 1 in get-found-now.md — name, category, services, hours, photos.",
     },
     {
         "id": "vis:listings", "label": "Claim the other free listings", "phase": PHASE_WEEK_2_4,
-        "quick_win": True, "effort": "low",
+        "quick_win": True, "effort": "low", "impact_score": 0.7,
         "current_state": "Bing, Apple, Yelp and Facebook have no verified listing for you.",
         "action_required": "Claim Bing Places, Apple Business Connect, Yelp and a Facebook page.",
         "how_to": "Follow step 2 in get-found-now.md — keep name/address/phone identical everywhere.",
     },
     {
         "id": "vis:reviews", "label": "Ask three happy customers for a Google review", "phase": PHASE_WEEK_2_4,
-        "quick_win": True, "effort": "low",
+        "quick_win": True, "effort": "low", "impact_score": 0.85,
         "current_state": "Few or no recent reviews — the fuel AI assistants weigh most for recommendations.",
         "action_required": "Ask three recent happy customers for a Google review, same day.",
         "how_to": "Use the ready-made ask script in get-found-now.md with a direct review link.",
     },
     {
         "id": "vis:readthrough", "label": "Read every new page once on your phone", "phase": PHASE_WEEK_2_4,
-        "quick_win": False, "effort": "low",
+        "quick_win": False, "effort": "low", "impact_score": 0.25,
         "current_state": "New pages haven't been proofed on a real device.",
         "action_required": "Read every new page once on your phone.",
         "how_to": "Check for typos, broken links, and missing contact info; fix as you go.",

@@ -456,7 +456,7 @@ function TaskRow({
 // owners to ship the small changes themselves.
 type GuideTab = "diy" | "developer";
 
-function TaskGuide({ task, shareUrl }: { task: MilestoneTask; shareUrl: string | null }) {
+export function TaskGuide({ task, shareUrl }: { task: MilestoneTask; shareUrl: string | null }) {
   const [tab, setTab] = useState<GuideTab>("diy");
   return (
     <div className="step-in mt-3 space-y-3">

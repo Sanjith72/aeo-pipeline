@@ -4,8 +4,9 @@
 
 :root {
   color-scheme: dark;
-  --grid-line: rgba(238, 241, 247, 0.045);
-  --grid-line-strong: rgba(238, 241, 247, 0.07);
+  /* Faint white blueprint lines — the brand anchor, on true-black paper. */
+  --grid-line: rgba(255, 255, 255, 0.05);
+  --grid-line-strong: rgba(255, 255, 255, 0.08);
 }
 
 @layer base {
@@ -64,8 +65,9 @@
     @apply btn bg-ink text-paper-100 shadow-card hover:-translate-y-0.5 hover:shadow-lift
       active:translate-y-0 disabled:translate-y-0 disabled:scale-100 disabled:opacity-40 disabled:shadow-card;
   }
+  /* White CTA — carries DARK text (white bg; white-on-white would be invisible). */
   .btn-accent {
-    @apply btn bg-accent text-white hover:-translate-y-0.5 hover:bg-accent-600 hover:shadow-glow
+    @apply btn bg-accent font-semibold text-paper hover:-translate-y-0.5 hover:bg-accent-600 hover:shadow-glow
       active:translate-y-0 disabled:translate-y-0 disabled:scale-100 disabled:opacity-50 disabled:shadow-none;
   }
   .btn-ghost {
@@ -184,7 +186,7 @@
     will-change: transform;
   }
 
-  /* Light sweep across the accent CTA on hover. */
+  /* Dark sweep across the (white) accent CTA on hover — a white sweep would be invisible. */
   .btn-accent {
     position: relative;
     overflow: hidden;
@@ -194,7 +196,7 @@
     position: absolute;
     inset: 0;
     transform: translateX(-135%) skewX(-18deg);
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+    background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.1), transparent);
     transition: transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
   }
   .btn-accent:hover::before {
@@ -232,7 +234,10 @@
   .toggle:checked {
     @apply bg-accent;
   }
+  /* On the gold checked track the knob flips DARK — a white knob on gold fails the
+     3:1 non-text contrast minimum (WCAG 1.4.11). */
   .toggle:checked::after {
+    @apply bg-paper;
     transform: translateX(16px);
   }
 }

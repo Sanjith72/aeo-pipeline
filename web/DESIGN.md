@@ -1,11 +1,13 @@
 # AEO Studio — Design System
 
-**Direction:** *Blueprint / Precision Instrument* — a technical-editorial aesthetic. Near-monochrome
-**graphite-on-paper** with one confident **cobalt** signal, expressive display type, a "measurement"
-monospace voice, a faint **engineering-blueprint grid**, hairline borders, and sparse, high-impact
-motion. It reads premium and trustworthy (Linear/Vercel register) but is recognizable on its own:
-*if you removed the logo, the blueprint grid + monospace technical readouts would still identify it* —
-fitting for a tool that generates blueprints.
+**Direction:** *Celestial Blueprint* — a technical-editorial aesthetic in **black & white**. Neutral
+off-white ink on **true-black paper** with **pure white** reserved as the lone signal, expressive
+display type, a "measurement" monospace voice, a faint **engineering-blueprint grid**, hairline
+borders, and sparse, high-impact motion. The hero adds a container-scoped **WebGL silver starfield**
+(three.js + UnrealBloom) behind the headline — the "pop" moment — while the grid + monospace readouts
+keep the brand recognizable: *if you removed the logo, the blueprint grid + monospace technical
+readouts would still identify it.* Reads premium and timeless (Linear / Vercel monochrome register),
+with emphasis carried by brightness + the serif italic rather than hue.
 
 ## Tokens (`tailwind.config.ts` + `globals.css`)
 
@@ -15,10 +17,12 @@ fitting for a tool that generates blueprints.
 - `--font-mono` **IBM Plex Mono** — the "measurement" voice: step numbers, scenario badges, slugs,
   metadata, micro-labels (`.label-mono`).
 
-**Color** — dominant + accent + neutral, not evenly balanced:
-- `ink` (near-black `#0b0f1a` → tints) — dominant; primary CTAs are ink (premium black).
-- `paper` (warm off-white `#f6f5f2`) — neutral ground.
-- `accent` (cobalt `#2b4cf0`) — used sparingly: links, active state, signal CTAs, the hero word.
+**Color** — dominant + accent + neutral, not evenly balanced (dark theme; token ROLES unchanged):
+- `ink` (off-white `#e9e9ec` → tints) — text. `ink-300` is the dimmest allowed; kept ≥4.5:1 on paper.
+- `paper` (true black `#0a0a0c` → raised tints `100/200/300`) — surfaces / neutral ground.
+- `accent` (pure white `#ffffff`) — the brightest tone, used sparingly: links, active state, signal
+  CTAs, the hero word, the starfield bloom. **White is light** — anything on `bg-accent` carries DARK
+  text (`text-paper`), never white. Semantic colors (emerald/rose/amber) are unchanged.
 
 **Depth** — two narrative shadows only: `shadow-card` (resting) and `shadow-lift` (hover/elevated).
 Radii standardize on `rounded-xl`/`rounded-xl2`.
