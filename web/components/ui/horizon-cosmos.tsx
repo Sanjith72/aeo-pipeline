@@ -80,7 +80,16 @@ export function HorizonCosmos({
     // Fewer points + tighter pixel ratio on small / dense screens — the bloom carries the look,
     // so a thinner field still reads full while keeping mobile GPUs comfortable.
     const isSmall = w < 768;
-    const starCount = isSmall ? 1600 : 4200;
+    // ── TUNE — per-frame cost knobs (biggest levers first) ────────────────────
+    //  1. starCount below: 3 additive layers × this many soft sprites. Lowered from 4200/1600; bloom
+    //     carries the density so a thinner field still reads full. Drop further (e.g. 1800 / 900) for
+    //     more headroom on weak GPUs.
+    //  2. MAX_BUFFER_W below — the resolution cap; the single biggest fill lever.
+    //  3. The bloom strength / threshold (in the post section) — the "glow" is this POST pass, not a
+    //     per-pixel shader; it's already resolution-capped + dialed soft, but lower strength for less.
+    //  4. The nebula PlaneGeometry segment count. The star/atmosphere fragment shaders are already
+    //     minimal (a length + smoothstep), so there's no expensive per-pixel glow left to simplify.
+    const starCount = isSmall ? 1100 : 2600;
     // Cap the pixel ratio hard: the full-screen bloom pass is fragment-bound, so drawing at native
     // 2× DPR is what makes the scrub feel heavy. 1.5× (1× on small screens) is visually the same once
     // bloom softens the field, and roughly halves the fill cost.
@@ -130,7 +139,9 @@ export function HorizonCosmos({
     r.renderer.toneMappingExposure = 0.62;
 
     // ── post: bloom turns only the bright stars into silver halos ─────────────
-    // Threshold 0.7 (vs HeroCanvas's 0.6) keeps the nebula from washing the centered title.
+    // Tuned soft on purpose: a low strength + a high 0.82 threshold so ONLY the brightest stars halo
+    // (the dimmer silvers stay crisp points). Keeps the embers reading without the field blooming hot
+    // or washing out the centered title.
     r.composer = new EffectComposer(r.renderer);
     r.composer.setSize(w, h);
     r.composer.addPass(new RenderPass(r.scene, r.camera));
@@ -141,9 +152,9 @@ export function HorizonCosmos({
     // construction, so the halos look identical while the blur gets materially cheaper on big screens.
     r.bloom = new UnrealBloomPass(
       new THREE.Vector2(Math.round(w * pixelRatio), Math.round(h * pixelRatio)),
-      0.6,
-      0.5,
-      0.7,
+      0.18, // strength — 0.6 → 0.4 → 0.3 → 0.18: bloom was still washing the centered title out
+      0.5, // radius
+      0.9, // threshold — only the very brightest star cores halo; everything else stays a crisp point
     );
     r.composer.addPass(r.bloom);
 
@@ -230,7 +241,7 @@ export function HorizonCosmos({
           time: { value: 0 },
           color1: { value: new THREE.Color(0x6e6e76) },
           color2: { value: new THREE.Color(0x131316) },
-          opacity: { value: 0.09 },
+          opacity: { value: 0.06 },
         },
         vertexShader: `
           varying vec2 vUv;
@@ -287,10 +298,15 @@ export function HorizonCosmos({
           varying vec3 vNormal;
           uniform float time;
           void main() {
+            // The camera flies INSIDE this sphere for the first two beats (path z 300 → −50 exits
+            // only near −600), where the raw fresnel term reaches ~2.9 and — additively blended +
+            // bloomed — used to white-out the whole frame and bury the VISIBLE headline. Clamp it
+            // and keep the wash faint: a rim accent, never a light source.
             float intensity = pow(0.7 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 2.0);
+            intensity = min(intensity, 1.0);
             vec3 glow = vec3(0.82, 0.84, 0.9) * intensity;
             float pulse = sin(time * 1.6) * 0.1 + 0.9;
-            gl_FragColor = vec4(glow * pulse, intensity * 0.22);
+            gl_FragColor = vec4(glow * pulse, intensity * 0.08);
           }
         `,
         side: THREE.BackSide,
@@ -401,15 +417,13 @@ export function HorizonCosmos({
       }
     };
 
-    // Soft-cap the redraw. The whole scene is time-based, so on a 120/144Hz panel we were paying
-    // 2–2.4× the GPU cost for motion the eye reads as identical — the quickest way to drop frames on a
-    // bloom-heavy scene. Skipping any frame that arrives sooner than ~13.5ms after the last draw leaves a
-    // 60Hz panel untouched (16.7ms > budget), settles a 120Hz panel to 60fps and a 144Hz panel to 72fps —
-    // every case a clean win over running the full refresh, and none dips below 60. (A 60fps/16.7ms budget
-    // would instead land 144Hz on 48fps — worse than before — because rAF only hits integer divisors of the
-    // refresh.) The dt-scaled smoothing above keeps the follow-feel identical whatever rate this settles to.
+    // Throttle the redraw with an elapsed-time gate: skip any frame that arrives sooner than ~33ms after
+    // the last draw → a hard ~30fps cap. On a bloom-heavy scene this is the biggest single CPU/GPU saving
+    // (a 120/144Hz panel was doing 4–5× this much work). Because the scene is time-based and the camera
+    // smoothing above is dt-scaled, fewer frames change the motion's FLUIDITY only — never its speed or
+    // follow-feel. Raise toward 22 (~45fps) or 16.7 (~60fps) if you have GPU headroom and want it silkier.
     // Only the WebGL redraw is paced; the scroll-scrubbed camera TARGET still updates at full browser rate.
-    const MIN_FRAME_MS = 13.5;
+    const MIN_FRAME_MS = 33; // ~30fps target
     let lastFrameAt = -Infinity;
     const loop = (now: number) => {
       r.animationId = requestAnimationFrame(loop);
@@ -427,10 +441,17 @@ export function HorizonCosmos({
       }
     };
 
-    // The loop runs only while the stage is BOTH on-screen and in a visible tab.
+    // Accessibility: honor prefers-reduced-motion by rendering a single static frame (the initial
+    // renderFrame() below) and NEVER starting the rAF loop. This overrides the hero's old "always
+    // animates" stance — reduced-motion users get the composed still, no flythrough.
+    const prefersReducedMotion =
+      typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    // The loop runs only while the stage is BOTH on-screen and in a visible tab — and never for
+    // reduced-motion users (they keep the one static frame).
     let inView = false;
     const evaluate = () => {
-      if (inView && !document.hidden) startLoop();
+      if (!prefersReducedMotion && inView && !document.hidden) startLoop();
       else stopLoop();
     };
     const io = new IntersectionObserver(
