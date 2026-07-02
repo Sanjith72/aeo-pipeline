@@ -5,15 +5,15 @@
 // entrance runs on the shared motion system (components/motion/primitives) so the
 // whole page moves with one set of physics.
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { ReactNode } from "react";
 import {
   EASE_OUT,
   Reveal,
   Stagger,
   Item,
-  Tilt,
   m,
+  staggerContainer,
   useReducedMotion,
   useScroll,
   useSpring,
@@ -21,24 +21,96 @@ import {
 import { FAQ_ITEMS } from "@/lib/faq";
 import { HorizonHero } from "./ui/horizon-hero";
 import { useScrolled } from "./ui/hooks";
-import { ArrowRight } from "./ui/icons";
+import { ArrowRight, ChartUp, DocLines, ShieldCheck } from "./ui/icons";
 
-/** The "drawing number" stamped on every sheet — sections read as numbered
- *  blueprint pages: 01 hero, 02 how, 03 studio, 04 trust, 05 FAQ. */
+/** The section kicker — a 26px rule that draws in beside "0N — Label" in the mono
+ *  measurement voice. Sections read as numbered sheets: 01 hero, 02 how, 03 studio,
+ *  04 why, 05 FAQ. */
 export function SheetTag({ no, children }: { no: string; children: ReactNode }) {
   return (
-    <span className="sheet-index inline-flex items-center gap-2.5">
-      <span aria-hidden className="h-px w-6 bg-accent/50" />
-      {no} / {children}
+    <span className="sheet-index inline-flex items-center gap-3">
+      <m.span
+        aria-hidden
+        className="h-px w-[26px] origin-left bg-white/55"
+        initial={{ scaleX: 0, opacity: 0 }}
+        whileInView={{ scaleX: 1, opacity: 1 }}
+        viewport={{ once: true }}
+        transition={{ duration: 0.8, ease: EASE_OUT }}
+      />
+      {no}
+      {" — "}
+      {children}
     </span>
   );
 }
 
+// ── display headline ──────────────────────────────────────────────────────────
+// Section h2s at the handoff's display scale: every word rises 0.65em out of the
+// baseline (850ms, 60ms stagger, a slightly softer ease than the house EASE_OUT)
+// with ONE serif-italic accent word per heading. Reduced motion gets a plain fade.
+
+const WORD_EASE = [0.2, 1, 0.3, 1] as const;
+
+function RisingWord({ children, className = "" }: { children: ReactNode; className?: string }) {
+  const reduced = useReducedMotion();
+  return (
+    <m.span
+      className={`inline-block will-change-transform ${className}`}
+      variants={
+        reduced
+          ? { hidden: { opacity: 0 }, visible: { opacity: 1, transition: { duration: 0.5, ease: EASE_OUT } } }
+          : {
+              hidden: { y: "0.65em", opacity: 0 },
+              visible: { y: 0, opacity: 1, transition: { duration: 0.85, ease: WORD_EASE } },
+            }
+      }
+    >
+      {children}
+    </m.span>
+  );
+}
+
+/** The big section heading: `lead` words, then the serif-italic `accent` word, then an
+ *  optional `trail` (e.g. a closing period that must hug the accent word). */
+export function DisplayH2({
+  lead,
+  accent,
+  trail,
+  className = "",
+}: {
+  lead: string;
+  accent: string;
+  trail?: string;
+  className?: string;
+}) {
+  return (
+    <m.h2
+      className={`max-w-[24ch] font-semibold text-ink ${className}`}
+      style={{ fontSize: "clamp(2.1rem, 4.8vw, 3.8rem)", lineHeight: 1.08, letterSpacing: "-0.035em" }}
+      variants={staggerContainer(0.06)}
+      initial="hidden"
+      whileInView="visible"
+      viewport={{ once: true, margin: "0px 0px -6% 0px" }}
+    >
+      {lead.split(" ").map((word, i) => (
+        <Fragment key={`${word}-${i}`}>
+          <RisingWord>{word}</RisingWord>{" "}
+        </Fragment>
+      ))}
+      <RisingWord className="pr-[0.08em]">
+        <em className="word-accent">{accent}</em>
+      </RisingWord>
+      {trail ? <RisingWord>{trail}</RisingWord> : null}
+    </m.h2>
+  );
+}
+
 export function TopBar() {
-  // The bar starts transparent over the hero grid, then morphs into a frosted,
-  // shadowed surface as content scrolls beneath it. The hairline along its lower
-  // edge tracks reading progress through the page — a spring chases the scroll
-  // position so the line lands with weight instead of sticking to the thumb.
+  // A frosted-glass bar: translucent + backdrop-blur in BOTH states so it always reads as glass over
+  // the dark hero, just deepening its tint and blur once content scrolls beneath it. The bright hairline
+  // border is the glass edge; the accent line along the bottom tracks reading progress — a spring chases
+  // the scroll position so it lands with weight instead of sticking to the thumb. (Blur is kept moderate:
+  // the bar is only ~50px tall, so it re-blurs a thin strip, not the whole viewport — cheap during scroll.)
   const scrolled = useScrolled();
   const { scrollYProgress } = useScroll();
   const progress = useSpring(scrollYProgress, { stiffness: 140, damping: 28, restDelta: 0.001 });
@@ -46,8 +118,8 @@ export function TopBar() {
     <header
       className={`sticky top-0 z-40 border-b transition-all duration-300 ${
         scrolled
-          ? "border-ink/[0.08] bg-paper/50 shadow-card backdrop-blur-md backdrop-saturate-150"
-          : "border-transparent bg-paper/10 backdrop-blur-sm"
+          ? "border-white/10 bg-paper/50 shadow-card backdrop-blur-lg backdrop-saturate-150"
+          : "border-white/[0.08] bg-white/[0.05] backdrop-blur-md backdrop-saturate-150"
       }`}
     >
       <m.span
@@ -114,80 +186,86 @@ export function HowItWorks() {
     ],
   ];
   return (
-    <section id="how" className="scroll-mt-20 border-b border-ink/[0.06]">
-      <div className="mx-auto max-w-6xl px-5 py-16 sm:py-20">
+    <section id="how" className="relative scroll-mt-20" style={{ padding: "clamp(100px, 15vh, 170px) 0 clamp(70px, 9vh, 110px)" }}>
+      {/* radial glow crowning the section (design §2) */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute left-1/2 top-0 h-[60%] w-[120%] -translate-x-1/2"
+        style={{ background: "radial-gradient(ellipse 50% 55% at 50% 0%, rgba(255,255,255,0.055), transparent 70%)" }}
+      />
+      <div className="relative mx-auto max-w-[1240px]" style={{ padding: "0 clamp(24px, 5vw, 64px)" }}>
         <Reveal>
           <SheetTag no="02">How it works</SheetTag>
-          <h2 className="mt-2 max-w-xl text-2xl font-semibold sm:text-3xl">
-            Three steps between you and being AI&apos;s{" "}
-            <span className="font-serif italic text-accent">recommendation</span>
-          </h2>
         </Reveal>
-        <div className="relative mt-8">
-          {/* the thread that ties the three steps together — draws in on reveal */}
-          <m.div
-            aria-hidden
-            className="absolute left-[8%] right-[8%] top-7 hidden h-px origin-left bg-gradient-to-r from-accent/40 via-accent/15 to-accent/40 md:block"
-            initial={{ scaleX: 0 }}
-            whileInView={{ scaleX: 1 }}
-            viewport={{ once: true }}
-            transition={{ duration: 1.1, ease: EASE_OUT, delay: 0.35 }}
-          />
-          <Stagger className="grid gap-5 md:grid-cols-3" stagger={0.12}>
-            {steps.map(([num, title, body]) => (
-              <Item key={num} className="h-full">
-                <Tilt max={5} className="h-full">
-                  <div className="group card relative h-full overflow-hidden p-6 transition-shadow duration-300 hover:shadow-lift">
-                    <span className="relative z-10 inline-flex h-6 items-center rounded-full border border-accent/20 bg-accent-50 px-2 font-mono text-xs text-accent transition-colors duration-300 group-hover:border-accent/40">
-                      {num}
-                    </span>
-                    <span
-                      className="absolute -right-3 -top-5 font-display text-[88px] font-bold leading-none text-ink/[0.04] transition-transform duration-300 group-hover:scale-110"
-                      aria-hidden
-                    >
-                      {num}
-                    </span>
-                    <h3 className="mt-3 text-base font-semibold">{title}</h3>
-                    <p className="mt-2 text-sm leading-relaxed text-ink-500">{body}</p>
-                  </div>
-                </Tilt>
-              </Item>
-            ))}
-          </Stagger>
-        </div>
+        <DisplayH2
+          lead="Three steps between you and being AI’s"
+          accent="recommendation"
+          className="mb-[clamp(44px,7vh,72px)] mt-[26px]"
+        />
+        <Stagger className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-[18px]" stagger={0.13}>
+          {steps.map(([num, title, body]) => (
+            <Item key={num} className="h-full">
+              <div
+                className="relative h-full overflow-hidden rounded-[18px] border border-white/[0.09] px-7 pb-[34px] pt-[30px] transition-[transform,border-color] duration-[350ms] ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-[5px] hover:border-white/[0.22]"
+                style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.012))" }}
+              >
+                {/* the 150px ghost numeral, clipped by the card */}
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute -top-[34px] right-[-8px] select-none font-display text-[150px] font-bold leading-none tracking-[-0.06em] text-white/[0.045]"
+                >
+                  {num}
+                </span>
+                <span className="mb-[46px] inline-flex items-center justify-center rounded-full border border-white/20 px-3 py-1.5 font-mono text-[11px] font-medium tracking-[0.1em] text-ink">
+                  {num}
+                </span>
+                <h3 className="mb-3 text-[21px] font-semibold tracking-[-0.015em] text-accent">{title}</h3>
+                <p className="text-[15px] leading-[1.65] text-ink-500">{body}</p>
+              </div>
+            </Item>
+          ))}
+        </Stagger>
       </div>
     </section>
   );
 }
 
 export function TrustBand() {
-  const items: [string, string][] = [
-    [
-      "Real analysis, not guesswork",
-      "Your plan is built from how AI assistants actually choose what to recommend — every step is there for a reason.",
-    ],
-    [
-      "Your information stays yours",
-      "Your business details are used only to build your plan — never shared, sold, or sent anywhere else.",
-    ],
-    [
-      "Results you can act on today",
-      "No reports that sit in a drawer. You get a checklist, page outlines, and files your team can use immediately.",
-    ],
+  const items = [
+    {
+      Icon: ChartUp,
+      title: "Real analysis, not guesswork",
+      body: "Your plan is built from how AI assistants actually choose what to recommend — every step is there for a reason.",
+    },
+    {
+      Icon: ShieldCheck,
+      title: "Your information stays yours",
+      body: "Your business details are used only to build your plan — never shared, sold, or sent anywhere else.",
+    },
+    {
+      Icon: DocLines,
+      title: "Results you can act on today",
+      body: "No reports that sit in a drawer. You get a checklist, page outlines, and files your team can use immediately.",
+    },
   ];
   return (
-    <section className="border-y border-ink/[0.06] bg-paper-200/60">
-      <div className="mx-auto max-w-6xl px-5 py-16">
-        <Reveal>
+    <section className="relative" style={{ padding: "clamp(80px, 11vh, 130px) 0 clamp(50px, 7vh, 90px)" }}>
+      <div className="mx-auto max-w-[1240px]" style={{ padding: "0 clamp(24px, 5vw, 64px)" }}>
+        <Reveal className="mb-[clamp(34px,5vh,50px)]">
           <SheetTag no="04">Why AEO Studio</SheetTag>
         </Reveal>
-        <Stagger className="mt-6 grid gap-5 md:grid-cols-3" stagger={0.12}>
-          {items.map(([title, body]) => (
+        <Stagger className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-[18px]" stagger={0.13}>
+          {items.map(({ Icon, title, body }) => (
             <Item key={title} className="h-full">
-              <div className="group card h-full p-6 transition-all duration-300 hover:-translate-y-1 hover:shadow-lift">
-                <div className="mb-4 h-9 w-9 rounded-lg border border-ink/10 bg-paper blueprint-grid transition-transform duration-300 group-hover:rotate-3" aria-hidden />
-                <h3 className="text-base font-semibold">{title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-ink-500">{body}</p>
+              <div className="h-full rounded-[18px] border border-white/[0.09] bg-white/[0.022] px-7 pb-8 pt-7 transition-[transform,border-color] duration-[350ms] ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-1 hover:border-white/20">
+                <span
+                  aria-hidden
+                  className="mb-[22px] flex h-11 w-11 items-center justify-center rounded-xl border border-white/[0.13] bg-white/[0.05] text-ink"
+                >
+                  <Icon />
+                </span>
+                <h3 className="mb-2.5 text-[19px] font-semibold tracking-[-0.01em] text-accent">{title}</h3>
+                <p className="text-[14.5px] leading-[1.65] text-ink-500">{body}</p>
               </div>
             </Item>
           ))}
@@ -203,37 +281,43 @@ export function Faq() {
   // FAQPage JSON-LD in app/layout.tsx serializes, so the two can never drift.
   const [open, setOpen] = useState<number | null>(0);
   return (
-    <section id="faq" className="scroll-mt-20 border-b border-ink/[0.06]">
-      <div className="mx-auto max-w-6xl px-5 py-16 sm:py-20">
-        <div className="grid gap-10 md:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] md:gap-14">
-          <Reveal className="md:sticky md:top-28 md:self-start">
-            <SheetTag no="05">Common questions</SheetTag>
-            <h2 className="mt-2 text-2xl font-semibold sm:text-3xl">
-              Answers, <span className="font-serif italic text-accent">before</span> you ask
-            </h2>
-            <p className="mt-3 max-w-md text-ink-500">
-              The questions business owners ask us most — in the same plain English your plan
-              arrives in.
-            </p>
-            <a href="#studio" className="group mt-6 inline-flex items-center gap-1.5 text-sm text-ink-500 transition-colors hover:text-accent">
-              Still wondering? Get your free plan
-              <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" width={13} height={13} />
-            </a>
-          </Reveal>
+    <section id="faq" className="scroll-mt-20" style={{ padding: "clamp(70px, 10vh, 120px) 0 clamp(110px, 16vh, 180px)" }}>
+      <div
+        className="mx-auto grid max-w-[1240px] grid-cols-[repeat(auto-fit,minmax(min(100%,320px),1fr))] items-start gap-[clamp(40px,6vw,90px)]"
+        style={{ padding: "0 clamp(24px, 5vw, 64px)" }}
+      >
+        <Reveal className="md:sticky md:top-28 md:self-start">
+          <SheetTag no="05">Common questions</SheetTag>
+          <h2
+            className="mt-[26px] font-semibold text-ink"
+            style={{ fontSize: "clamp(2rem, 3.8vw, 3.2rem)", lineHeight: 1.08, letterSpacing: "-0.035em" }}
+          >
+            Answers, <em className="word-accent">before</em> you ask
+          </h2>
+          <p className="mt-[18px] max-w-[38ch] text-[15.5px] leading-[1.65] text-ink-500">
+            The questions business owners ask us most — in the same plain English your plan
+            arrives in.
+          </p>
+          <a
+            href="#studio"
+            className="mt-[30px] inline-flex items-center gap-[9px] border-b border-white/30 pb-[3px] text-[15px] font-medium text-ink transition-[gap,border-color] duration-[250ms] ease-out hover:gap-[14px] hover:border-white/90"
+          >
+            Still wondering? Get your free plan <span aria-hidden>&rarr;</span>
+          </a>
+        </Reveal>
 
-          <Stagger className="border-y border-ink/[0.08]" stagger={0.06}>
-            {FAQ_ITEMS.map((item, i) => (
-              <FaqRow
-                key={item.q}
-                index={i}
-                question={item.q}
-                answer={item.a}
-                open={open === i}
-                onToggle={() => setOpen((current) => (current === i ? null : i))}
-              />
-            ))}
-          </Stagger>
-        </div>
+        <Stagger className="border-t border-white/[0.09]" stagger={0.06}>
+          {FAQ_ITEMS.map((item, i) => (
+            <FaqRow
+              key={item.q}
+              index={i}
+              question={item.q}
+              answer={item.a}
+              open={open === i}
+              onToggle={() => setOpen((current) => (current === i ? null : i))}
+            />
+          ))}
+        </Stagger>
       </div>
     </section>
   );
@@ -256,34 +340,32 @@ function FaqRow({
   const buttonId = `faq-button-${index}`;
   const reduced = useReducedMotion();
   return (
-    <Item className="border-b border-ink/[0.08] last:border-b-0">
-      <h3>
+    <Item className="border-b border-white/[0.09]">
+      <h3 className="m-0">
         <button
           id={buttonId}
           type="button"
           aria-expanded={open}
           aria-controls={panelId}
           onClick={onToggle}
-          className="group flex w-full items-start justify-between gap-4 py-5 text-left"
+          className="group flex w-full items-baseline gap-[18px] px-0.5 py-[23px] text-left transition-colors duration-200 hover:bg-white/[0.015]"
         >
-          <span className="flex items-baseline gap-4">
-            <span className="font-mono text-[11px] text-accent/70">{String(index + 1).padStart(2, "0")}</span>
-            <span
-              className={`text-[15px] font-medium transition-colors duration-200 ${
-                open ? "text-ink" : "text-ink-500 group-hover:text-ink"
-              }`}
-            >
-              {question}
-            </span>
+          <span aria-hidden className="shrink-0 font-mono text-[11px] font-medium text-[#6f6f77]">
+            {String(index + 1).padStart(2, "0")}
           </span>
-          {/* a mono plus that turns into a close — the technical voice, no icon set needed */}
+          <span
+            className={`flex-1 font-display text-[17.5px] font-medium tracking-[-0.01em] transition-colors duration-[250ms] ${
+              open ? "text-accent" : "text-ink-700 group-hover:text-ink"
+            }`}
+          >
+            {question}
+          </span>
+          {/* a plus that turns into a close — the technical voice, no icon set needed */}
           <m.span
             aria-hidden
             animate={{ rotate: open ? 45 : 0 }}
-            transition={{ duration: 0.3, ease: EASE_OUT }}
-            className={`mt-0.5 shrink-0 font-mono text-lg leading-none transition-colors duration-200 ${
-              open ? "text-accent" : "text-ink-300 group-hover:text-accent"
-            }`}
+            transition={{ duration: 0.4, ease: EASE_OUT }}
+            className="flex h-[26px] w-[26px] shrink-0 items-center justify-center self-center text-[17px] font-normal leading-none text-ink-500"
           >
             +
           </m.span>
@@ -299,10 +381,10 @@ function FaqRow({
         aria-hidden={!open}
         initial={false}
         animate={{ height: open ? "auto" : 0, opacity: open ? 1 : 0 }}
-        transition={{ duration: reduced ? 0 : 0.45, ease: EASE_OUT }}
+        transition={{ duration: reduced ? 0 : 0.55, ease: EASE_OUT }}
         className="overflow-hidden"
       >
-        <p className="max-w-2xl pb-6 pl-[38px] text-sm leading-relaxed text-ink-500">{answer}</p>
+        <p className="m-0 px-10 pb-[26px] text-[15px] leading-[1.7] text-ink-500">{answer}</p>
       </m.div>
     </Item>
   );

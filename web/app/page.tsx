@@ -20,12 +20,13 @@ import type {
 } from "@/lib/types";
 import { GOAL_OPTIONS, INDUSTRIES, LOCATIONS } from "@/lib/options";
 import { aeoScore } from "@/lib/score";
-import { Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/components/chrome";
+import { DisplayH2, Faq, Footer, Hero, HowItWorks, SheetTag, TopBar, TrustBand } from "@/components/chrome";
 import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { GamificationStrip } from "@/components/GamificationStrip";
 import { Combobox } from "@/components/ui/Combobox";
-import { useReducedMotion } from "@/components/motion/primitives";
+import { LiquidButton } from "@/components/ui/liquid-glass";
+import { Reveal, useReducedMotion } from "@/components/motion/primitives";
 import { Check } from "@/components/ui/icons";
 
 function splitList(value: string): string[] {
@@ -93,11 +94,18 @@ function recommendedGoals(profile: SiteProfile | null, hasLocation: boolean): Se
   return rec;
 }
 
+// Step blurbs come from the design handoff — plain-English promises, one per panel.
 const STEPS = [
-  { label: "Your website", blurb: "Pop in your address — we'll take a look." },
-  { label: "About you", blurb: "We filled this in from your site. Fix anything that's off." },
-  { label: "Competitors", blurb: "We found some likely ones — just tick the right names." },
-  { label: "Your goals", blurb: "What would success look like? Then we'll build your plan." },
+  {
+    label: "Your website",
+    blurb: "We’ll scan it the way an AI assistant does — structure, answers, credibility signals.",
+  },
+  { label: "About you", blurb: "A few basics so the plan sounds like you, not a template." },
+  {
+    label: "Competitors",
+    blurb: "After your website scan we’ll suggest competitors from your industry — keep the ones that fit, add any we missed.",
+  },
+  { label: "Your goals", blurb: "What would success look like? Then we’ll build your plan." },
 ] as const;
 
 export default function Page() {
@@ -485,19 +493,51 @@ export default function Page() {
     <>
       <TopBar />
       <Hero />
+
+      {/* Everything below the hero shares one film-grain overlay (design: whole-page grain).
+          A wrapper div rather than body so the grain never re-composites against the hero's
+          animating WebGL canvas. overflow-x-CLIP (never hidden — that would create a scroll
+          container and kill the sticky stepper/FAQ rail) fences the 120%-wide section glow. */}
+      <div className="grain relative overflow-x-clip">
       <HowItWorks />
 
-      <section id="studio" ref={studioRef} className="mx-auto max-w-6xl scroll-mt-20 px-5 py-16 sm:py-20">
-        <div className="mb-8 animate-fade-up">
-          <SheetTag no="03">Your plan builder</SheetTag>
-          <h2 className="mt-2 text-2xl font-semibold sm:text-3xl">
-            {view === "results" ? "Your results" : "Start with your website. We'll do the rest."}
-          </h2>
-          {view === "wizard" && (
-            <p className="mt-1 max-w-2xl text-ink-500">
-              Enter your address and we'll figure out your industry, your gaps, and a step-by-step plan
-              to make your business the one AI recommends.
-            </p>
+      <section id="studio" ref={studioRef} className="relative scroll-mt-20" style={{ padding: "clamp(70px, 9vh, 110px) 0" }}>
+        {/* blueprint grid backdrop, masked to an ellipse so it fades out (design §3) */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 opacity-40"
+          style={{
+            backgroundImage:
+              "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
+            backgroundSize: "32px 32px",
+            backgroundPosition: "center",
+            WebkitMaskImage: "radial-gradient(ellipse 60% 55% at 50% 40%, #000 20%, transparent 100%)",
+            maskImage: "radial-gradient(ellipse 60% 55% at 50% 40%, #000 20%, transparent 100%)",
+          }}
+        />
+        <div className="relative mx-auto max-w-[1240px]" style={{ padding: "0 clamp(24px, 5vw, 64px)" }}>
+        <div>
+          <Reveal>
+            <SheetTag no="03">Your plan builder</SheetTag>
+          </Reveal>
+          {view === "results" ? (
+            <h2
+              className="mb-10 mt-[26px] font-semibold"
+              style={{ fontSize: "clamp(2.1rem, 4.8vw, 3.8rem)", lineHeight: 1.08, letterSpacing: "-0.035em" }}
+            >
+              Your results
+            </h2>
+          ) : (
+            <>
+              <DisplayH2 lead="Start with your website. We’ll do the" accent="rest" trail="." className="mb-[18px] mt-[26px]" />
+              <p
+                className="mb-[clamp(40px,6vh,60px)] max-w-[54ch] text-ink-500"
+                style={{ fontSize: "clamp(1rem, 1.6vw, 1.15rem)", lineHeight: 1.6 }}
+              >
+                Enter your address and we&apos;ll figure out your industry, your gaps, and a step-by-step plan
+                to make your business the one AI recommends.
+              </p>
+            </>
           )}
         </div>
 
@@ -557,21 +597,29 @@ export default function Page() {
         ) : prefilling ? (
           <AnalysisSequence domain={domain.trim() || "your site"} />
         ) : (
-          <div className="grid animate-fade-up-slow gap-8 md:grid-cols-[230px_1fr]">
+          <div className="grid animate-fade-up-slow items-start gap-[22px] md:grid-cols-[minmax(230px,290px)_minmax(0,1fr)]">
             <Stepper current={step} onJump={setStep} />
 
             <div>
               {error && <ErrorNote message={error} />}
 
-              <div className="card p-6 sm:p-8">
-                <StepHeader index={step} />
-
-                <div key={step} className="step-in">
+              {/* the panel — gradient fill, 20px radius, deep soft shadow (design §3) */}
+              <div
+                className="rounded-[20px] border border-white/10"
+                style={{
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.01))",
+                  padding: "clamp(26px, 3.4vw, 42px)",
+                  boxShadow: "0 24px 70px -30px rgba(0,0,0,0.8)",
+                }}
+              >
+                {/* keyed so header + content rise together on every step change */}
+                <div key={step} className="panel-in">
+                  <StepHeader index={step} />
                   {step === 0 && (
                     <div className="space-y-6">
                       <div>
                         <span className="field-label">Do you have a website?</span>
-                        <div className="inline-flex rounded-xl border border-ink/10 bg-paper-200/60 p-1">
+                        <div className="inline-flex rounded-xl border border-white/[0.13] bg-white/[0.04] p-1">
                           {[
                             { v: true, label: "Yes" },
                             { v: false, label: "Not yet" },
@@ -582,7 +630,7 @@ export default function Page() {
                               aria-pressed={hasSite === v}
                               onClick={() => setHasSite(v)}
                               className={`rounded-lg px-5 py-2 text-sm transition-all duration-200 ${
-                                hasSite === v ? "bg-paper-100 font-medium text-ink shadow-card" : "text-ink-300 hover:text-ink-500"
+                                hasSite === v ? "bg-white/10 font-medium text-ink" : "text-ink-300 hover:text-ink-700"
                               }`}
                             >
                               {label}
@@ -596,18 +644,21 @@ export default function Page() {
                         hint={hasSite ? undefined : "optional"}
                         required={hasSite}
                       >
+                        {/* NO autoFocus here: React focuses on hydration, and focusing an element
+                            ~4000px below the fold scrolls it into view — the page would open at the
+                            wizard instead of the hero. (The layout.tsx scroll-restoration script
+                            can't prevent that; it runs before hydration.) */}
                         <input
                           className="input"
                           value={domain}
                           onChange={(e) => setDomain(e.target.value)}
                           placeholder="yourbusiness.com"
                           inputMode="url"
-                          autoFocus
                           aria-label="Website address"
                         />
                       </Field>
 
-                      <p className="text-xs text-ink-300">
+                      <p className="text-[13px] leading-[1.55] text-[#6f6f77]">
                         {hasSite
                           ? "We take a quick look and show your AI visibility score in seconds — then pre-fill the next steps for you."
                           : "No website yet? No problem — we'll plan your ideal one from scratch."}
@@ -640,7 +691,7 @@ export default function Page() {
                         </p>
                       )}
                       {!noSite && profileResult?.cache_age_hours != null && (
-                        <label className="step-in flex cursor-pointer items-start gap-3 rounded-lg border border-ink/10 bg-paper-200/50 px-3.5 py-2.5 text-sm">
+                        <label className="step-in flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-sm">
                           <input
                             type="checkbox"
                             className="toggle mt-0.5"
@@ -656,7 +707,7 @@ export default function Page() {
                           </span>
                         </label>
                       )}
-                      <div className="grid gap-5 sm:grid-cols-2">
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))] gap-[18px]">
                         <Field label="Business name" required>
                           <input
                             className="input"
@@ -714,14 +765,14 @@ export default function Page() {
                     <div className="space-y-6">
                       {/* #3 — the analysis pre-selects the goals it recommends; the user
                           unticks what doesn't fit or adds their own below. */}
-                      <div className="step-in rounded-lg border border-accent/25 bg-accent/[0.06] px-3.5 py-2.5 text-sm text-ink-500">
-                        <span className="font-medium text-ink">
+                      <div className="step-in rounded-xl border border-white/10 bg-white/[0.03] px-4 py-[13px] text-[13.5px] leading-[1.55] text-ink-500">
+                        <strong className="font-semibold text-ink">
                           {profile ? "We pre-selected goals from your analysis." : "Pick what success looks like."}
-                        </span>{" "}
+                        </strong>{" "}
                         Keep what fits, untick what doesn&apos;t, or add your own.
                       </div>
 
-                      <div className="grid gap-2.5 sm:grid-cols-2">
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,270px),1fr))] gap-[13px]">
                         {GOAL_OPTIONS.map((g, i) => {
                           const on = goals.includes(g.label);
                           const rec = recommended.has(g.label);
@@ -731,27 +782,27 @@ export default function Page() {
                               type="button"
                               aria-pressed={on}
                               onClick={() => toggleGoal(g.label)}
-                              className={`option-card !items-start ${on ? "option-card-on" : "option-card-off"} step-in`}
+                              className={`step-in flex flex-col gap-[7px] rounded-[14px] border p-[17px] pb-[15px] text-left transition-[transform,border-color,background-color] duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-0.5 hover:border-white/40 ${
+                                on ? "border-white/35 bg-white/[0.055]" : "border-white/10 bg-white/[0.018]"
+                              }`}
                               style={{ animationDelay: `${i * 50}ms` }}
                             >
-                              <span
-                                className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors ${
-                                  on ? "border-accent bg-accent text-paper" : "border-ink/25 bg-paper-100"
-                                }`}
-                              >
-                                {on && <Check className="animate-pop" width={12} height={12} />}
-                              </span>
-                              <span className="min-w-0">
-                                <span className="flex flex-wrap items-center gap-1.5">
-                                  <span className="font-medium text-ink">{g.label}</span>
-                                  {rec && (
-                                    <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent ring-1 ring-accent/30">
-                                      {profile ? "Recommended by AI" : "Suggested"}
-                                    </span>
-                                  )}
+                              <span className="flex flex-wrap items-center gap-x-[11px] gap-y-1.5">
+                                <span
+                                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-all duration-200 ${
+                                    on ? "border-accent bg-accent text-paper" : "border-white/30 bg-transparent"
+                                  }`}
+                                >
+                                  {on && <Check className="animate-pop" width={12} height={12} />}
                                 </span>
-                                <span className="mt-0.5 block text-xs leading-relaxed text-ink-300">{g.hint}</span>
+                                <span className="text-[15px] font-semibold text-ink">{g.label}</span>
+                                {rec && (
+                                  <span className="whitespace-nowrap rounded-full border border-white/15 px-2 py-[3px] font-mono text-[9px] font-medium uppercase tracking-[0.07em] text-ink-500">
+                                    {profile ? "Rec. by AI" : "Suggested"}
+                                  </span>
+                                )}
                               </span>
+                              <span className="pl-[31px] text-[13px] leading-[1.5] text-ink-300">{g.hint}</span>
                             </button>
                           );
                         })}
@@ -776,9 +827,9 @@ export default function Page() {
                             ))}
                           </div>
                         )}
-                        <div className="flex gap-2">
+                        <div className="flex gap-2.5">
                           <input
-                            className="input"
+                            className="input min-w-0 flex-1"
                             value={customGoalInput}
                             onChange={(e) => setCustomGoalInput(e.target.value)}
                             onKeyDown={(e) => {
@@ -790,20 +841,20 @@ export default function Page() {
                             placeholder="Add your own — e.g. Rank for niche topics"
                             aria-label="Add a custom goal"
                           />
-                          <button
-                            type="button"
+                          <LiquidButton
+                            variant="secondary"
+                            className="shrink-0 px-6"
                             onClick={addCustomGoal}
                             disabled={!customGoalInput.trim()}
-                            className="btn-ghost shrink-0"
                           >
                             + Add
-                          </button>
+                          </LiquidButton>
                         </div>
                       </div>
 
                       <Field label="Anything frustrating you right now?" hint="optional">
                         <textarea
-                          className="input h-20 resize-none"
+                          className="input min-h-20 resize-y"
                           value={challenges}
                           onChange={(e) => setChallenges(e.target.value)}
                           placeholder="e.g. Customers tell us ChatGPT never mentions our shop…"
@@ -811,7 +862,7 @@ export default function Page() {
                         />
                       </Field>
 
-                      <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-ink/10 bg-paper-200/50 px-4 py-3.5 text-sm">
+                      <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5 text-sm">
                         <input
                           type="checkbox"
                           className="toggle"
@@ -828,105 +879,112 @@ export default function Page() {
                         </span>
                       </label>
 
-                      <div>
-                        <button onClick={createPlan} disabled={loading} className="btn-accent !px-6 !py-3 text-[15px]">
-                          {loading ? (
-                            <>
-                              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                              {noSite ? "Building your plan…" : "Reviewing your website…"}
-                            </>
-                          ) : analyzed ? (
-                            "Rebuild my plan"
-                          ) : (
-                            "Create my plan"
-                          )}
-                        </button>
-                        {!loading && (
-                          <p className="mt-2 text-xs text-ink-300">
-                            {noSite
-                              ? "Usually under a minute."
-                              : "You already have your score — this is the full page-by-page review, usually around 10 minutes. You'll see progress as it goes, and you can leave this tab open."}
-                          </p>
-                        )}
-                      </div>
+                      {/* The actual CTA lives in the panel footer ("Build my plan →") — this
+                          is the expectation-setting line beside it. */}
+                      {!loading && (
+                        <p className="text-[13px] leading-[1.55] text-[#6f6f77]">
+                          {noSite
+                            ? "“Build my plan” usually takes under a minute."
+                            : "You already have your score — “Build my plan” runs the full page-by-page review, usually around 10 minutes. You'll see progress as it goes, and you can leave this tab open."}
+                        </p>
+                      )}
 
                       {loading && !noSite && auditJob && <AnalysisProgress job={auditJob} onCancel={cancelAudit} />}
                       {analyzed && !loading && (
-                        <button onClick={() => setView("results")} className="btn-ghost text-[13px]">
+                        <button
+                          onClick={() => setView("results")}
+                          className="text-[13px] font-medium text-ink-500 underline-offset-4 transition-colors hover:text-ink hover:underline"
+                        >
                           View my results →
                         </button>
                       )}
                     </div>
                   )}
                 </div>
-              </div>
 
-              <div className="mt-6 flex items-center justify-between gap-3">
-                <button
-                  onClick={() => {
-                    // Returning to the website-entry step drops site A's crawl-derived
-                    // prefills so a newly-entered site starts clean (the domain stays).
-                    if (step === 1) resetPrefilled();
-                    setStep((s) => Math.max(0, s - 1));
-                  }}
-                  disabled={step === 0}
-                  className="btn-ghost"
-                >
-                  ← Back
-                </button>
-                <span className="label-mono">
-                  {String(step + 1).padStart(2, "0")} / {STEPS.length}
-                </span>
-                {!isLast ? (
-                  <div className="flex items-center gap-3">
+                {/* panel footer nav — glass pills, inside the panel (design §3). The last
+                    step's primary reads "Build my plan →" and fires the analysis. */}
+                <div className="mt-[30px] flex flex-wrap items-center justify-between gap-3.5 border-t border-white/[0.08] pt-6">
+                  <LiquidButton
+                    variant="secondary"
+                    className="px-6 py-3"
+                    disabled={step === 0}
+                    onClick={() => {
+                      // Returning to the website-entry step drops site A's crawl-derived
+                      // prefills so a newly-entered site starts clean (the domain stays).
+                      if (step === 1) resetPrefilled();
+                      setStep((s) => Math.max(0, s - 1));
+                    }}
+                  >
+                    ← Back
+                  </LiquidButton>
+                  <div className="flex flex-wrap items-center justify-end gap-4">
                     {/* After the URL+crawl, every later step is prefilled/optional — let the
                         user bail straight to the comprehensive analysis (#1: URL is enough). */}
-                    {step >= 1 && (
+                    {step >= 1 && !isLast && (
                       <button
                         onClick={() => {
                           setStep(STEPS.length - 1); // land on the step that shows live progress
                           createPlan();
                         }}
                         disabled={loading || prefilling}
-                        className="btn-ghost"
+                        className="text-[13px] text-ink-300 underline-offset-4 transition-colors hover:text-ink hover:underline disabled:opacity-40"
                         title="Skip the rest — analyze your site with what we already have"
                       >
                         Skip — just analyze my site
                       </button>
                     )}
                     <div className="text-right">
-                      <button
-                        onClick={() => (step === 0 ? handleWebsiteNext() : advance(step))}
-                        disabled={nextBlocker !== null || prefilling}
-                        className="btn-primary group"
-                      >
-                        {prefilling ? (
-                          <>
-                            <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink/30 border-t-ink" />
-                            Taking a look…
-                          </>
-                        ) : (
-                          <>
-                            Next
-                            <span aria-hidden className="transition-transform duration-200 group-hover:translate-x-0.5">→</span>
-                          </>
-                        )}
-                      </button>
+                      {isLast ? (
+                        <LiquidButton
+                          variant="primary"
+                          className="px-[26px] py-[13px]"
+                          onClick={createPlan}
+                          disabled={loading}
+                        >
+                          {loading ? (
+                            <>
+                              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                              {noSite ? "Building your plan…" : "Reviewing your website…"}
+                            </>
+                          ) : analyzed ? (
+                            "Rebuild my plan →"
+                          ) : (
+                            "Build my plan →"
+                          )}
+                        </LiquidButton>
+                      ) : (
+                        <LiquidButton
+                          variant="primary"
+                          className="px-[26px] py-[13px]"
+                          onClick={() => (step === 0 ? handleWebsiteNext() : advance(step))}
+                          disabled={nextBlocker !== null || prefilling}
+                        >
+                          {prefilling ? (
+                            <>
+                              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                              Taking a look…
+                            </>
+                          ) : (
+                            "Continue →"
+                          )}
+                        </LiquidButton>
+                      )}
                       {nextBlocker && <p className="mt-1.5 text-xs text-ink-300">{nextBlocker}</p>}
                     </div>
                   </div>
-                ) : (
-                  <span aria-hidden className="w-[72px]" />
-                )}
+                </div>
               </div>
             </div>
           </div>
         )}
+        </div>
       </section>
 
       <TrustBand />
       <Faq />
       <Footer />
+      </div>
     </>
   );
 }
@@ -1035,30 +1093,44 @@ function AnalysisSequence({ domain }: { domain: string }) {
   );
 }
 
+// The stepper rail (design §3): 28px numbered circles — done rows get a solid white
+// circle with a dark check, the active row a soft fill + brighter border. Every row
+// stays clickable (jump to any step). Collapses to a horizontal strip below md.
 function Stepper({ current, onJump }: { current: number; onJump: (i: number) => void }) {
   return (
     <nav aria-label="Steps" className="md:sticky md:top-24 md:self-start">
-      <ol className="flex gap-1 overflow-x-auto pb-2 md:flex-col md:gap-0.5 md:overflow-visible md:pb-0">
+      <ol className="flex gap-1.5 overflow-x-auto pb-2 md:flex-col md:overflow-visible md:pb-0">
         {STEPS.map(({ label }, i) => {
           const done = i < current;
           const active = i === current;
           return (
-            <li key={label} className="shrink-0">
+            <li key={label} className="shrink-0 md:shrink">
               <button
                 onClick={() => onJump(i)}
                 aria-current={active ? "step" : undefined}
-                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-all duration-200 ${
-                  active ? "bg-ink text-paper-100 shadow-card" : "text-ink-500 hover:translate-x-0.5 hover:bg-ink/[0.04]"
+                className={`flex w-full items-center gap-3.5 rounded-xl border px-4 py-[13px] text-left transition-colors duration-[250ms] ${
+                  active ? "border-white/[0.18] bg-white/[0.07]" : "border-transparent hover:bg-white/[0.05]"
                 }`}
               >
                 <span
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-mono text-[11px] transition-colors duration-200 ${
-                    done ? "bg-accent text-paper" : active ? "bg-paper-100 text-ink" : "border border-ink/15 text-ink-300"
+                  aria-hidden
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border font-mono text-[10.5px] font-medium transition-all duration-[250ms] ${
+                    done
+                      ? "border-ink bg-ink text-paper"
+                      : active
+                        ? "border-white/40 bg-white/10 text-accent"
+                        : "border-white/[0.14] bg-white/[0.03] text-ink-300"
                   }`}
                 >
                   {done ? <Check className="animate-pop" width={12} height={12} /> : String(i + 1).padStart(2, "0")}
                 </span>
-                <span className="whitespace-nowrap md:whitespace-normal">{label}</span>
+                <span
+                  className={`whitespace-nowrap text-[14.5px] font-medium transition-colors duration-[250ms] md:whitespace-normal ${
+                    active ? "text-accent" : done ? "text-ink-700" : "text-ink-300"
+                  }`}
+                >
+                  {label}
+                </span>
               </button>
             </li>
           );
@@ -1070,10 +1142,12 @@ function Stepper({ current, onJump }: { current: number; onJump: (i: number) => 
 
 function StepHeader({ index }: { index: number }) {
   return (
-    <div className="mb-6 border-b border-ink/[0.06] pb-5">
-      <span className="label-mono">Step {String(index + 1).padStart(2, "0")}</span>
-      <h3 className="mt-1.5 text-xl font-semibold">{STEPS[index].label}</h3>
-      <p className="mt-1 text-sm text-ink-500">{STEPS[index].blurb}</p>
+    <div className="mb-[30px]">
+      <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.3em] text-ink-300">
+        Step {String(index + 1).padStart(2, "0")} / {String(STEPS.length).padStart(2, "0")}
+      </span>
+      <h3 className="mt-3.5 text-2xl font-semibold tracking-[-0.02em] text-accent">{STEPS[index].label}</h3>
+      <p className="mt-2 text-[15px] leading-[1.6] text-ink-500">{STEPS[index].blurb}</p>
     </div>
   );
 }
@@ -1097,7 +1171,7 @@ function Field({
       <span className="field-label">
         {label}
         {required && <span className="ml-1 text-accent">*</span>}
-        {hint && <span className="ml-1.5 normal-case tracking-normal text-ink-300">({hint})</span>}
+        {hint && <span className="ml-1.5 normal-case tracking-normal text-[#5c5c64]">({hint})</span>}
       </span>
       {children}
     </div>

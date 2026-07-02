@@ -17,6 +17,7 @@ import { forwardRef, useEffect, useRef } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { EASE_OUT, Magnetic, m } from "@/components/motion/primitives";
 import { ArrowRight } from "@/components/ui/icons";
+import { LiquidButton } from "@/components/ui/liquid-glass";
 import type { CamTarget } from "@/components/ui/horizon-cosmos";
 
 const HorizonCosmos = dynamic(
@@ -113,7 +114,7 @@ export function HorizonHero() {
       ref={sectionRef}
       // The tall scroll region gives the scrub its distance. Critically NO overflow clip here (or any
       // ancestor) — that would silently break `sticky` on the stage. The clip lives on the stage only.
-      className="relative border-b border-ink/[0.06]"
+      className="relative"
       style={{ height: "340vh" }}
     >
       {/* the pinned stage — 100vh, full viewport, clipped, its own stacking context (isolate) so the
@@ -150,7 +151,11 @@ export function HorizonHero() {
           aria-hidden
           style={{ height: "32%", background: "linear-gradient(to top, #0a0a0c 4%, transparent)" }}
         />
-        <div className="grain pointer-events-none absolute inset-0 z-[2]" aria-hidden style={{ mixBlendMode: "screen" }} />
+        {/* Film grain over the scene. Deliberately a plain alpha-blended overlay — a full-viewport
+            `mix-blend-mode: screen` here forces the browser to re-composite the whole hero against the
+            animating WebGL canvas EVERY frame, which is a real scroll-jank cost; normal blend at 0.05
+            reads almost identically but composites on the cheap fast path. */}
+        <div className="grain pointer-events-none absolute inset-0 z-[2]" aria-hidden />
 
         {/* z4 — content: three crossfading beats */}
         <div className="absolute inset-0 z-[4]">
@@ -172,14 +177,14 @@ export function HorizonHero() {
             ctas={
               <>
                 <Magnetic>
-                  <a href="#studio" className="btn-accent group !px-6 !py-3 text-[15px]">
+                  <LiquidButton href="#studio" variant="primary" className="group px-7 py-3.5 text-[15px]">
                     Get my free plan
                     <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" />
-                  </a>
+                  </LiquidButton>
                 </Magnetic>
-                <a href="#how" className="btn-ghost !px-6 !py-3 text-[15px]">
+                <LiquidButton href="#how" variant="secondary" className="px-[26px] py-3.5 text-[15px]">
                   See how it works
-                </a>
+                </LiquidButton>
               </>
             }
           />

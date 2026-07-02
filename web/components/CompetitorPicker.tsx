@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { CompetitorPick, CompetitorSuggestion } from "@/lib/types";
 import { Check, Plus, Refresh, Search, Sparkle, X } from "./ui/icons";
+import { LiquidButton } from "./ui/liquid-glass";
 
 type SuggestState =
   | { status: "idle" | "loading" }
@@ -243,14 +244,14 @@ export function CompetitorPicker({
               aria-label="Competitor website, optional"
             />
           )}
-          <button
-            type="button"
+          <LiquidButton
+            variant="secondary"
+            className="shrink-0 self-start px-6 py-3 sm:self-auto sm:py-0"
             onClick={addManual}
             disabled={!manualName.trim()}
-            className="btn-primary shrink-0 !px-4 disabled:opacity-40"
           >
             <Plus /> Add
-          </button>
+          </LiquidButton>
         </div>
         {!showSite && (
           <button

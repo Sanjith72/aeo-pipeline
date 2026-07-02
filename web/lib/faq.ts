@@ -11,26 +11,26 @@ export const FAQ_ITEMS: FaqItem[] = [
   },
   {
     q: "How is AEO different from SEO?",
-    a: "SEO competes for a position in a list of links. AEO competes for the single answer an AI gives — there's no page two. The fundamentals overlap (clear structure, real expertise, machine-readable facts), but AEO prioritizes the things answer engines actually cite: direct answers to real customer questions, consistent entity information, and structured data. Your AEO plan strengthens your SEO as a side effect, not the other way around.",
+    a: "SEO helps you rank in a list of ten blue links. AEO helps you be the single answer an AI assistant gives. The signals overlap, but answer engines care much more about clear, direct answers, credibility, and structured facts — and there's no page two to fall back on.",
   },
   {
     q: "Do I need a technical background to use this?",
-    a: "No. You answer five plain-English questions about your business. The plan comes back in plain English too — what to do, in what order, and how much work each step is. For the technical parts, the launch kit includes ready-made files you can hand to whoever builds your website, whether that's you, an AI tool, a freelancer, or your developer.",
+    a: "No. You answer five plain-English questions and we handle the analysis. Your plan reads like a to-do list, not a technical audit — and the ready-made files that come with it can be handed straight to whoever looks after your website.",
   },
   {
     q: "How long does it take?",
-    a: "The five questions take about a minute. A plan built from your answers arrives in seconds; a quick look at your live site takes about a minute; the full page-by-page check-up runs five to fifteen minutes. The plan itself is organized as a 30-day checklist you work through at your own pace.",
+    a: "The analysis runs in minutes and your plan arrives the same day. How fast you see results depends on how quickly the changes go live — most items on the checklist are small edits, not rebuilds.",
   },
   {
     q: "What exactly do I get?",
-    a: "Three things. First, a website blueprint: the exact pages your site needs, ranked by how much they matter for AI answers. Second, a prioritized action plan with the effort level of each step. Third, a launch kit — a folder of ready-to-use files (page outlines, content briefs, structured-data snippets, and a 30-day checklist) adapted to whoever is building your site.",
+    a: "A visibility score showing how answer engines read your business today, a prioritized checklist in plain English, and ready-made files — page outlines, structured data, suggested copy — your web person can use immediately.",
   },
   {
     q: "What happens to my data?",
-    a: "Your business details are used to build your plan and for nothing else. They are never sold, shared, or used to train models. Your reports belong to you — download everything as files and use them anywhere.",
+    a: "Your business details are used only to build your plan. They're never shared, sold, or sent anywhere else, and you can ask us to delete them at any time.",
   },
   {
     q: "I don't have a website yet. Does this still work?",
-    a: "Yes — that's one of the best times to use it. Skip the site check-up and AEO Studio plans your ideal website from your answers alone, so you build it right the first time instead of retrofitting AI visibility later.",
+    a: "Yes. Skip the website step and we'll build your plan from the basics — what you do, where you are, and who you're up against. The plan will include what your first pages need so you start visible from day one.",
   },
 ];
