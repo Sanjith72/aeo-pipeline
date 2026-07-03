@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { CompetitorPick, CompetitorSuggestion } from "@/lib/types";
 import { Check, Plus, Refresh, Search, Sparkle, X } from "./ui/icons";
+import { LiquidButton } from "./ui/liquid-glass";
 
 type SuggestState =
   | { status: "idle" | "loading" }
@@ -178,7 +179,7 @@ export function CompetitorPicker({
                   >
                     <span
                       className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors ${
-                        on ? "border-accent bg-accent text-white" : "border-ink/25 bg-paper-100"
+                        on ? "border-accent bg-accent text-paper" : "border-ink/25 bg-paper-100"
                       }`}
                     >
                       {on && <Check className="animate-pop" width={12} height={12} />}
@@ -243,14 +244,14 @@ export function CompetitorPicker({
               aria-label="Competitor website, optional"
             />
           )}
-          <button
-            type="button"
+          <LiquidButton
+            variant="secondary"
+            className="shrink-0 self-start px-6 py-3 sm:self-auto sm:py-0"
             onClick={addManual}
             disabled={!manualName.trim()}
-            className="btn-primary shrink-0 !px-4 disabled:opacity-40"
           >
             <Plus /> Add
-          </button>
+          </LiquidButton>
         </div>
         {!showSite && (
           <button

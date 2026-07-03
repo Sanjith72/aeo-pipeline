@@ -28,8 +28,8 @@ import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/scor
 import { predictedLiftChip, reconcileLabel } from "@/lib/predictedLift";
 import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
 import { ArrowRight, Check, Sparkle } from "./ui/icons";
-import { MilestoneDashboard } from "./MilestoneDashboard";
 import { Detail, TaskHowTo } from "./TaskHowTo";
+import { TrackerView } from "./quest/TrackerView";
 
 const EFFORT_PILL: Record<string, string> = {
   low: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
@@ -288,6 +288,8 @@ export function ResultsView({
     // fallback (no profile → no Overview tab) keeps it reachable.
     ...(profile ? [] : [{ id: "kit" as const, label: "Your plan" }]),
   ];
+  // Land on the first available tab: Overview when there's a profile (which opens on the
+  // Quest map tracker), otherwise the first no-profile tab (the blueprint, in practice).
   const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
 
   // Spec #2 "Verified live": a re-crawl can confirm a recommended fix actually landed
@@ -298,17 +300,6 @@ export function ResultsView({
   useEffect(() => {
     if (profile?.domain) api.recheckStatus(profile.domain).then(setRecheck).catch(() => {});
   }, [profile?.domain]);
-
-  // The plan/tracker now lives on the default Overview tab, so build it automatically on
-  // load — it's deterministic and ready in seconds, so the user shouldn't have to click
-  // "Build my plan" to see it. Fires once; if the build errors, PlanPanel shows its inline
-  // retry rather than this effect re-looping.
-  const autoBuiltRef = useRef(false);
-  useEffect(() => {
-    if (autoBuiltRef.current || deliverables || delivLoading || delivError) return;
-    autoBuiltRef.current = true;
-    onGenerateDeliverables();
-  }, [deliverables, delivLoading, delivError, onGenerateDeliverables]);
 
   // #6 — the old "reserve the tallest panel height" floor was removed: it left a large dead
   // space below shorter tabs (most visibly "Your plan" before a plan is built). The sticky
@@ -387,12 +378,12 @@ export function ResultsView({
       >
         {tab === "overview" && profile && (
           <>
-            <ScoreRing profile={profile} className="mb-6" />
-            <FixImpact data={recheck} />
-            {/* The plan/tracker loads here by default — no tab switch needed; kept above the
-                profile detail so it stays prominent without separating the score from its
-                lift story (FixImpact) above. */}
+            {/* The plan/tracker leads the page — the Quest map is the first thing the user
+                sees, no tab switch needed — with the score and its lift story (FixImpact)
+                directly below, then the profile detail. */}
             {planPanel}
+            <ScoreRing profile={profile} className="mb-6 mt-8" />
+            <FixImpact data={recheck} />
             <OverviewPanel profile={profile} auditJob={auditJob} />
           </>
         )}
@@ -1673,8 +1664,19 @@ function PlanPanel({
 }) {
   const [filesOpen, setFilesOpen] = useState(false);
 
-  // #7 — the empty state. "Build my plan" now resolves in seconds (deterministic), so the
-  // states the user actually meets are: idle → building (fast bar) → ready, or → error+retry.
+  // Auto-build the plan the moment this panel opens — no "Build my plan" click needed. The
+  // build is deterministic + instant, so the user lands straight on the (Quest map) tracker.
+  // Fires once; a failed build still falls back to the manual "Try again" button below.
+  const autoBuilt = useRef(false);
+  useEffect(() => {
+    if (!deliverables && !loading && !error && !autoBuilt.current) {
+      autoBuilt.current = true;
+      onGenerate();
+    }
+  }, [deliverables, loading, error, onGenerate]);
+
+  // #7 — the empty state. The plan auto-builds on open (above), so the states the user meets
+  // are: building (fast bar) → ready, or → error+retry.
   if (!deliverables) {
     return (
       <div className="rounded-xl border border-dashed border-ink/15 p-10 text-center">
@@ -1720,7 +1722,7 @@ function PlanPanel({
         // weekly crawl auto-verifies. Without one (brief-only flow), fall back to the
         // local, offline checklist so the experience still works with no DB/site.
         domain ? (
-          <MilestoneDashboard domain={domain} plan={deliverables.plan} businessName={businessName} cmsType={cmsType} />
+          <TrackerView domain={domain} plan={deliverables.plan} businessName={businessName} cmsType={cmsType} />
         ) : (
           <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} />
         )

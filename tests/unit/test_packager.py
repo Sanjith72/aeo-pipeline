@@ -19,6 +19,7 @@ from aeo.report.packager import (
     PHASE_WEEK_1,
     PHASE_WEEK_2_4,
     AssetBundle,
+    _impact_score,
     _is_quick_win,
     _phase_for_rank,
     build_asset_bundle,
@@ -316,6 +317,15 @@ class TestPhasingHelpers:
         assert _is_quick_win("high", 0.9, self._CFG) is False   # too much effort
         assert _is_quick_win("low", 0.3, self._CFG) is False    # too little impact
 
+    def test_impact_score(self):
+        # anchored on priority, always within [0.15, 1.0]
+        assert _impact_score(0.9, "medium", False) == 0.9
+        assert _impact_score(0.0, "medium", False) == 0.15      # floored, no zero-size enemy
+        assert _impact_score(1.0, "high", True) == 1.0          # clamped at the ceiling
+        # quick-win + cornerstone uplift each nudge it up
+        assert _impact_score(0.6, "low", True) > _impact_score(0.6, "low", False)
+        assert _impact_score(0.6, "high", False) > _impact_score(0.6, "medium", False)
+
 
 class TestBuildPlan:
     def test_phases_assigned_by_rank(self):
@@ -343,6 +353,17 @@ class TestBuildPlan:
         for t in page_tasks:
             assert t["current_state"] and t["action_required"] and t["how_to"]
             assert t["prompts"]["ai"] and t["prompts"]["human"]
+
+    def test_every_task_carries_impact_score(self):
+        # both page tasks and the owner-mode visibility tasks expose a 0–1 impact_score
+        plan = build_plan(_twelve_nodes(), "ai")
+        tasks = [t for p in plan["phases"] for t in p["tasks"]]
+        assert tasks
+        for t in tasks:
+            assert 0.15 <= t["impact_score"] <= 1.0
+        by_id = {t["id"]: t for t in tasks}
+        assert by_id["vis:gbp"]["impact_score"] == 0.95          # the biggest local-AEO lever
+        assert by_id["vis:readthrough"]["impact_score"] == 0.25  # proofreading moves it least
 
     def test_visibility_tasks_only_in_owner_modes(self):
         dev = build_plan(_twelve_nodes(), "dev")

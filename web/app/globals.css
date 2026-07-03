@@ -4,8 +4,9 @@
 
 :root {
   color-scheme: dark;
-  --grid-line: rgba(238, 241, 247, 0.045);
-  --grid-line-strong: rgba(238, 241, 247, 0.07);
+  /* Faint white blueprint lines — the brand anchor, on true-black paper. */
+  --grid-line: rgba(255, 255, 255, 0.05);
+  --grid-line-strong: rgba(255, 255, 255, 0.08);
 }
 
 @layer base {
@@ -41,8 +42,9 @@
     @apply rounded-xl2 border border-ink/[0.08] bg-paper-100 shadow-card;
   }
 
+  /* Form micro-labels — mono 10.5px, wide-tracked, dim (design handoff tokens). */
   .field-label {
-    @apply mb-1.5 block font-mono text-[11px] uppercase tracking-[0.14em] text-ink-500
+    @apply mb-[9px] block font-mono text-[10.5px] font-medium uppercase tracking-[0.18em] text-ink-300
       transition-colors duration-200;
   }
   /* The label answers the focused input — quiet, but you feel the form respond. */
@@ -50,9 +52,10 @@
     @apply text-accent;
   }
 
+  /* Inputs per the handoff: white-alpha fill + border that both brighten on focus. */
   .input {
-    @apply w-full rounded-xl border border-ink/15 bg-paper-200/80 px-3.5 py-2.5 text-sm text-ink
-      transition placeholder:text-ink-300 focus:border-accent focus:bg-paper-200 focus:ring-4 focus:ring-accent/15;
+    @apply w-full rounded-xl border border-white/[0.13] bg-white/[0.04] px-4 py-3.5 text-[15px] text-ink
+      transition placeholder:text-[#5c5c64] focus:border-white/45 focus:bg-white/[0.06];
   }
 
   .btn {
@@ -64,8 +67,9 @@
     @apply btn bg-ink text-paper-100 shadow-card hover:-translate-y-0.5 hover:shadow-lift
       active:translate-y-0 disabled:translate-y-0 disabled:scale-100 disabled:opacity-40 disabled:shadow-card;
   }
+  /* White CTA — carries DARK text (white bg; white-on-white would be invisible). */
   .btn-accent {
-    @apply btn bg-accent text-white hover:-translate-y-0.5 hover:bg-accent-600 hover:shadow-glow
+    @apply btn bg-accent font-semibold text-paper hover:-translate-y-0.5 hover:bg-accent-600 hover:shadow-glow
       active:translate-y-0 disabled:translate-y-0 disabled:scale-100 disabled:opacity-50 disabled:shadow-none;
   }
   .btn-ghost {
@@ -114,9 +118,17 @@
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
 
-  /* Mono section index — the "drawing number" stamped on every sheet. */
+  /* Mono section kicker — "0N — Label" beside a 26px rule (design handoff). */
   .sheet-index {
-    @apply font-mono text-[11px] uppercase tracking-[0.18em] text-accent;
+    @apply font-mono text-[11px] font-medium uppercase tracking-[0.2em] text-ink-500;
+  }
+
+  /* The serif-italic accent word inside display headings — one per section,
+     a step brighter (pure white) and a step larger than its parent. */
+  .word-accent {
+    @apply font-serif font-normal italic text-accent;
+    font-size: 1.16em;
+    letter-spacing: 0;
   }
 
   /* The memorable anchor: a faint engineering-blueprint grid. */
@@ -140,6 +152,12 @@
   /* Wizard step / results-tab content entrance (re-mounted via key). */
   .step-in {
     animation: fade-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  /* Wizard panel body on step change — 16px rise + fade, 550ms primary ease
+     (design handoff §3 "panel transition"). */
+  .panel-in {
+    animation: panel-in 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   /* The reward for checking off a task: a one-shot emerald wash + a tiny spring in scale.
@@ -184,7 +202,7 @@
     will-change: transform;
   }
 
-  /* Light sweep across the accent CTA on hover. */
+  /* Dark sweep across the (white) accent CTA on hover — a white sweep would be invisible. */
   .btn-accent {
     position: relative;
     overflow: hidden;
@@ -194,7 +212,7 @@
     position: absolute;
     inset: 0;
     transform: translateX(-135%) skewX(-18deg);
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+    background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.1), transparent);
     transition: transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
   }
   .btn-accent:hover::before {
@@ -232,7 +250,10 @@
   .toggle:checked {
     @apply bg-accent;
   }
+  /* On the gold checked track the knob flips DARK — a white knob on gold fails the
+     3:1 non-text contrast minimum (WCAG 1.4.11). */
   .toggle:checked::after {
+    @apply bg-paper;
     transform: translateX(16px);
   }
 }
@@ -240,6 +261,17 @@
 @keyframes underline-grow {
   to {
     transform: scaleX(1);
+  }
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 

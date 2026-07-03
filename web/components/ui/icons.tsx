@@ -73,6 +73,37 @@ export function Refresh(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
+// ── 24-grid line icons for the "Why AEO Studio" trust cards (design handoff §4) ──
+
+export function ChartUp(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base({ viewBox: "0 0 24 24", width: 20, height: 20, ...props })}>
+      <path d="M3 3v18h18" />
+      <path d="M6 15l4.5-5.5 3.5 3L19 6" />
+    </svg>
+  );
+}
+
+export function ShieldCheck(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base({ viewBox: "0 0 24 24", width: 20, height: 20, ...props })}>
+      <path d="M12 3l7 3v5c0 4.8-3.2 7.9-7 10-3.8-2.1-7-5.2-7-10V6z" />
+      <path d="M9.3 12l2 2 3.6-4.2" />
+    </svg>
+  );
+}
+
+export function DocLines(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base({ viewBox: "0 0 24 24", width: 20, height: 20, ...props })}>
+      <rect x="4" y="3" width="16" height="18" rx="2.5" />
+      <path d="M8.5 8.5h7" />
+      <path d="M8.5 12.5h7" />
+      <path d="M8.5 16.5h4" />
+    </svg>
+  );
+}
+
 export function Sparkle(props: React.SVGProps<SVGSVGElement>) {
   return (
     <svg {...base(props)}>
