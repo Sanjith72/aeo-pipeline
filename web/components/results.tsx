@@ -308,8 +308,12 @@ export function ResultsView({
 
   // The plan/tracker — rendered on the Overview tab (its home now), and reused on the
   // no-profile fallback "Your plan" tab. Defined once so there's a single PlanPanel.
+  // `visible` lets the always-mounted subtree defer celebrations and "viewed" analytics
+  // until the user can actually see it.
+  const planVisible = tab === "overview" || tab === "kit";
   const planPanel = (
     <PlanPanel
+      visible={planVisible}
       deliverables={deliverables}
       loading={delivLoading}
       slowMode={aiPersonalization}
@@ -369,29 +373,33 @@ export function ResultsView({
         ))}
       </div>
 
-      <div
-        key={tab}
-        id={`panel-${tab}`}
-        role="tabpanel"
-        aria-labelledby={`tab-${tab}`}
-        className="animate-fade-in"
-      >
-        {tab === "overview" && profile && (
-          <>
-            {/* The plan/tracker leads the page — the Quest map is the first thing the user
-                sees, no tab switch needed — with the score and its lift story (FixImpact)
-                directly below, then the profile detail. */}
-            {planPanel}
-            <ScoreRing profile={profile} className="mb-6 mt-8" />
-            <FixImpact data={recheck} />
-            <OverviewPanel profile={profile} auditJob={auditJob} />
-          </>
-        )}
-        {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
-        {tab === "actions" && profile && <RoadmapPanel profile={profile} />}
-        {tab === "strategy" && deliverables?.strategy && <StrategyPanel strategy={deliverables.strategy} />}
-        {/* Fallback only when there's no profile (no Overview tab) — see the tabs list. */}
-        {tab === "kit" && planPanel}
+      {/* One persistent tabpanel hosts every tab's content, its id/label following the active
+          tab so each tab button's aria-controls resolves to the panel that really holds what's
+          on screen. Inside it, the plan/tracker leads the page — the Quest map is the first
+          thing the user sees on the Overview tab (or the no-profile "Your plan" fallback) — and
+          stays MOUNTED across tab switches (hidden, not unmounted, mirroring TrackerView's own
+          Map ⇄ List handling): leaving and returning must not re-sync milestones (a DB write),
+          re-fire analytics, or reset the toggle / open phases — and the plan keeps auto-building
+          on load even when another tab opens first. */}
+      <div id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`}>
+        <div hidden={!planVisible} className="animate-fade-in">
+          {planPanel}
+        </div>
+        <div key={tab} className="animate-fade-in">
+          {tab === "overview" && profile && (
+            <>
+              {/* Below the tracker: the score and its lift story (FixImpact), then the
+                  profile detail. */}
+              <ScoreRing profile={profile} className="mb-6 mt-8" />
+              <FixImpact data={recheck} />
+              <OverviewPanel profile={profile} auditJob={auditJob} />
+            </>
+          )}
+          {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
+          {tab === "actions" && profile && <RoadmapPanel profile={profile} />}
+          {tab === "strategy" && deliverables?.strategy && <StrategyPanel strategy={deliverables.strategy} />}
+          {/* "kit" (the no-profile fallback) is fully served by the always-mounted plan panel above. */}
+        </div>
       </div>
     </div>
   );
@@ -1279,6 +1287,7 @@ function PhasedPlanView({
   initialDone,
   serverBacked = false,
   score = null,
+  visible = true,
 }: {
   plan: StructuredPlan;
   storageKey: string;
@@ -1288,6 +1297,8 @@ function PhasedPlanView({
   initialDone?: string[];
   serverBacked?: boolean;
   score?: number | null;
+  // False while the hosting panel is mounted but hidden (results tabs keep the plan mounted).
+  visible?: boolean;
 }) {
   const [done, setDone] = useState<Set<string>>(new Set());
   const [hoverId, setHoverId] = useState<string | null>(null);
@@ -1309,12 +1320,14 @@ function PhasedPlanView({
     }
   }, [storageKey, serverBacked, initialDone]);
 
-  // fire plan_viewed once, with the quick-win ids the metrics' completion rate keys on
+  // fire plan_viewed once the plan is actually on screen — the panel can be mounted but
+  // hidden behind another results tab, and the metrics' completion rate keys its presented
+  // ids on this event, so a hidden fire would skew the denominator
   useEffect(() => {
-    if (planViewed.current) return;
+    if (planViewed.current || !visible) return;
     planViewed.current = true;
     api.track("plan_viewed", { quick_win_ids: plan.quick_win_ids, total: plan.total });
-  }, [plan]);
+  }, [plan, visible]);
 
   function toggle(task: PlanTask) {
     setDone((prev) => {
@@ -1630,6 +1643,7 @@ function BuildProgress({ slowMode }: { slowMode: boolean }) {
 }
 
 function PlanPanel({
+  visible,
   deliverables,
   loading,
   slowMode,
@@ -1646,6 +1660,9 @@ function PlanPanel({
   personalizeProgress,
   aiPersonalization,
 }: {
+  // False while this panel is mounted but hidden behind another results tab — the tracker
+  // below defers celebrations and "viewed" analytics until the user can actually see it.
+  visible: boolean;
   deliverables: DeliverablesResponse | null;
   loading: boolean;
   slowMode: boolean;
@@ -1722,9 +1739,9 @@ function PlanPanel({
         // weekly crawl auto-verifies. Without one (brief-only flow), fall back to the
         // local, offline checklist so the experience still works with no DB/site.
         domain ? (
-          <TrackerView domain={domain} plan={deliverables.plan} businessName={businessName} cmsType={cmsType} />
+          <TrackerView domain={domain} plan={deliverables.plan} businessName={businessName} cmsType={cmsType} visible={visible} />
         ) : (
-          <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} />
+          <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} visible={visible} />
         )
       ) : (
         <div className="rounded-xl border border-dashed border-ink/15 p-8 text-center">

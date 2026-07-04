@@ -21,6 +21,7 @@ export function PhaseTab({
   shareUrl,
   onStatus,
   onPhaseComplete,
+  visible = true,
 }: {
   phase: QuestPhase;
   theme: QuestTheme;
@@ -29,6 +30,8 @@ export function PhaseTab({
   shareUrl: string | null;
   onStatus: (taskKey: string, status: MilestoneStatus) => void;
   onPhaseComplete: (phase: QuestPhase) => void;
+  // False while the map is mounted but hidden — one-shot beats hold until it can be seen.
+  visible?: boolean;
 }) {
   const reduced = useReducedMotion();
   const [justUnlocked, setJustUnlocked] = useState(false);
@@ -36,13 +39,24 @@ export function PhaseTab({
 
   useEffect(() => {
     if (wasLocked.current && !phase.locked) {
+      // Unlocked while hidden (e.g. from the List view): keep the latch so the beat
+      // plays the first time the map is actually shown instead of burning invisibly.
+      if (!visible) return;
+      wasLocked.current = false;
       setJustUnlocked(true);
-      const t = setTimeout(() => setJustUnlocked(false), 1400);
-      wasLocked.current = phase.locked;
-      return () => clearTimeout(t);
+      return;
     }
     wasLocked.current = phase.locked;
-  }, [phase.locked]);
+  }, [phase.locked, visible]);
+
+  // Teardown in its own effect, keyed only on the badge state: if it shared the effect
+  // above, a mid-beat `visible` flip would cancel the timer without rescheduling it and
+  // strand the "Unlocked!" badge (and its aria-live text) for the whole session.
+  useEffect(() => {
+    if (!justUnlocked) return;
+    const t = setTimeout(() => setJustUnlocked(false), 1400);
+    return () => clearTimeout(t);
+  }, [justUnlocked]);
 
   const panelId = `quest-phase-${phase.key}`;
   const lockState = phase.locked && !justUnlocked;
@@ -123,6 +137,7 @@ export function PhaseTab({
             shareUrl={shareUrl}
             onStatus={onStatus}
             onPhaseComplete={onPhaseComplete}
+            visible={visible}
           />
         </div>
       )}

@@ -342,6 +342,9 @@ export default function Page() {
     setError(null);
     setPlan(null);
     setDeliverables(null);
+    // A stale build error from a previous run would suppress PlanPanel's autobuild
+    // (its effect is gated on !error), so the new plan must start with a clean slate.
+    setDelivError(null);
     setAuditJob(null);
     setDeepProfile(null);
     setLoading(true);
@@ -421,6 +424,7 @@ export default function Page() {
     setError(null);
     setPlan(null);
     setDeliverables(null);
+    setDelivError(null); // same clean slate as createPlan — see the note there
     setAuditJob(null);
     setDeepProfile(null);
 

@@ -2,18 +2,19 @@
 
 // The Quest Map — the gamified presentation of the implementation tracker. Three phase tabs
 // (Pirate / Dungeon / Space), each a themed map of enemy-nodes you defeat by completing the
-// real task underneath. A drop-in alternative to <MilestoneDashboard>: same data, same server
-// status + weekly verification; coins/enemies are honest projections, never invented progress.
+// real task underneath. Renders the shared QuestTracker owned by TrackerView (the same
+// instance the List view reads), so both presentations always agree; coins/enemies are
+// honest projections, never invented progress.
 
 import { useEffect, useRef, useState } from "react";
 
 import { AnimatePresence, m, Tally, useReducedMotion } from "@/components/motion/primitives";
 import { themeForPhase } from "@/lib/quest/theme";
 import type { QuestPhase } from "@/lib/quest/types";
-import type { StructuredPlan } from "@/lib/types";
+import type { MilestoneStatus } from "@/lib/types";
 import { api } from "@/lib/api";
 import { PhaseTab } from "./PhaseTab";
-import { useQuestTracker } from "./useQuestTracker";
+import type { QuestTracker } from "./useQuestTracker";
 
 const CONFETTI_COLORS = ["#ffffff", "#d4d4d8", "#a1a1aa", "#e5e5e5", "#f4f4f5"];
 
@@ -38,33 +39,40 @@ function Confetti({ fireKey }: { fireKey: number }) {
 
 export function QuestMap({
   domain,
-  plan,
-  businessName,
-  cmsType,
+  tracker,
+  visible = true,
 }: {
   domain: string;
-  plan: StructuredPlan;
-  businessName: string;
-  cmsType?: string | null;
+  tracker: QuestTracker;
+  // False while the map is mounted but not on screen (List toggle or another results tab).
+  // Celebrations and "opened" analytics wait for the first moment it is actually visible.
+  visible?: boolean;
 }) {
-  const { model, shareUrl, error, verifying, verifyNote, setStatus, checkSite } = useQuestTracker({
-    domain,
-    plan,
-    businessName,
-    cmsType,
-  });
+  const { model, shareUrl, error, verifying, lastVerify, checkSite } = tracker;
+  const verifyNote = lastVerify
+    ? lastVerify.newlyVerified > 0
+      ? `Verified live — ${lastVerify.newlyVerified} change${lastVerify.newlyVerified === 1 ? "" : "s"} confirmed on your site. Bonus coins awarded.`
+      : "We checked your site — nothing new is live yet. Publish a change, then check again."
+    : null;
+  // Fire the quest event before the shared write so telemetry keeps naming this surface.
+  const setStatus = (taskKey: string, status: MilestoneStatus) => {
+    api.track("quest_task_status", { task_key: taskKey, status });
+    return tracker.setStatus(taskKey, status);
+  };
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [celebrateKey, setCelebrateKey] = useState(0);
   const didInit = useRef(false);
 
-  // Default to single-open on first load: the first unlocked, not-yet-finished phase.
+  // Default to single-open on first SHOWING: the first unlocked, not-yet-finished phase.
+  // Gated on visibility so a hidden-mounted map (List toggle, other results tab) doesn't
+  // claim a quest_view_opened the user never saw — it fires on first reveal instead.
   useEffect(() => {
-    if (didInit.current || !model || model.phases.length === 0) return;
+    if (didInit.current || !visible || !model || model.phases.length === 0) return;
     const start = model.phases.find((p) => !p.locked && !p.isComplete) ?? model.phases[0];
     setOpen(new Set([start.key]));
     didInit.current = true;
     api.track("quest_view_opened", { domain });
-  }, [model, domain]);
+  }, [model, domain, visible]);
 
   function toggle(key: string) {
     setOpen((prev) => {
@@ -158,6 +166,7 @@ export function QuestMap({
           shareUrl={shareUrl}
           onStatus={setStatus}
           onPhaseComplete={handlePhaseComplete}
+          visible={visible}
         />
       ))}
     </div>

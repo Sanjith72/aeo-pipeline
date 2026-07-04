@@ -56,8 +56,8 @@ Mirror the field into the TS `PlanTask`. Extend `tests/unit/test_packager.py`.
 
 ## Components — `web/components/quest/`
 
-- `QuestMap.tsx` — 3-phase accordion shell + global CoinBank; owns data via `useQuestTracker`.
-- `useQuestTracker.ts` — sync on mount, optimistic `setStatus`, `verify` (mirrors the List view's data ownership; the List view is left untouched/de-risked).
+- `QuestMap.tsx` — 3-phase accordion shell + global CoinBank; renders the shared tracker passed down from `TrackerView`.
+- `useQuestTracker.ts` — sync on mount, optimistic `setStatus`, `verify`, share-link rotation. The SINGLE data owner for the tracker: one instance lives in `TrackerView` and feeds both the Quest Map and the List view, so the two presentations can never disagree.
 - `PhaseTab.tsx` — header (name, progress bar, coin total, lock) + collapsible body + unlock anim.
 - `PhaseMap.tsx` — SVG winding path + nodes; **vertical under ~480px**; orchestrates the 4-step completion FX + coin burst.
 - `EnemyNode.tsx` — enemy (emoji sized by impact), `locked`/`active`/`completed` visuals.

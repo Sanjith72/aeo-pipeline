@@ -49,12 +49,16 @@ export function PhaseMap({
   shareUrl,
   onStatus,
   onPhaseComplete,
+  visible = true,
 }: {
   phase: QuestPhase;
   theme: QuestTheme;
   shareUrl: string | null;
   onStatus: (taskKey: string, status: MilestoneStatus) => void;
   onPhaseComplete: (phase: QuestPhase) => void;
+  // False while the map is mounted but hidden (List toggle / another results tab). The
+  // one-shot finale must not play — and be consumed — where nobody can see it.
+  visible?: boolean;
 }) {
   const reduced = useReducedMotion();
   const narrow = useIsNarrow();
@@ -77,10 +81,13 @@ export function PhaseMap({
   const live = selected ? phase.tasks.find((t) => t.id === selected.id) ?? selected : null;
 
   // Fire the chest finale exactly when the phase transitions to complete (never on a reload
-  // that's already complete).
+  // that's already complete). If the completion lands while the map is hidden (e.g. the last
+  // task was ticked off in the List view of the shared tracker), hold the un-consumed latch
+  // so the celebration — and quest_phase_complete, via onPhaseComplete — fires on first reveal.
   const wasComplete = useRef(phase.isComplete);
   useEffect(() => {
     if (phase.isComplete && !wasComplete.current) {
+      if (!visible) return;
       wasComplete.current = true;
       onPhaseComplete(phase);
       // The coin-burst confetti is motion-only, but the "Phase Complete!" banner is a required
@@ -90,12 +97,19 @@ export function PhaseMap({
         setBurst({ key: burstKey.current, xPct: chest.x, yPct: chest.y, coins: phase.chestBonus, color: theme.coinColor, bonus: true });
       }
       setFinale(true);
-      const t = setTimeout(() => setFinale(false), reduced ? 2200 : 2600);
-      return () => clearTimeout(t);
     } else if (!phase.isComplete) {
       wasComplete.current = false; // allow the finale to replay if a task is later un-marked
     }
-  }, [phase.isComplete, reduced]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [phase.isComplete, reduced, visible]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The banner teardown lives in its own effect, keyed only on `finale`: if it shared the
+  // effect above, a mid-celebration `visible` flip would run that effect's cleanup — cancelling
+  // the timer without rescheduling it — and strand the overlay on permanently.
+  useEffect(() => {
+    if (!finale) return;
+    const t = setTimeout(() => setFinale(false), reduced ? 2200 : 2600);
+    return () => clearTimeout(t);
+  }, [finale, reduced]);
 
   function complete(task: QuestTask) {
     const p = stops[task.index] ?? chest;

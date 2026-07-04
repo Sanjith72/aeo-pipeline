@@ -1,7 +1,8 @@
 "use client";
 
-// The implementation tracker with a List ⇄ Map toggle. Both views render the same persisted,
-// server-verified milestone data; the Map (Quest) is the gamified presentation, the List is
+// The implementation tracker with a List ⇄ Map toggle. Both views render ONE shared
+// QuestTracker instance (owned here), so progress, verify results, and the share link can
+// never disagree between them; the Map (Quest) is the gamified presentation, the List is
 // the plain, dense view. Defaults to the Map so the journey leads, with List one click away.
 
 import { useState } from "react";
@@ -10,6 +11,7 @@ import { api } from "@/lib/api";
 import { MilestoneDashboard } from "../MilestoneDashboard";
 import type { StructuredPlan } from "@/lib/types";
 import { QuestMap } from "./QuestMap";
+import { useQuestTracker } from "./useQuestTracker";
 
 type View = "map" | "list";
 
@@ -23,16 +25,23 @@ export function TrackerView({
   plan,
   businessName,
   cmsType,
+  visible = true,
 }: {
   domain: string;
   plan: StructuredPlan;
   businessName: string;
   cmsType?: string | null;
+  // False while the tracker is mounted but hidden behind another results tab — the map
+  // defers its celebrations and "opened" analytics until it can actually be seen.
+  visible?: boolean;
 }) {
+  // The single tracker instance both views render — syncs once, then every status change,
+  // verify, or link rotation from either view lands in the same state.
+  const tracker = useQuestTracker({ domain, plan, businessName, cmsType });
   const [view, setView] = useState<View>("map");
-  // Track which views have ever been shown. Both stay mounted once opened and toggle via CSS,
-  // so switching never re-syncs milestones (a DB write) or drops an in-flight optimistic
-  // status change — the inactive view simply keeps its state behind `hidden`.
+  // Track which views have ever been shown. Both stay mounted once opened and toggle via
+  // CSS, so switching never drops presentation state (open phases, expanded how-tos) — the
+  // inactive view simply waits behind `hidden`.
   const [mounted, setMounted] = useState<Set<View>>(() => new Set<View>(["map"]));
 
   return (
@@ -68,12 +77,12 @@ export function TrackerView({
 
       {mounted.has("map") && (
         <div hidden={view !== "map"}>
-          <QuestMap domain={domain} plan={plan} businessName={businessName} cmsType={cmsType} />
+          <QuestMap domain={domain} tracker={tracker} visible={visible && view === "map"} />
         </div>
       )}
       {mounted.has("list") && (
         <div hidden={view !== "list"}>
-          <MilestoneDashboard domain={domain} plan={plan} businessName={businessName} cmsType={cmsType} />
+          <MilestoneDashboard tracker={tracker} />
         </div>
       )}
     </div>

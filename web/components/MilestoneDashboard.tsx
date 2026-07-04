@@ -1,17 +1,19 @@
 "use client";
 
-// The Implementation Dashboard — the "Final Plan" as persisted, trackable milestones.
-// Unlike the localStorage checklist, progress here lives on the server (per site) and
-// advances two ways: the owner toggles a task, OR the weekly verification crawl detects
-// the recommended artifact live on the site and auto-marks it "Verified ✓". The headline
-// progress bar reflects verified-vs-total across every milestone.
+// The Implementation Dashboard — the "Final Plan" as persisted, trackable milestones,
+// rendered as the plain List view of the tracker. Progress lives on the server (per site)
+// and advances two ways: the owner toggles a task, OR the weekly verification crawl detects
+// the recommended artifact live on the site and auto-marks it "Verified ✓". The data itself
+// is owned by the shared QuestTracker (one instance in TrackerView, read by both the List
+// and the Quest Map), so the two views never disagree.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "@/lib/api";
-import type { Milestone, MilestoneDashboard as Dashboard, MilestoneStatus, MilestoneTask, StructuredPlan } from "@/lib/types";
+import type { Milestone, MilestoneStatus, MilestoneTask } from "@/lib/types";
 import { manualCopyHint, selectField, useCopyAction } from "@/lib/copy";
 import { Check } from "./ui/icons";
 import { TaskHowTo } from "./TaskHowTo";
+import type { QuestTracker } from "./quest/useQuestTracker";
 
 export const STATUS_META: Record<MilestoneStatus, { label: string; pill: string; dot: string }> = {
   pending: {
@@ -33,96 +35,33 @@ export const STATUS_META: Record<MilestoneStatus, { label: string; pill: string;
 
 const STATUS_ORDER: MilestoneStatus[] = ["pending", "in_progress", "verified_completed"];
 
-export function MilestoneDashboard({
-  domain,
-  plan,
-  businessName,
-  cmsType,
-}: {
-  domain: string;
-  plan: StructuredPlan;
-  businessName: string;
-  // Detected CMS ('wordpress' | 'shopify' | 'unknown' | null) — sent with the sync so the
-  // dashboard's "I'll do it myself" steps come back tailored to the platform.
-  cmsType?: string | null;
-}) {
-  const [dash, setDash] = useState<Dashboard | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [verifying, setVerifying] = useState(false);
-  const [verifyNote, setVerifyNote] = useState<string | null>(null);
-  const [rotating, setRotating] = useState(false);
+export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
+  const { dash, error, verifying, lastVerify, rotating, shareUrl, checkSite } = tracker;
+  const verifyNote = lastVerify
+    ? lastVerify.newlyVerified > 0
+      ? `Nice — we found ${lastVerify.newlyVerified} change${lastVerify.newlyVerified === 1 ? "" : "s"} live and marked ${lastVerify.newlyVerified === 1 ? "it" : "them"} verified.`
+      : "We checked your site — nothing new is live yet. Publish a change, then check again."
+    : null;
 
-  // Persist (sync) the generated plan as milestones on mount, then render what comes
-  // back. Idempotent server-side, so this is safe on every revisit — existing progress
-  // and crawl-verified status are preserved.
-  useEffect(() => {
-    let cancelled = false;
-    setError(null);
-    api
-      .syncMilestones({ domain, name: businessName || undefined, plan, cms_type: cmsType ?? undefined })
-      .then((d) => !cancelled && setDash(d))
-      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)));
-    return () => {
-      cancelled = true;
-    };
-  }, [domain, businessName, plan, cmsType]);
+  // Fire the list event before the shared write so telemetry keeps naming this surface.
+  // The segmented control re-sends the current status on a same-state click — skip those.
+  const setStatus = (task: MilestoneTask, status: MilestoneStatus) => {
+    if (task.status === status) return;
+    api.track("milestone_task_status", { task_key: task.task_key, status });
+    void tracker.setStatus(task.task_key, status);
+  };
 
-  const setStatus = useCallback(
-    async (task: MilestoneTask, status: MilestoneStatus) => {
-      if (task.status === status) return;
-      // optimistic: reflect immediately, reconcile with the server's recomputed roll-up
-      setDash((prev) => prev && patchTask(prev, task.task_key, status));
-      api.track("milestone_task_status", { task_key: task.task_key, status });
-      try {
-        setDash(await api.setMilestoneTask({ domain, task_key: task.task_key, status }));
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [domain],
-  );
-
-  // Revoke the current share link and swap in the fresh token. Updating share_token on the
-  // dashboard re-derives shareUrl, which flows down to every task expander — so all the
-  // mailto: links and textareas below rebuild with the new link automatically.
-  const rotateLink = useCallback(async () => {
+  // Rotation is destructive for anyone holding the old link — hard-confirm before the
+  // shared tracker revokes it and re-derives shareUrl for every expander in both views.
+  const rotateLink = () => {
     if (
       !window.confirm(
         "This will permanently disable the current link for anyone who has it. Are you sure?",
       )
     )
       return;
-    setRotating(true);
-    setError(null);
-    try {
-      const { share_token } = await api.rotateShareLink(domain);
-      setDash((prev) => (prev ? { ...prev, share_token } : prev));
-      api.track("dev_handoff_link_rotated", {});
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setRotating(false);
-    }
-  }, [domain]);
-
-  const checkSite = useCallback(async () => {
-    setVerifying(true);
-    setVerifyNote(null);
-    try {
-      const res = await api.verifyMilestones(domain);
-      setDash(res.dashboard);
-      const n = res.summary.newly_verified;
-      setVerifyNote(
-        n > 0
-          ? `Nice — we found ${n} change${n === 1 ? "" : "s"} live and marked ${n === 1 ? "it" : "them"} verified.`
-          : "We checked your site — nothing new is live yet. Publish a change, then check again.",
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setVerifying(false);
-    }
-  }, [domain]);
+    void tracker.rotateShareLink();
+  };
 
   if (error && !dash) {
     return (
@@ -142,21 +81,18 @@ export function MilestoneDashboard({
 
   const { progress, milestones } = dash;
   const done = progress.pct === 100 && progress.total > 0;
-  // The Developer Handoff link points at this app's public read-only route. Built from
-  // the share token the owner endpoints mint; null until it (and `window`) are available.
-  const shareUrl =
-    dash.share_token && typeof window !== "undefined"
-      ? `${window.location.origin}/share/${dash.share_token}`
-      : null;
 
   return (
     <div className="space-y-6">
       <ManageAccess shareUrl={shareUrl} rotating={rotating} onRotate={rotateLink} />
 
-      {/* headline progress */}
+      {/* headline progress — the visible "Your implementation roadmap" heading lives in
+          TrackerView (above the List ⇄ Map toggle), so this card shows the count alone; the
+          sr-only heading keeps the outline from filing the roadmap under "Manage developer
+          access" (the previous card's h3). */}
       <div className="card p-5 sm:p-6">
-        <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="text-base font-semibold">Your implementation roadmap</h3>
+        <h3 className="sr-only">Roadmap progress</h3>
+        <div className="mb-1.5 flex items-baseline justify-end">
           <span className="font-mono text-xs text-ink-500">
             {progress.verified} / {progress.total} verified
           </span>
@@ -426,21 +362,4 @@ function verifyHint(task: MilestoneTask): string {
     default:
       return "Mark this done yourself once complete.";
   }
-}
-
-// Optimistic local patch: set one task's status and re-derive the affected counts so the
-// UI updates instantly before the server's recomputed dashboard arrives.
-function patchTask(dash: Dashboard, taskKey: string, status: MilestoneStatus): Dashboard {
-  const milestones = dash.milestones.map((m) => ({
-    ...m,
-    tasks: m.tasks.map((t) => (t.task_key === taskKey ? { ...t, status, status_source: "manual" as const } : t)),
-  }));
-  const all = milestones.flatMap((m) => m.tasks);
-  const verified = all.filter((t) => t.status === "verified_completed").length;
-  const inProgress = all.filter((t) => t.status === "in_progress").length;
-  const total = all.length;
-  return {
-    milestones,
-    progress: { total, verified, in_progress: inProgress, pct: total ? Math.round((verified / total) * 100) : 0 },
-  };
 }
