@@ -4,16 +4,20 @@ Restaurants, …) instead of the generic coarse label.
 
 Two sources, tried in order by the caller:
 
-  1. **Wikidata** (:func:`resolve_wikidata_industry`) — the deterministic, no-LLM path.
+  1. **Wikidata** (:func:`resolve_wikidata_profile`) — the deterministic, no-LLM path.
      Resolve the site by its official website (P856) to a Wikidata item, read the
      ``industry`` (P452) and ``instance of`` (P31) labels, drop generic classes
      ("business enterprise", "company", …), and map what's left to a vertical.
+     The default retrieval is the **entity-API fast path** (an exact ``haswbstatement``
+     P856 search + ``wbgetentities``, measured ~0.4–2s end to end); the WDQS SPARQL
+     scan (~38–50s uncontended — the reason enrichment was once gated off) remains only
+     behind the injectable ``fetch`` seam.
   2. **Crawl text** (:func:`classify_vertical`) — a keyword classifier over the crawled
      homepage text / services / topic, for sites with no Wikidata entity.
 
 Both funnel through one ordered keyword map (:func:`match_vertical`) so a raw label and a
 chunk of page text resolve to the same controlled vocabulary. Pure + offline-testable:
-the SPARQL resolver takes an injectable fetch.
+both resolvers take an injectable fetch.
 """
 
 from __future__ import annotations
@@ -45,18 +49,27 @@ _KEYWORD_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("cybersecur", "security software", "computer security", "infosec", "information security"), "Cybersecurity"),
     (("hospital", "health care", "healthcare", "medical", "clinic", "dental", "dentist",
       "pharmaceutic", "biotech", "physician", "nursing", "therapy"), "Healthcare"),
+    # Insurance stays above Real Estate: title insurers self-describe with real-estate
+    # tokens ("title insurance for real estate closings") but ARE insurance.
     (("insurance", "insurer"), "Insurance"),
+    # Real Estate precedes Finance: a listings portal legitimately says both "real estate"
+    # and "mortgages" (zillow), and with Finance first the mortgage keyword mislabeled it.
+    # A business that self-describes with an explicit real-estate token IS one; a pure
+    # lender says "mortgage" without it and still lands on Finance below.
+    (("real estate", "realty", "realtor", "property management", "property developer"), "Real Estate"),
     (("bank", "banking", "financial service", "finance", "investment", "asset management",
       "fintech", "credit union", "lending", "mortgage", "wealth management", "brokerage"), "Finance"),
-    (("real estate", "realty", "realtor", "property management", "property developer"), "Real Estate"),
     (("restaurant", "fast food", "cafe", "café", "catering", "food service", "diner", "bistro",
       "taqueria", "pizzeria", "steakhouse", "eatery", "food truck", "coffeehouse", "coffee shop"), "Restaurants"),
     (("e-commerce", "ecommerce", "online store", "online shop", "marketplace", "online retail"), "E-commerce"),
     (("retail", "supermarket", "grocery", "department store", "retailer"), "Retail"),
     (("law firm", "legal service", "attorney", "lawyer", "litigation", "law practice"), "Legal"),
     (("education", "school", "university", "college", "academy", "e-learning", "edtech", "tutoring"), "Education"),
+    # "managed it!" is exact-ended (see the "!" marker in the pattern builder): it matches
+    # "Managed IT Services" / "Managed IT for business" but not "managed itineraries".
     (("software", "saas", "information technology", "cloud computing", "internet company",
-      "technology company", "computer software", "web development", "it service"), "Software / SaaS"),
+      "technology company", "computer software", "web development", "it service",
+      "managed it!"), "Software / SaaS"),
     (("manufactur", "industrial", "factory", "fabrication"), "Manufacturing"),
     # "builder" alone is too broad — it mislabels "website/app/page/form builder" SaaS as
     # Construction (squarespace, figma). Require a construction-specific form instead (these
@@ -67,8 +80,13 @@ _KEYWORD_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("hotel", "hospitality", "tourism", "travel agency", "airline", "resort", "lodging"), "Hospitality / Travel"),
     (("marketing", "advertising", "public relations", "seo agency", "digital agency", "branding"), "Marketing / Advertising"),
     (("media", "publishing", "newspaper", "broadcast", "magazine", "entertainment", "film", "music"), "Media / Publishing"),
-    (("automotive", "automobile", "car dealer", "vehicle", "auto repair"), "Automotive"),
-    (("non-profit", "nonprofit", "not-for-profit", "charity", "charitable", "ngo", "foundation"), "Nonprofit"),
+    (("automotive", "automobile", "car dealer", "vehicle", "auto repair", "suv",
+      "minivan"), "Automotive"),
+    # "donation" (the noun — deliberately NOT the CTA verb "donate", which leaks into
+    # og/meta on quasi-commercial campaign sites) and "humanitarian" cover relief orgs
+    # whose self-description never says "nonprofit" outright (redcross).
+    (("non-profit", "nonprofit", "not-for-profit", "charity", "charitable", "ngo",
+      "foundation", "donation", "humanitarian"), "Nonprofit"),
     (("energy", "oil and gas", "petroleum", "utility", "renewable", "solar", "electric utility"), "Energy"),
     (("telecommunication", "telecom", "wireless carrier", "mobile network"), "Telecommunications"),
     # "shipping" alone matches the ubiquitous e-commerce phrase "free shipping" — require a
@@ -87,9 +105,17 @@ _KEYWORD_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
 # Each keyword must begin at a WORD BOUNDARY — otherwise naive substring matching fires on
 # mid-word coincidences ("spa" inside "workspace" → Beauty/Wellness; "it" inside "submit").
 # The boundary is only at the START, so the intentional stems still match as prefixes
-# ("cybersecur" → "cybersecurity", "manufactur" → "manufacturing").
+# ("cybersecur" → "cybersecurity", "manufactur" → "manufacturing"). A keyword ending in
+# "!" opts into a TRAILING boundary as well — for phrases whose prefix form collides with
+# unrelated words ("managed it!" must not match "managed itineraries").
+def _keyword_pattern(keyword: str) -> str:
+    if keyword.endswith("!"):
+        return re.escape(keyword[:-1]) + r"\b"
+    return re.escape(keyword)
+
+
 _VERTICAL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
-    (re.compile(r"\b(?:" + "|".join(re.escape(k) for k in keywords) + r")"), vertical)
+    (re.compile(r"\b(?:" + "|".join(_keyword_pattern(k) for k in keywords) + r")"), vertical)
     for keywords, vertical in _KEYWORD_VERTICALS
 )
 
@@ -331,6 +357,167 @@ async def _default_sparql_fetch(query: str) -> dict | None:
     return None
 
 
+# ── entity-API fast path (the default network retrieval) ─────────────────────────
+
+_WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+# Small keyed lookups (statement search + entity fetch), measured ~0.3–0.6s each; a tight
+# per-call timeout keeps the 3-call worst case inside the /api/profile budget.
+_API_TIMEOUT = 6.0
+_MAX_ENTITY_CANDIDATES = 5
+
+# Takes wikidata API params, returns the parsed JSON (or None on any failure).
+ApiFetch = Callable[[dict], Awaitable["dict | None"]]
+
+
+def _p856_variants(reg_domain: str) -> list[str]:
+    """The exact P856 values a site is realistically recorded under — https/http ×
+    www/bare × trailing-slash/none (Mayo Clinic alone carries two different forms).
+    Exact-statement matching replaces the WDQS anchored-regex scan: same precision
+    (never a substring match), a fraction of the cost."""
+    return [
+        f"{scheme}://{www}{reg_domain}{tail}"
+        for scheme in ("https", "http")
+        for www in ("www.", "")
+        for tail in ("", "/")
+    ]
+
+
+def _statement_search_query(reg_domain: str) -> str:
+    """CirrusSearch query matching an item whose official website (P856) IS one of the
+    domain's exact variant forms (``haswbstatement`` supports ``|``-OR'd statements)."""
+    return "haswbstatement:" + "|".join(f"P856={v}" for v in _p856_variants(reg_domain))
+
+
+async def _default_api_fetch(params: dict) -> dict | None:
+    import httpx
+
+    from ..crawl.transport import async_transport
+
+    # Wikimedia APIs want a descriptive User-Agent; force-IPv4 seam like every other client.
+    headers = {"User-Agent": "AEO-Pipeline/1.0 (industry resolver; contact: ops@aeo.local)"}
+    try:
+        async with httpx.AsyncClient(
+            timeout=_API_TIMEOUT, headers=headers, transport=async_transport()
+        ) as client:
+            resp = await client.get(_WIKIDATA_API, params={**params, "format": "json"})
+            if resp.status_code == 200:
+                return resp.json()
+            log.info("wikidata_api_non200", status=resp.status_code)
+    except Exception as exc:  # network hiccup → no Wikidata signal, never fatal
+        log.warning("wikidata_api_failed", error=str(exc))
+    return None
+
+
+def _claim_qids(claims: dict, prop: str) -> list[str]:
+    """The value-entity QIDs of a property's claims (skips novalue/somevalue snaks)."""
+    out: list[str] = []
+    for c in claims.get(prop) or []:
+        value = (((c or {}).get("mainsnak") or {}).get("datavalue") or {}).get("value")
+        if isinstance(value, dict) and value.get("id"):
+            out.append(str(value["id"]))
+    return out
+
+
+async def _profile_via_entity_api(
+    reg_domain: str, api_fetch: ApiFetch
+) -> tuple[WikidataProfile | None, bool]:
+    """Resolve the domain's :class:`WikidataProfile` through the entity API.
+
+    Three keyed calls: exact-P856 statement search → ``wbgetentities`` for the item's
+    claims/description/sitelinks → one labels batch for the claim-value QIDs. Returns
+    ``(profile, cacheable)``: profile is ``None`` on a transient failure of the first
+    two calls (the caller must NOT cache that as a miss) and an all-empty profile when
+    the domain genuinely has no entity. A failed labels batch degrades to the
+    description-only signals rather than failing — but flags the result NON-cacheable,
+    so one Wikimedia hiccup can't pin a location-less profile for the 7-day hit TTL."""
+    search = await api_fetch({
+        "action": "query", "list": "search",
+        "srsearch": _statement_search_query(reg_domain), "srlimit": _MAX_ENTITY_CANDIDATES,
+    })
+    # MediaWiki reports failures as HTTP-200 {"error": {...}} payloads — transient like a
+    # network failure (retry next time), never a genuine no-entity miss.
+    if search is None or "error" in search:
+        return None, False
+    qids = [
+        str(hit.get("title"))
+        for hit in ((search.get("query") or {}).get("search") or [])
+        if isinstance(hit, dict) and re.fullmatch(r"Q\d+", str(hit.get("title") or ""))
+    ]
+    if not qids:
+        return WikidataProfile(), True
+
+    ents = await api_fetch({
+        "action": "wbgetentities", "ids": "|".join(qids),
+        "props": "claims|descriptions|sitelinks|labels", "languages": "en",
+    })
+    if ents is None or "error" in ents:
+        return None, False
+    entities = [
+        e for e in ((ents.get("entities") or {}).values())
+        if isinstance(e, dict) and isinstance(e.get("claims"), dict)
+    ]
+    if not entities:
+        return WikidataProfile(), True
+    # Several entities can share one official website (a global parent plus national
+    # subsidiaries) — most Wikipedia sitelinks = the notable parent, same rule the old
+    # SPARQL subquery used.
+    entity = max(entities, key=lambda e: len(e.get("sitelinks") or {}))
+    claims = entity["claims"]
+    industry_qids = _claim_qids(claims, "P452")
+    instance_qids = _claim_qids(claims, "P31")
+    hq_qids = _claim_qids(claims, "P159")[:1]
+    product_qids = _claim_qids(claims, "P1056")[:_MAX_OFFERINGS]
+    description = (
+        str((((entity.get("descriptions") or {}).get("en")) or {}).get("value") or "").strip()
+        or None
+    )
+
+    label_of: dict[str, str] = {}
+    cacheable = True
+    value_qids = _dedupe_keep_order(
+        [*industry_qids, *instance_qids, *hq_qids, *product_qids], 40
+    )
+    if value_qids:
+        labels = await api_fetch({
+            "action": "wbgetentities", "ids": "|".join(value_qids),
+            "props": "labels", "languages": "en",
+        })
+        # A failed batch means the profile below is missing its location/offerings —
+        # usable for this one response, but not a real answer to pin in the cache.
+        cacheable = labels is not None and "error" not in labels
+        for qid, ent in (((labels or {}).get("entities")) or {}).items():
+            lab = str(((((ent or {}).get("labels") or {}).get("en")) or {}).get("value") or "").strip()
+            if lab:
+                label_of[str(qid)] = lab
+
+    profile = WikidataProfile(description=description)
+    # P452 first (the truest industry signal), then P31 classes; when both are generic
+    # the entity's own one-line description is the tiebreak — it names the vertical in
+    # plain words ("medical practice and medical research group…"), which is exactly
+    # what match_vertical reads.
+    profile.industry = map_wikidata_labels(
+        [label_of[q] for q in industry_qids if q in label_of],
+        [label_of[q] for q in instance_qids if q in label_of],
+    ) or match_vertical(description or "")
+    profile.location = label_of.get(hq_qids[0]) if hq_qids else None
+    # Drop a P1056 offering that merely echoes the brand itself — Nike's "products
+    # produced" is the item "Nike", which answers "what do you offer?" with the
+    # company name. An echo is no offering; better to fall through to the description.
+    entity_label = (
+        str((((entity.get("labels") or {}).get("en")) or {}).get("value") or "")
+        .strip()
+        .lower()
+    )
+    profile.offerings = _dedupe_keep_order(
+        [
+            label_of[q] for q in product_qids
+            if q in label_of and label_of[q].strip().lower() != entity_label
+        ],
+        _MAX_OFFERINGS,
+    )
+    return profile, cacheable
+
+
 # ── response cache ───────────────────────────────────────────────────────────────
 # Wikidata changes rarely and WDQS rate-limits, so cache the resolved vertical per
 # registrable domain in-process (consistent with the app's other in-memory registries).
@@ -408,7 +595,11 @@ async def resolve_wikidata_industry(
 
 
 async def resolve_wikidata_profile(
-    domain: str, *, fetch: SparqlFetch | None = None, use_cache: bool = True
+    domain: str,
+    *,
+    fetch: SparqlFetch | None = None,
+    api_fetch: ApiFetch | None = None,
+    use_cache: bool = True,
 ) -> WikidataProfile:
     """Resolve a domain's richer "About you" facts via Wikidata — a specific industry
     vertical plus headquarters location/country, products produced, and a one-line
@@ -416,31 +607,41 @@ async def resolve_wikidata_profile(
     no matching entity or on any network/parse failure; the caller merges these
     best-source-first behind the crawl signals.
 
-    Shares the injectable ``fetch`` seam and the in-process cache pattern with
-    :func:`resolve_wikidata_industry` (a separate profile cache, same TTL policy). The
-    cache is bypassed when a custom ``fetch`` is injected or ``use_cache=False``."""
+    Retrieval is the entity-API fast path (see :func:`_profile_via_entity_api`) — quick
+    enough for the synchronous ``/api/profile`` budget. A caller that injects the legacy
+    SPARQL ``fetch`` gets the WDQS path instead; ``api_fetch`` injects the fast path's
+    HTTP seam for tests. The in-process cache (same TTL policy as
+    :func:`resolve_wikidata_industry`, separate store) is bypassed when either fetch is
+    injected or ``use_cache=False``."""
     reg = _registrable(domain)
     if not reg or "." not in reg:
         return WikidataProfile()
 
-    cache_on = use_cache and fetch is None
+    cache_on = use_cache and fetch is None and api_fetch is None
     if cache_on:
         hit, value = _cache_get(_PROFILE_CACHE, reg)
         if hit:
             return value if value is not None else WikidataProfile()
 
-    fetch = fetch or _default_sparql_fetch
+    if fetch is not None:
+        # Legacy WDQS/SPARQL seam — kept for callers/tests that inject it.
+        try:
+            data = await fetch(_sparql_query(reg))
+        except Exception as exc:
+            log.warning("wikidata_profile_resolve_failed", domain=domain, error=str(exc))
+            return WikidataProfile()
+        return parse_sparql_profile(data) if data is not None else WikidataProfile()
+
     try:
-        data = await fetch(_sparql_query(reg))
+        profile, cacheable = await _profile_via_entity_api(reg, api_fetch or _default_api_fetch)
     except Exception as exc:
         log.warning("wikidata_profile_resolve_failed", domain=domain, error=str(exc))
         return WikidataProfile()
-
-    # Only a real response is cacheable — a None ``data`` (network/non-200 hiccup) should
-    # retry rather than stick as a cached empty profile.
-    if data is None:
+    # A transient failure (None) must retry next time — only a real answer is cacheable,
+    # whether that answer carries signal (long TTL) or is a genuine no-entity miss. A
+    # labels-degraded profile (cacheable=False) is served once but never pinned.
+    if profile is None:
         return WikidataProfile()
-    profile = parse_sparql_profile(data)
-    if cache_on:
+    if cache_on and cacheable:
         _cache_put(_PROFILE_CACHE, reg, profile, hit=profile.has_signal())
     return profile

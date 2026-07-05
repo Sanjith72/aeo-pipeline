@@ -462,10 +462,10 @@ def test_profile_industry_prefers_wikidata_vertical(monkeypatch) -> None:
     assert body["industry_source"] == "wikidata"
 
 
-def test_profile_wikidata_enrichment_disabled_by_default(monkeypatch) -> None:
-    # With the flag OFF (the production default), a rich Wikidata stub must NOT surface —
-    # the response falls back to crawl/structural signals only, because the WDQS lookup is
-    # too slow to fire inside the endpoint budget so it isn't even consulted.
+def test_profile_wikidata_enrichment_on_by_default(monkeypatch) -> None:
+    # Enrichment ships ON now that the resolver uses the fast entity-API path (the old
+    # WDQS scan was too slow, which is why this used to be gated off). Wikidata is the
+    # best-precision industry source, so it must win over the crawl-classified vertical.
     from aeo.intelligence.industry import WikidataProfile
     from aeo.pipeline import Orchestrator
 
@@ -478,16 +478,15 @@ def test_profile_wikidata_enrichment_disabled_by_default(monkeypatch) -> None:
     monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
     _stub_site_facts(
         monkeypatch,
-        industry="Finance",  # crawl-classified vertical
+        industry="Finance",  # crawl-classified vertical — loses to Wikidata
         wikidata=WikidataProfile(industry="Healthcare", location="London", country="United Kingdom",
                                  offerings=["X"], description="a description"),
     )
     body = client.post("/api/profile", json={"domain": "acme.com"}).json()
-    # Wikidata is ignored entirely: industry from the crawl, location/about not populated.
-    assert body["industry"] == "Finance"
-    assert body["industry_source"] == "crawl"
-    assert body["location"] is None
-    assert body["about"] is None
+    assert body["industry"] == "Healthcare"
+    assert body["industry_source"] == "wikidata"
+    assert body["location"] == "London, United Kingdom"
+    assert body["about"] == "a description"
 
 
 def test_profile_enriches_location_services_about_from_wikidata(monkeypatch) -> None:
@@ -521,6 +520,35 @@ def test_profile_enriches_location_services_about_from_wikidata(monkeypatch) -> 
     assert body["location"] == "London, United Kingdom"  # HQ + country, since crawl had none
     assert body["services"] == ["Endpoint Protection", "Threat Intelligence"]
     assert body["about"] == "British cybersecurity software company"
+
+
+def test_profile_blocked_crawl_still_prefills_offer_from_wikidata_description(monkeypatch) -> None:
+    # mayoclinic-shaped case: the site 403s every fetch (all crawl facts empty), but its
+    # Wikidata entity carries the vertical + a one-line description. "What do you offer"
+    # must surface the description's first clause rather than coming back blank.
+    from aeo.intelligence.industry import WikidataProfile
+    from aeo.pipeline import Orchestrator
+
+    async def fake_dry_run(self, domain, *, max_urls=None, pages=0, use_llm=True, draft_samples=True, **_):
+        return {
+            "profile": {"industry": None, "location": None, "scenario": "small_site"},
+            "coverage": {"pct": 0.0}, "discovered": 12, "source": "sitemap",
+        }
+
+    monkeypatch.setattr(Orchestrator, "dry_run", fake_dry_run)
+    _stub_site_facts(
+        monkeypatch,  # crawl blocked → no location/services/industry
+        wikidata=WikidataProfile(
+            industry="Healthcare",
+            location="Rochester",
+            description="medical practice and medical research group based in Rochester, Minnesota",
+        ),
+    )
+    body = client.post("/api/profile", json={"domain": "mayoclinic.org"}).json()
+    assert body["industry"] == "Healthcare"
+    assert body["industry_source"] == "wikidata"
+    assert body["services"] == ["medical practice and medical research group"]
+    assert body["location"] == "Rochester"
 
 
 def test_profile_crawl_location_services_win_over_wikidata(monkeypatch) -> None:
@@ -581,6 +609,40 @@ def test_competitor_suggest_falls_back_to_onsite_without_llm(monkeypatch) -> Non
     body = r.json()
     assert body["source"] == "onsite"
     assert body["competitors"] == [{"name": "Globex", "domain": ""}]
+
+
+class _BrokenLLM:
+    """Configured but failing — daemon down or model not pulled: every call yields None."""
+
+    enabled = True
+
+    def generate_json(self, prompt: str, system: str | None = None) -> None:
+        return None
+
+
+def test_competitor_suggest_falls_back_to_onsite_when_llm_fails(monkeypatch) -> None:
+    # An enabled-but-broken LLM must degrade exactly like the LLM-off path (mine the
+    # site's own comparison pages) — not hand the UI an empty list labelled "llm".
+    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _BrokenLLM())
+
+    from aeo.intelligence.site_facts import SiteFacts
+
+    async def fake_gather(domain, **_):
+        return SiteFacts(competitors=[{"name": "Globex", "domain": ""}])
+
+    monkeypatch.setattr("aeo.intelligence.site_facts.gather_site_facts", fake_gather)
+    r = client.post("/api/competitors/suggest", json={"name": "Acme", "domain": "acme.com"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "onsite"
+    assert body["competitors"] == [{"name": "Globex", "domain": ""}]
+
+
+def test_competitor_suggest_unavailable_when_llm_fails_without_domain(monkeypatch) -> None:
+    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _BrokenLLM())
+    r = client.post("/api/competitors/suggest", json={"name": "Acme"})
+    assert r.status_code == 200
+    assert r.json() == {"competitors": [], "source": "unavailable"}
 
 
 def test_cors_allows_the_web_ui_origin() -> None:

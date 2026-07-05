@@ -49,14 +49,19 @@ _MAX_TASK_ID_LEN = 256
 # Bound concurrent deep audits — each spawns a crawl worker thread, so cap the blast radius.
 _MAX_CONCURRENT_AUDITS = 4
 
-# Wikidata "About you" enrichment is DISABLED in /api/profile. The WDQS lookup is a full
-# P856 scan that runs ~38–50s uncontended — it never returns inside this endpoint's budget,
-# so the merge below was inert in production (location/about always fell back to the crawl).
-# The resolver (intelligence.industry.resolve_wikidata_profile) is left intact behind this
-# flag rather than deleted: flip to True only with a sub-budget retrieval path (e.g. the
-# SPARQL→QID→wbgetentities hybrid) AND after confirming the actual onboarding audience has
-# Wikidata entities (notable firms do; local SMBs don't). See the analysis thread.
-_WIKIDATA_ENRICHMENT_ENABLED = False
+# Wikidata "About you" enrichment in /api/profile. Originally disabled because the WDQS
+# P856 regex scan ran ~38–50s — never inside this endpoint's budget. The resolver now uses
+# the sub-budget retrieval path that gate demanded: an exact ``haswbstatement`` P856 search
+# + ``wbgetentities`` (measured ~0.4–2s end to end, live-verified on mayoclinic.org), so the
+# lookup races the crawl and actually lands. It is ALSO the only industry/offer source for
+# sites whose bot walls defeat both the browser-header fetch and the Playwright render
+# (mayoclinic.org 403s everything; its Wikidata entity still says "Healthcare"). Local SMBs
+# without an entity simply miss → the crawl classifier / user edit carries them, unchanged.
+_WIKIDATA_ENRICHMENT_ENABLED = True
+# Cap the post-crawl wait on the Wikidata task: it starts concurrently with the crawl
+# (~10s), so it has normally finished long before this cap is consulted; the cap only
+# bounds the tail case where Wikimedia is slow — enrichment is never worth a hung wizard.
+_WIKIDATA_WAIT_BUDGET_SEC = 8.0
 
 
 def _assert_crawlable_host(domain: str) -> None:
@@ -594,16 +599,15 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
 
     from ..intelligence import DEAD, classify_intake
     from ..intelligence.industry import WikidataProfile, resolve_wikidata_profile
-    from ..intelligence.site_facts import SiteFacts, gather_site_facts
+    from ..intelligence.site_facts import SiteFacts, first_clause, gather_site_facts
     from ..pipeline import Orchestrator
     from ..settings import get_settings
 
     cache = _cache_age(req.domain)
     # Crawl the homepage + key pages for Location / what-you-offer / on-site competitors,
-    # concurrently with the structural dry-run profile so the wizard prefills in one round.
-    # Wikidata enrichment (HQ location/country/products/description) is gated OFF — see
-    # _WIKIDATA_ENRICHMENT_ENABLED: the WDQS lookup can't return inside this budget, so the
-    # merge stays code-complete but the network call isn't even spawned.
+    # concurrently with the structural dry-run profile AND the Wikidata enrichment lookup
+    # (industry vertical / HQ / products / description via the fast entity-API path — see
+    # _WIKIDATA_ENRICHMENT_ENABLED), so the wizard prefills in one round.
     facts_task = asyncio.create_task(gather_site_facts(req.domain))
     wikidata_task = (
         asyncio.create_task(resolve_wikidata_profile(req.domain))
@@ -626,8 +630,10 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     wikidata = WikidataProfile()
     if wikidata_task is not None:
         try:
-            wikidata = await wikidata_task
-        except Exception:  # Wikidata is best-effort enrichment — never fail the profile over it
+            # Bounded: the task has been running alongside the crawl, so this normally
+            # returns immediately; the cap only cuts the slow-Wikimedia tail loose.
+            wikidata = await asyncio.wait_for(wikidata_task, timeout=_WIKIDATA_WAIT_BUDGET_SEC)
+        except Exception:  # timeout/network — best-effort enrichment, never fail the profile
             wikidata = WikidataProfile()
     intake = get_settings().intake
     discovered = int(result.get("discovered") or 0)
@@ -654,9 +660,18 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     # Location, best source first: crawl address/schema (most precise) → Wikidata HQ →
     # the structural profile's URL-path guess.
     location = facts.location or wikidata_location or (prof.get("location") if prof else None)
-    # What you offer, best source first: crawl offerings (schema.org / service pages) →
-    # Wikidata products produced (P1056).
+    # What you offer, best source first: crawl offerings (schema.org / service pages,
+    # with the crawl's own description-clause fallback already applied inside
+    # extract_facts) → Wikidata products produced (P1056) → the first clause of the
+    # Wikidata one-liner → the industry label. The two tail rungs are what keep this
+    # field populated for sites whose bot walls blank the whole crawl (mayoclinic.org):
+    # a short honest phrase beats an empty box the user must fill from scratch.
     services = facts.services or wikidata.offerings
+    if not services and wikidata.description:
+        clause = first_clause(wikidata.description)
+        services = [clause] if clause else []
+    if not services and industry:
+        services = [industry]
     # A one-line "about" blurb — a crawl-derived summary would win if we had one, so today
     # this surfaces the Wikidata schema:description when present.
     about = wikidata.description
@@ -698,8 +713,11 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
 async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     """Likely competitors for a business brief (name + category + location), so the UI
     can offer a pick-list instead of demanding URLs. Source is ``llm`` when the LLM
-    generated suggestions; ``onsite`` when (no LLM) we mined the site's own
-    comparison/alternatives pages; ``unavailable`` when neither yielded anything."""
+    generated suggestions; ``onsite`` when we mined the site's own comparison/alternatives
+    pages instead (LLM disabled, unreachable, or it proposed nothing usable);
+    ``unavailable`` when neither yielded anything."""
+    import asyncio
+
     from ..intelligence.site_facts import gather_site_facts
     from ..nlp.llm import get_client
     from ..reference.competitor_discovery import discover_competitors
@@ -707,22 +725,34 @@ async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     name = req.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="name is required")
+    domain = (req.domain or "").strip()
+
+    async def onsite() -> dict[str, Any] | None:
+        # Best-effort on-site signals (comparison / alternatives pages) — the fallback
+        # both when the LLM is off AND when it's configured but broken (daemon down,
+        # model not pulled): an enabled-but-failing LLM must degrade the same way, not
+        # hand the UI a blank picker labelled "llm".
+        if not domain:
+            return None
+        facts = await gather_site_facts(domain)
+        if facts.competitors:
+            return {"competitors": facts.competitors[: req.count], "source": "onsite"}
+        return None
+
     # The SHARED client: on AEO__LLM__PROVIDER=cloud this is Gemini, so production gets
     # cloud latency for free. If a slow LOCAL model is the bottleneck here, point the burst
     # paths at a faster backend via AEO__LLM__BULK_PROVIDER rather than hardcoding a model
     # (domain verification is already parallelized; the LLM call is the remaining cost).
     llm = get_client()
     if not llm.enabled:
-        # No LLM → best-effort on-site signals (comparison / alternatives pages).
-        domain = (req.domain or "").strip()
-        if domain:
-            facts = await gather_site_facts(domain)
-            if facts.competitors:
-                return {"competitors": facts.competitors[: req.count], "source": "onsite"}
-        return {"competitors": [], "source": "unavailable"}
-    result = discover_competitors(
+        return (await onsite()) or {"competitors": [], "source": "unavailable"}
+    # discover_competitors is synchronous (blocking LLM calls + HEAD probes, up to four
+    # relaxation-ladder passes) — run it in a worker thread so a slow local model can't
+    # freeze every other request on the event loop for minutes.
+    result = await asyncio.to_thread(
+        discover_competitors,
         name,
-        (req.domain or "").strip(),
+        domain,
         topic=(req.category or "").strip() or None,
         location=(req.location or "").strip() or None,
         services=req.services,
@@ -730,6 +760,8 @@ async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
         llm=llm,
         head_check=None if req.verify else (lambda _domain: True),
     )
+    if not result.verified:
+        return (await onsite()) or {"competitors": [], "source": "unavailable"}
     return {
         "competitors": [{"name": c.name, "domain": c.domain} for c in result.verified],
         "source": "llm",

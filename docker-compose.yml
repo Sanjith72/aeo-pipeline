@@ -97,8 +97,9 @@ services:
     <<: *app
     profiles: ["cli"]
 
-  # Local LLM, part of the default stack. Pull a model once:
-  #   docker compose exec ollama ollama pull qwen2.5:3b
+  # Local LLM, part of the default stack. `ollama-init` below pulls the configured model
+  # automatically on `up`; to add more models by hand:
+  #   docker compose exec ollama ollama pull <model>
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
@@ -106,6 +107,27 @@ services:
       - ollama:/root/.ollama
     ports:
       - "11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot: pull the model the app is configured to use, then exit. Idempotent — an
+  # already-present model is a fast no-op; a fresh volume downloads it once. Without this
+  # a new checkout comes up with an EMPTY ollama and every LLM feature (competitor
+  # suggestions, draft personalization) silently degrades to its deterministic fallback.
+  ollama-init:
+    image: ollama/ollama:latest
+    restart: "no"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull"]
+    # Compose interpolates ${AEO__LLM__MODEL} from .env — the same var the app reads.
+    command: ["${AEO__LLM__MODEL:-qwen2.5:3b}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
 
 volumes:
   pgdata:

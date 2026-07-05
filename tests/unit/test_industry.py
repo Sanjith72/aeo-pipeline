@@ -251,21 +251,269 @@ def test_resolve_wikidata_profile_network_failure_is_blank():
     assert out.has_signal() is False
 
 
+def test_match_vertical_sweep_regressions():
+    # Each of these mislabeled or blanked a real site in the 2026-07-05 live sweep.
+    assert match_vertical("Zillow: Real Estate, Apartments, Mortgages & Home Values") == "Real Estate"
+    assert match_vertical("Managed IT Services and Global Workforce Solutions") == "Software / SaaS"
+    assert match_vertical("Explore SUVs, hybrids and minivans") == "Automotive"
+    assert match_vertical("Help those affected by disasters by making a donation") == "Nonprofit"
+    assert match_vertical("humanitarian aid across 190 countries") == "Nonprofit"
+    # A pure lender still reads Finance — the Real-Estate-first ordering only wins when
+    # an explicit real-estate token is present.
+    assert match_vertical("Low-rate mortgage lending for first-time buyers") == "Finance"
+    # A title insurer says real-estate words but IS insurance — Insurance stays above.
+    assert match_vertical("Title insurance for real estate closings") == "Insurance"
+    # "managed it!" is exact-ended: the phrase matches, prefix collisions don't.
+    assert match_vertical("Managed IT support for growing teams") == "Software / SaaS"
+    assert match_vertical("Expertly managed itineraries for corporate travel") is None
+
+
+# ── entity-API fast path (the default retrieval for resolve_wikidata_profile) ────
+
+
+def _stmt(qid: str) -> dict:
+    """One claim in wbgetentities shape whose value is an entity reference."""
+    return {"mainsnak": {"datavalue": {"value": {"id": qid}}}}
+
+
+def _mayo_like_responses() -> tuple[dict, dict, dict]:
+    """(search, entities, labels) responses mirroring the live shapes for a hospital."""
+    search = {"query": {"search": [{"title": "Q1130172"}]}}
+    entities = {
+        "entities": {
+            "Q1130172": {
+                "claims": {
+                    "P452": [_stmt("Q31207")],
+                    "P31": [_stmt("Q163740")],
+                    "P159": [_stmt("Q486479")],
+                },
+                "descriptions": {
+                    "en": {"value": "medical practice and medical research group"}
+                },
+                "sitelinks": {"enwiki": {}, "dewiki": {}},
+            }
+        }
+    }
+    labels = {
+        "entities": {
+            "Q31207": {"labels": {"en": {"value": "health care"}}},
+            "Q163740": {"labels": {"en": {"value": "nonprofit organization"}}},
+            "Q486479": {"labels": {"en": {"value": "Rochester"}}},
+        }
+    }
+    return search, entities, labels
+
+
+def _dispatch_api_fetch(search: dict | None, entities: dict | None, labels: dict | None,
+                        seen: list | None = None):
+    """A fake ApiFetch that answers each of the three call shapes."""
+
+    async def fetch(params: dict):
+        if seen is not None:
+            seen.append(params)
+        if params.get("list") == "search":
+            return search
+        if "claims" in str(params.get("props", "")):
+            return entities
+        return labels
+
+    return fetch
+
+
+def test_statement_search_query_is_exact_p856_variants():
+    from aeo.intelligence.industry import _statement_search_query
+
+    q = _statement_search_query("ibm.com")
+    # Exact statement matching, never a substring scan — all realistic P856 forms OR'd.
+    assert q.startswith("haswbstatement:")
+    for variant in ("https://www.ibm.com", "https://ibm.com/", "http://ibm.com"):
+        assert f"P856={variant}" in q
+    assert q.count("P856=") == 8
+
+
+def test_resolve_profile_entity_api_resolves_healthcare():
+    seen: list = []
+    fetch = _dispatch_api_fetch(*_mayo_like_responses(), seen=seen)
+    out = asyncio.run(resolve_wikidata_profile("https://www.mayoclinic.org/", api_fetch=fetch))
+    assert out.industry == "Healthcare"  # P452 "health care" label
+    assert out.location == "Rochester"
+    assert out.description == "medical practice and medical research group"
+    # exact-statement search on the registrable domain, then entities, then labels
+    assert "P856=https://mayoclinic.org" in seen[0]["srsearch"]
+    assert len(seen) == 3
+
+
+def test_resolve_profile_entity_api_description_is_industry_tiebreak():
+    # Generic-only P452/P31 labels → the entity's own description names the vertical.
+    search, entities, _ = _mayo_like_responses()
+    entities["entities"]["Q1130172"]["descriptions"]["en"]["value"] = (
+        "British cybersecurity software company"
+    )
+    labels = {
+        "entities": {
+            "Q31207": {"labels": {"en": {"value": "business enterprise"}}},
+            "Q163740": {"labels": {"en": {"value": "privately held company"}}},
+            "Q486479": {"labels": {"en": {"value": "London"}}},
+        }
+    }
+    out = asyncio.run(resolve_wikidata_profile("acme.io", api_fetch=_dispatch_api_fetch(search, entities, labels)))
+    assert out.industry == "Cybersecurity"
+    assert out.location == "London"
+
+
+def test_resolve_profile_entity_api_picks_most_notable_entity():
+    # A parent and its subsidiary share one official website — most sitelinks wins.
+    search = {"query": {"search": [{"title": "Q1"}, {"title": "Q2"}]}}
+    entities = {
+        "entities": {
+            "Q1": {
+                "claims": {"P31": [_stmt("Q10")]},
+                "descriptions": {"en": {"value": "subsidiary"}},
+                "sitelinks": {"enwiki": {}},
+            },
+            "Q2": {
+                "claims": {"P31": [_stmt("Q11")]},
+                "descriptions": {"en": {"value": "parent"}},
+                "sitelinks": {"enwiki": {}, "dewiki": {}, "frwiki": {}},
+            },
+        }
+    }
+    labels = {
+        "entities": {
+            "Q10": {"labels": {"en": {"value": "subsidiary"}}},
+            "Q11": {"labels": {"en": {"value": "software company"}}},
+        }
+    }
+    out = asyncio.run(resolve_wikidata_profile("acme.io", api_fetch=_dispatch_api_fetch(search, entities, labels)))
+    assert out.industry == "Software / SaaS"
+    assert out.description == "parent"
+
+
+def test_resolve_profile_entity_api_drops_brand_echo_offering():
+    # Nike's P1056 "products produced" is the item "Nike" itself — a brand echo is not
+    # an answer to "what do you offer", so it must be dropped (falls to the description).
+    search = {"query": {"search": [{"title": "Q483915"}]}}
+    entities = {
+        "entities": {
+            "Q483915": {
+                "labels": {"en": {"value": "Nike"}},
+                "claims": {"P31": [_stmt("Q20")], "P1056": [_stmt("Q21"), _stmt("Q22")]},
+                "descriptions": {"en": {"value": "American athletic footwear company"}},
+                "sitelinks": {"enwiki": {}},
+            }
+        }
+    }
+    labels = {
+        "entities": {
+            "Q20": {"labels": {"en": {"value": "public company"}}},
+            "Q21": {"labels": {"en": {"value": "Nike"}}},        # brand echo — dropped
+            "Q22": {"labels": {"en": {"value": "sportswear"}}},  # a real offering — kept
+        }
+    }
+    out = asyncio.run(resolve_wikidata_profile("nike.com", api_fetch=_dispatch_api_fetch(search, entities, labels)))
+    assert out.offerings == ["sportswear"]
+
+
+def test_resolve_profile_entity_api_no_entity_is_blank():
+    fetch = _dispatch_api_fetch({"query": {"search": []}}, None, None)
+    out = asyncio.run(resolve_wikidata_profile("unknown-biz.example", api_fetch=fetch))
+    assert out.has_signal() is False
+
+
+def test_resolve_profile_entity_api_failed_labels_degrades_to_description():
+    # Labels batch fails transiently → industry still resolves from the description.
+    search, entities, _ = _mayo_like_responses()
+    fetch = _dispatch_api_fetch(search, entities, None)
+    out = asyncio.run(resolve_wikidata_profile("mayoclinic.org", api_fetch=fetch, use_cache=False))
+    assert out.industry == "Healthcare"  # "medical …" description
+    assert out.location is None  # HQ label unavailable without the batch
+
+
 def test_resolve_wikidata_profile_cached_per_registrable_domain(monkeypatch):
     from aeo.intelligence import industry
 
     industry.clear_wikidata_cache()
-    calls = {"n": 0}
+    searches = {"n": 0}
+    search, entities, labels = _mayo_like_responses()
 
-    async def counting_fetch(query: str):
-        calls["n"] += 1
-        return _acme_profile_sparql()
+    async def counting_fetch(params: dict):
+        if params.get("list") == "search":
+            searches["n"] += 1
+            return search
+        if "claims" in str(params.get("props", "")):
+            return entities
+        return labels
 
-    monkeypatch.setattr(industry, "_default_sparql_fetch", counting_fetch)
-    a = asyncio.run(industry.resolve_wikidata_profile("acme.io"))
-    b = asyncio.run(industry.resolve_wikidata_profile("https://www.acme.io/"))
-    assert a.location == b.location == "London"
-    assert calls["n"] == 1  # second call (same registrable domain) served from cache
+    # Cache is active only on the default-fetch path (no injected fetch).
+    monkeypatch.setattr(industry, "_default_api_fetch", counting_fetch)
+    a = asyncio.run(industry.resolve_wikidata_profile("mayoclinic.org"))
+    b = asyncio.run(industry.resolve_wikidata_profile("https://www.mayoclinic.org/"))
+    assert a.location == b.location == "Rochester"
+    assert searches["n"] == 1  # second call (same registrable domain) served from cache
+    industry.clear_wikidata_cache()
+
+
+def test_resolve_profile_labels_degraded_result_not_cached(monkeypatch):
+    # A transient failure of the LABELS batch (call 3) yields a usable but degraded
+    # profile (description-only industry, no location/offerings). It must be served
+    # once and NOT pinned in the cache — the retry after Wikimedia recovers must run
+    # the lookup again and get the full profile.
+    from aeo.intelligence import industry
+
+    industry.clear_wikidata_cache()
+    searches = {"n": 0}
+    labels_ok = {"v": False}
+    search, entities, labels = _mayo_like_responses()
+
+    async def fetch(params: dict):
+        if params.get("list") == "search":
+            searches["n"] += 1
+            return search
+        if "claims" in str(params.get("props", "")):
+            return entities
+        return labels if labels_ok["v"] else None
+
+    monkeypatch.setattr(industry, "_default_api_fetch", fetch)
+    degraded = asyncio.run(industry.resolve_wikidata_profile("mayoclinic.org"))
+    assert degraded.industry == "Healthcare"  # description tiebreak still lands
+    assert degraded.location is None  # no labels batch → no HQ label
+    labels_ok["v"] = True
+    full = asyncio.run(industry.resolve_wikidata_profile("mayoclinic.org"))
+    assert full.location == "Rochester"  # retried, not served the degraded cache entry
+    assert searches["n"] == 2
+    industry.clear_wikidata_cache()
+
+
+def test_api_fetch_error_payload_is_transient():
+    # MediaWiki reports failures as HTTP-200 {"error": ...} payloads; those must behave
+    # like a network failure (blank, retryable), never like a genuine no-entity miss.
+    async def error_fetch(params: dict):
+        return {"error": {"code": "ratelimited"}, "servedby": "mw1"} if params.get("list") == "search" else {}
+
+    out = asyncio.run(resolve_wikidata_profile("acme.io", api_fetch=error_fetch, use_cache=False))
+    assert out.has_signal() is False
+
+
+def test_resolve_profile_transient_search_failure_not_cached(monkeypatch):
+    from aeo.intelligence import industry
+
+    industry.clear_wikidata_cache()
+    searches = {"n": 0}
+    search, entities, labels = _mayo_like_responses()
+
+    async def flaky_fetch(params: dict):
+        if params.get("list") == "search":
+            searches["n"] += 1
+            return None if searches["n"] == 1 else search
+        if "claims" in str(params.get("props", "")):
+            return entities
+        return labels
+
+    monkeypatch.setattr(industry, "_default_api_fetch", flaky_fetch)
+    assert asyncio.run(industry.resolve_wikidata_profile("mayoclinic.org")).has_signal() is False
+    # The failure was not cached as a miss — the retry succeeds.
+    assert asyncio.run(industry.resolve_wikidata_profile("mayoclinic.org")).industry == "Healthcare"
+    assert searches["n"] == 2
     industry.clear_wikidata_cache()
 
 

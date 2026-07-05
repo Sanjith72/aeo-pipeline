@@ -188,16 +188,23 @@ _CHALLENGE_RE = re.compile(
     r"please (?:enable cookies|complete the security check))",
     re.I,
 )
+# Outage interstitials ("FedEx | System Down") declare themselves in the TITLE. Matched
+# there only — an IT-support site legitimately asks "Is your system down?" in body copy,
+# and blanking such a page over prose would erase a real SMB's whole prefill.
+_TITLE_OUTAGE_RE = re.compile(r"<title[^>]*>[^<]*\bsystem down\b", re.I)
 _CHALLENGE_MAX_BYTES = 20_000
 
 
 def is_challenge_page(html: str | None) -> bool:
     """True when ``html`` is an obvious bot-wall / interstitial stub (Cloudflare "Just a
-    moment", "Client Challenge", "Access Denied", …) rather than the real site. Empty input
-    counts as unusable."""
+    moment", "Client Challenge", "Access Denied", an outage page titled "System Down", …)
+    rather than the real site. Empty input counts as unusable."""
     if not html:
         return True
-    return bool(_CHALLENGE_RE.search(html[:_CHALLENGE_MAX_BYTES])) and len(html) < _CHALLENGE_MAX_BYTES
+    head = html[:_CHALLENGE_MAX_BYTES]
+    return bool(
+        _CHALLENGE_RE.search(head) or _TITLE_OUTAGE_RE.search(head)
+    ) and len(html) < _CHALLENGE_MAX_BYTES
 
 
 @dataclass(slots=True)
@@ -241,13 +248,19 @@ def _type_set(obj: dict) -> set[str]:
     return {str(t).lower() for t in _as_list(obj.get("@type"))}
 
 
+# A JSON-LD field whose "value" is actually a URI/entity reference (sameAs-style
+# ``http://www.wikidata.org/entity/Q…`` inside areaServed/address) — never display text.
+_URLISH_RE = re.compile(r"^\s*(?:https?://|www\.)", re.I)
+
+
 def _name_of(value: Any) -> str | None:
-    """The ``name`` of a schema node, or the node itself when it's a bare string."""
-    if isinstance(value, str) and value.strip():
+    """The ``name`` of a schema node, or the node itself when it's a bare string.
+    URL-shaped strings are rejected — an entity URI is a reference, not a name."""
+    if isinstance(value, str) and value.strip() and not _URLISH_RE.match(value):
         return value.strip()
     if isinstance(value, dict):
         name = value.get("name")
-        if isinstance(name, str) and name.strip():
+        if isinstance(name, str) and name.strip() and not _URLISH_RE.match(name):
             return name.strip()
     return None
 
@@ -262,7 +275,7 @@ def _format_address(addr: Any) -> str | None:
         if city and region:
             return f"{city}, {region}"
         return city or region or country or None
-    if isinstance(addr, str) and addr.strip():
+    if isinstance(addr, str) and addr.strip() and not _URLISH_RE.match(addr):
         return addr.strip()[:120]
     return None
 
@@ -401,6 +414,48 @@ def services_from_headings(docs: list[FetchedDoc]) -> list[str]:
 # Splits a description into clauses so the offer fallback grabs the first meaningful
 # phrase rather than a whole paragraph. Sentence punctuation + spaced dashes / pipes.
 _DESC_CLAUSE_SPLIT = re.compile(r"\s*[.;|·••–—\n]\s*|\s+-\s+")
+# Trailing function words a mid-sentence cut can leave dangling ("…research group based
+# in" → "…research group"). Stripped repeatedly so stacked leftovers all go.
+_DANGLING_TAIL_RE = re.compile(
+    r"\s+(?:based|in|of|for|and|or|the|a|an|at|with|to|by|from)$", re.I
+)
+# "Stripe is a financial infrastructure platform…" — a description names its SUBJECT,
+# but "what do you offer" wants the predicate. Matches only the copula-with-article form
+# ("<Name> is a/an/the …"), so mission-statement prose ("is devoted to…") stays intact.
+_SUBJECT_PREFIX_RE = re.compile(r"^[^.;|]{1,60}?\b(?:is|are)\s+(?:a|an|the)\s+", re.I)
+_OFFER_CLAUSE_MAX = 60
+
+
+def first_clause(text: str, *, max_len: int = _OFFER_CLAUSE_MAX) -> str | None:
+    """The first meaningful clause of a description-ish string — the shared trimmer
+    behind every "what you offer" fallback (crawled meta description, Wikidata's
+    one-liner). Cuts at clause punctuation, backs off to a word boundary, and drops
+    dangling function words; None when nothing usable remains."""
+    if not text:
+        return None
+    clause = _DESC_CLAUSE_SPLIT.split(text)[0]
+    clause = re.sub(r"\s+", " ", clause).strip(" \t\n·|-—–»")
+    stripped = _SUBJECT_PREFIX_RE.sub("", clause, count=1)
+    if stripped != clause and len(stripped.split()) >= 2:
+        clause = stripped
+    if len(clause) > max_len:
+        head = clause[:max_len]
+        # Back off to the previous word boundary so we never end mid-word ("…Chipotle Me").
+        if not clause[max_len : max_len + 1].isspace():
+            sp = head.rfind(" ")
+            if sp > 0:
+                head = head[:sp]
+        clause = head
+        while True:  # a cut can strand function words ("group based in") — drop them all
+            trimmed = _DANGLING_TAIL_RE.sub("", clause)
+            if trimmed == clause:
+                break
+            clause = trimmed
+    clause = clause.strip(" \t\n·|-—–»")
+    # A title like "Home | Jones Day" yields a nav-stopword clause ("Home") — not an offer.
+    if not clause or clause.lower() in _SERVICE_STOPWORDS or not re.search(r"[A-Za-z]", clause):
+        return None
+    return clause
 
 
 def offer_from_description(soup: Any) -> list[str]:
@@ -420,23 +475,8 @@ def offer_from_description(soup: Any) -> list[str]:
             break
     if not text and soup.title:
         text = soup.title.get_text(" ", strip=True)
-    if not text:
-        return []
-    clause = _DESC_CLAUSE_SPLIT.split(text)[0]
-    clause = re.sub(r"\s+", " ", clause).strip(" \t\n·|-—–»")
-    if len(clause) > 60:
-        head = clause[:60]
-        # Back off to the previous word boundary so we never end mid-word ("…Chipotle Me").
-        if not clause[60:61].isspace():
-            sp = head.rfind(" ")
-            if sp > 0:
-                head = head[:sp]
-        clause = head
-    clause = clause.strip(" \t\n·|-—–»")
-    # A title like "Home | Jones Day" yields a nav-stopword clause ("Home") — not an offer.
-    if not clause or clause.lower() in _SERVICE_STOPWORDS or not re.search(r"[A-Za-z]", clause):
-        return []
-    return [clause]
+    clause = first_clause(text)
+    return [clause] if clause else []
 
 
 def _dedupe_keep_order(items: list[str], limit: int) -> list[str]:
@@ -516,6 +556,60 @@ def competitors_from_docs(docs: list[FetchedDoc], own: str) -> list[dict[str, st
     return [{"name": n, "domain": ""} for n in names]
 
 
+# schema.org ``@type`` → vertical. A site's own structured data DECLARES what the
+# business is (a LocalBusiness subtype like Dentist / Restaurant / LawFirm), which is an
+# even more direct self-description than title keywords — so it's checked first. Only
+# unambiguous business types are mapped; generic containers (Organization, LocalBusiness,
+# WebSite, WebPage) carry no vertical and fall through to the keyword classifier.
+# Ordered most-specific-first, mirroring _KEYWORD_VERTICALS' controlled vocabulary.
+_SCHEMA_TYPE_VERTICALS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("medicalorganization", "hospital", "medicalclinic", "physician", "dentist",
+      "medicalbusiness", "pharmacy", "veterinarycare"), "Healthcare"),
+    (("restaurant", "fastfoodrestaurant", "cafeorcoffeeshop", "bakery", "barorpub",
+      "foodestablishment", "icecreamshop"), "Restaurants"),
+    (("legalservice", "attorney", "notary"), "Legal"),
+    (("insuranceagency",), "Insurance"),
+    (("financialservice", "bankorcreditunion", "accountingservice"), "Finance"),
+    (("realestateagent", "realestatelisting"), "Real Estate"),
+    (("educationalorganization", "school", "collegeoruniversity", "highschool",
+      "elementaryschool", "preschool"), "Education"),
+    (("lodgingbusiness", "hotel", "resort", "motel", "bedandbreakfast",
+      "travelagency"), "Hospitality / Travel"),
+    (("automotivebusiness", "autodealer", "autorepair", "autobodyshop",
+      "motorcycledealer", "autopartsstore"), "Automotive"),
+    (("exercisegym", "healthclub"), "Fitness"),
+    (("beautysalon", "dayspa", "hairsalon", "nailsalon"), "Beauty / Wellness"),
+    (("homeandconstructionbusiness", "generalcontractor", "roofingcontractor", "plumber",
+      "electrician", "hvacbusiness", "housepainter"), "Construction"),
+    (("movingcompany",), "Logistics / Transportation"),
+    (("nonprofitorganization", "ngo"), "Nonprofit"),
+    (("governmentorganization", "governmentoffice"), "Government"),
+    (("newsmediaorganization", "radiostation", "televisionstation"), "Media / Publishing"),
+    (("onlinestore",), "E-commerce"),
+    (("store", "clothingstore", "shoestore", "furniturestore", "electronicsstore",
+      "grocerystore", "jewelrystore", "sportinggoodsstore", "bookstore",
+      "departmentstore", "hardwarestore", "petstore", "toystore"), "Retail"),
+    # Deliberately NO SoftwareApplication/WebApplication/MobileApplication mapping: any
+    # restaurant/bank/gym that promotes its mobile app embeds that type on the homepage, and
+    # with schema checked FIRST it would override the true vertical. Real software firms
+    # classify fine via the title/self-description keywords ("software", "saas", …).
+)
+
+
+def vertical_from_schema_types(blocks: list[dict]) -> str | None:
+    """Vertical from the page's own schema.org ``@type`` declarations, or None when only
+    generic/unmapped types are present. First mapped type wins (most-specific-first
+    order, same contract as ``match_vertical``)."""
+    types: set[str] = set()
+    for obj in blocks:
+        if isinstance(obj, dict):
+            types |= _type_set(obj)
+    for keys, vertical in _SCHEMA_TYPE_VERTICALS:
+        if types.intersection(keys):
+            return vertical
+    return None
+
+
 def self_description_text(soup: Any) -> str:
     """The site's OWN self-description — ``<title>``, the meta description, OpenGraph
     title/description/site-name, and the hero heading(s) — and deliberately NOT the page
@@ -551,12 +645,15 @@ def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
     """Fold the fetched pages into a :class:`SiteFacts` (pure; no network)."""
     own = normalize(docs[0].url) if docs else f"https://{domain}/"
     blocks: list[dict] = []
+    home_blocks: list[dict] = []  # homepage-only JSON-LD — the industry signal (see below)
     text_parts: list[str] = []
     internal_urls: list[str] = []
-    for doc in docs:
+    for i, doc in enumerate(docs):
         soup = parse(doc.html)
         sj = schema_jsonld.extract(doc.html, soup, doc.url)
         blocks.extend(sj.get("blocks", []))
+        if i == 0:
+            home_blocks = list(sj.get("blocks", []))
         text_parts.append(soup.get_text(" ", strip=True))
         lk = links_extractor.extract(doc.html, soup, doc.url)
         internal_urls.extend(lk.get("internal", []))
@@ -585,13 +682,19 @@ def extract_facts(docs: list[FetchedDoc], *, domain: str) -> SiteFacts:
     # homepage is where a company states what it IS. Abstain (None) when it's generic —
     # empty beats confidently wrong (a marketing platform read as "Restaurants").
     home_soup = parse(docs[0].html) if docs else None
-    # Title-first: the <title> is the single most authoritative self-description, so classify
-    # it alone first — a promo heading ("HIGH SCHOOL SUMMER PASS") then can't override the
-    # lead ("Planet Fitness | A Gym and Fitness Club"). Only when the title names no vertical
-    # do we widen to the fuller self-description (meta/og/hero).
+    # Schema-first: the homepage's own JSON-LD ``@type`` (Dentist, Restaurant, LawFirm…)
+    # is the business declaring what it IS — stronger than any keyword heuristic, so it
+    # wins outright. Homepage blocks ONLY: key pages can carry vertical-specific types
+    # about content rather than the company (a /solutions/restaurants page, a listing).
+    # Title-second: the <title> is the most authoritative textual self-description, so
+    # classify it alone before widening — a promo heading ("HIGH SCHOOL SUMMER PASS")
+    # then can't override the lead ("Planet Fitness | A Gym and Fitness Club"). Only when
+    # the title names no vertical do we widen to the fuller self-description (meta/og/hero).
     title_desc = (home_soup.title.get_text(" ", strip=True) if home_soup and home_soup.title else "")
-    industry = classify_vertical(title_desc) or classify_vertical(
-        self_description_text(home_soup) if home_soup is not None else ""
+    industry = (
+        vertical_from_schema_types(home_blocks)
+        or classify_vertical(title_desc)
+        or classify_vertical(self_description_text(home_soup) if home_soup is not None else "")
     )
     # NOTE: industry is classified from the homepage self-description ONLY — NOT from the
     # scraped service labels. A services-based recovery used to run here, but service labels

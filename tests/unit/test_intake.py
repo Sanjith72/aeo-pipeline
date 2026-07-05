@@ -67,6 +67,19 @@ class TestInferIndustry:
     def test_none_when_nothing_known(self):
         assert infer_industry([], topic="", business_model=None) is None
 
+    def test_no_signal_default_does_not_leak_a_coarse_label(self):
+        # Regression guard for the "Professional services on almost every site" bug: when the
+        # business model was a NO-SIGNAL default (business_model_decided=False), we must NOT
+        # emit any coarse _INDUSTRY_BY_MODEL label — abstain so the caller falls through to a
+        # real crawl-classified vertical or an empty, user-editable field.
+        assert infer_industry([], business_model="lead_gen", business_model_decided=False) is None
+        assert infer_industry([], business_model="saas", business_model_decided=False) is None
+
+    def test_lead_gen_is_never_mapped_to_an_industry(self):
+        # lead_gen is the conservative default for most sites and spans every vertical, so it
+        # must never resolve to "Professional services" — not even when the model was decided.
+        assert infer_industry([], business_model="lead_gen", business_model_decided=True) is None
+
 
 class TestInferLocation:
     def test_location_slug_is_humanized(self):

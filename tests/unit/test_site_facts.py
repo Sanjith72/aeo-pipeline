@@ -452,3 +452,116 @@ def test_playwright_fallback_not_used_when_fetch_injected():
     facts = asyncio.run(gather_site_facts("acme.example", fetch=injected))
     assert facts.industry is None and facts.services == []
     assert calls["n"] >= 1  # the injected fetch was used; no playwright detour
+
+
+# ── schema.org @type → vertical (self-declared, wins over keywords) ──────────────
+
+
+def test_vertical_from_schema_types_maps_business_subtypes():
+    from aeo.intelligence.site_facts import vertical_from_schema_types
+
+    assert vertical_from_schema_types([{"@type": "Dentist"}]) == "Healthcare"
+    assert vertical_from_schema_types([{"@type": ["Organization", "Restaurant"]}]) == "Restaurants"
+    assert vertical_from_schema_types([{"@type": "LegalService"}]) == "Legal"
+    # Generic containers carry no vertical — fall through to the keyword classifier.
+    assert vertical_from_schema_types([{"@type": "Organization"}, {"@type": "WebSite"}]) is None
+    assert vertical_from_schema_types([]) is None
+
+
+def test_industry_schema_type_wins_over_title_keyword():
+    # The homepage declares WHAT THE BUSINESS IS via JSON-LD; a marketing title that
+    # happens to carry another vertical's keyword ("software") must not override it.
+    html = (
+        "<html><head><title>Fresh Bites — ordering software built into every table</title>"
+        '<script type="application/ld+json">{"@type": "Restaurant", "name": "Fresh Bites"}</script>'
+        "</head><body><h1>Neighborhood kitchen</h1></body></html>"
+    )
+    facts = extract_facts([FetchedDoc("https://freshbites.com/", html)], domain="freshbites.com")
+    assert facts.industry == "Restaurants"
+
+
+def test_industry_ignores_key_page_jsonld_types():
+    # Vertical-specific types on a KEY page describe content, not the company — a
+    # payments company's /solutions/restaurants page must not make it a Restaurant.
+    home = (
+        "<html><head><title>PayFlow</title></head>"
+        "<body><h1>Payments infrastructure</h1></body></html>"
+    )
+    key = (
+        "<html><head><title>Restaurants | PayFlow</title>"
+        '<script type="application/ld+json">{"@type": "Restaurant", "name": "Demo"}</script>'
+        "</head><body></body></html>"
+    )
+    facts = extract_facts(
+        [
+            FetchedDoc("https://payflow.com/", home),
+            FetchedDoc("https://payflow.com/solutions/restaurants", key),
+        ],
+        domain="payflow.com",
+    )
+    assert facts.industry is None  # homepage gives no signal; key-page type ignored
+
+
+# ── first_clause (the shared offer trimmer) ──────────────────────────────────────
+
+
+def test_first_clause_drops_dangling_function_words():
+    from aeo.intelligence.site_facts import first_clause
+
+    # A 60-char cut would strand "based in" — the trimmer drops the dangling tail.
+    assert (
+        first_clause("medical practice and medical research group based in Rochester, Minnesota")
+        == "medical practice and medical research group"
+    )
+
+
+def test_first_clause_rejects_empty_and_stopword_only():
+    from aeo.intelligence.site_facts import first_clause
+
+    assert first_clause("") is None
+    assert first_clause("Home") is None  # nav stopword, not an offer
+
+
+def test_first_clause_strips_subject_prose_prefix():
+    from aeo.intelligence.site_facts import first_clause
+
+    # A description names its subject; the offer wants the predicate.
+    assert (
+        first_clause("Stripe is a financial infrastructure platform for businesses")
+        == "financial infrastructure platform for businesses"
+    )
+    # No copula-with-article → left intact (mission prose is not a subject prefix).
+    assert first_clause("Harvard is devoted to excellence in teaching") == (
+        "Harvard is devoted to excellence in teaching"
+    )
+
+
+def test_challenge_page_detects_system_down_interstitial():
+    from aeo.intelligence.site_facts import is_challenge_page
+
+    # fedex.com served a 200 interstitial titled "System Down" — junk, not the site.
+    assert is_challenge_page("<html><head><title>FedEx | System Down</title></head><body></body></html>")
+    # …but the marker is TITLE-anchored: an IT-support site asking the phrase in body
+    # copy is a real page and must not be blanked.
+    assert not is_challenge_page(
+        "<html><head><title>Acme IT Support</title></head>"
+        "<body><h1>Is your system down? We can help.</h1></body></html>"
+    )
+
+
+def test_vertical_from_schema_types_ignores_app_promo_types():
+    from aeo.intelligence.site_facts import vertical_from_schema_types
+
+    # A restaurant/bank/gym promoting its mobile app embeds SoftwareApplication on the
+    # homepage — deliberately unmapped so it can't override the true vertical.
+    assert vertical_from_schema_types([{"@type": "SoftwareApplication"}]) is None
+    assert vertical_from_schema_types([{"@type": ["MobileApplication", "Restaurant"]}]) == "Restaurants"
+
+
+def test_location_rejects_entity_uri_values():
+    from aeo.intelligence.site_facts import location_from_blocks
+
+    # sameAs-style Wikidata URIs inside areaServed/address are references, not places.
+    assert location_from_blocks([{"areaServed": "http://www.wikidata.org/entity/Q13780930"}]) is None
+    assert location_from_blocks([{"address": "https://example.com/contact"}]) is None
+    assert location_from_blocks([{"areaServed": "Greater Cleveland"}]) == "Greater Cleveland"

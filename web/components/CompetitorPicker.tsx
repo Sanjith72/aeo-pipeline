@@ -22,6 +22,14 @@ type SuggestState =
 // self-heal by refetching on the next visit instead of pinning a blank state.
 const suggestionCache = new Map<string, CompetitorSuggestion[]>();
 
+// How many of the top suggestions get pre-ticked when they arrive. The API returns
+// most-relevant-first, so ticking the head of the list starts the user from a sensible
+// default they prune, instead of an all-unticked wall they must build up from zero.
+const AUTO_SELECT_COUNT = 3;
+// Briefs (cacheKeys) that already had their one-time auto-select — module-level so a
+// step-remount doesn't re-tick suggestions the user deliberately cleared.
+const autoSelected = new Set<string>();
+
 export function CompetitorPicker({
   businessName,
   category,
@@ -45,10 +53,47 @@ export function CompetitorPicker({
   const [manualSite, setManualSite] = useState("");
   const [showSite, setShowSite] = useState(false);
   const requestSeq = useRef(0);
+  // The latest selection, readable from the async fetch closure without going stale.
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  // Auto-select must never write into a brief the user can't see: a slow suggest fetch
+  // can resolve after the user skipped this step (picker unmounted), or a stale
+  // instance's fetch can land after the brief changed — both would silently inject
+  // competitors into the plan.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const cacheKey = [businessName, category, location, domain, services.join(",")]
     .map((s) => s.trim().toLowerCase())
     .join("|");
+  const cacheKeyRef = useRef(cacheKey);
+  cacheKeyRef.current = cacheKey;
+
+  // Pre-tick the top suggestions ONCE per brief, and only when the user has picked
+  // nothing yet — never fight a selection they've already made or deliberately cleared.
+  const [autoPicked, setAutoPicked] = useState(false);
+  function autoSelectTop(items: CompetitorSuggestion[], forKey: string) {
+    if (autoSelected.has(forKey)) return;
+    // Consume the brief's one-time auto-select even when suppressed below: suggestions
+    // that arrived while the user already had picks must not tick on a later remount
+    // after they deliberately cleared everything.
+    autoSelected.add(forKey);
+    if (!mountedRef.current || forKey !== cacheKeyRef.current) return;
+    if (selectedRef.current.length > 0) return;
+    setAutoPicked(true);
+    onChange(
+      items.slice(0, AUTO_SELECT_COUNT).map((s) => ({
+        name: s.name,
+        domain: s.domain || undefined,
+        source: "suggested" as const,
+      })),
+    );
+  }
 
   async function fetchSuggestions(force = false) {
     if (!businessName.trim()) return;
@@ -56,10 +101,12 @@ export function CompetitorPicker({
       const cached = suggestionCache.get(cacheKey);
       if (cached && cached.length > 0) {
         setSuggest({ status: "ready", items: cached });
+        autoSelectTop(cached, cacheKey);
         return;
       }
     }
     const seq = ++requestSeq.current;
+    const keyAtFetch = cacheKey; // the brief this request was issued for
     setSuggest({ status: "loading" });
     try {
       const res = await api.suggestCompetitors({
@@ -75,8 +122,9 @@ export function CompetitorPicker({
         // Don't cache the blank — a later visit refetches and may succeed.
         setSuggest({ status: "unavailable" });
       } else {
-        suggestionCache.set(cacheKey, res.competitors);
+        suggestionCache.set(keyAtFetch, res.competitors);
         setSuggest({ status: "ready", items: res.competitors });
+        autoSelectTop(res.competitors, keyAtFetch);
       }
     } catch {
       if (seq === requestSeq.current) setSuggest({ status: "error" });
@@ -153,6 +201,11 @@ export function CompetitorPicker({
 
         {suggest.status === "ready" && (
           <>
+            {autoPicked && (
+              <p className="mb-3 text-sm text-ink-500">
+                We pre-selected the closest matches — untick any that don&apos;t fit.
+              </p>
+            )}
             {items.length > 5 && (
               <div className="relative mb-3">
                 <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-300" />
