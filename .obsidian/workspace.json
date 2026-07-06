@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "REDESIGN_CHECKLIST_R2.md",
+                "file": "AEO_Gamified_Task_System_Dev_Prompt.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "REDESIGN_CHECKLIST_R2"
+              "title": "AEO_Gamified_Task_System_Dev_Prompt"
             }
           }
         ]
@@ -184,5 +184,10 @@
     }
   },
   "active": "0108bacc6e6b1769",
-  "lastOpenFiles": []
+  "lastOpenFiles": [
+    "README.md",
+    "AEO_Gamified_Task_System_Dev_Prompt 1.md",
+    "AEO_Gamified_Task_System_Dev_Prompt.md",
+    "REDESIGN_CHECKLIST_R2.md"
+  ]
 }

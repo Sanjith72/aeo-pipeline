@@ -24,3 +24,6 @@ ops/data/
 /apple_report.pdf
 /apple-site-report.pdf
 /config/domains/apple.com.yaml
+
+# Supabase CLI local link state
+/supabase/.temp/
