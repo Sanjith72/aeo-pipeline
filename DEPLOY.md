@@ -56,12 +56,16 @@ authenticate those for you. Recommended split (all container-friendly):
 
 | Piece | Where | How |
 |---|---|---|
-| **Postgres** | Neon / Supabase / RDS | create a DB, grab its `DATABASE_URL` |
-| **API** (FastAPI + Chromium) | a container host — **Render / Railway / Fly.io** (a Vercel serverless function won't fit: it needs a persistent browser, threads, and Postgres) | deploy the repo `Dockerfile`; set `DATABASE_URL`, `AEO__API__AUTH_KEY`, and (optional) `AEO__LLM__*`; run `aeo migrate` once |
-| **Web** (Next.js) | **Vercel** (or the same container host via `web/Dockerfile`) | set build env `NEXT_PUBLIC_API_BASE=https://<your-api-host>` and `NEXT_PUBLIC_API_KEY=<AEO__API__AUTH_KEY>` |
+| **Postgres** | Neon / Supabase / RDS | create a DB, grab its `DATABASE_URL` (the app strips URL query params like `?sslmode=` — set `PGSSLMODE=require` as an env var instead; Neon's `-pooler` host works) |
+| **API** (FastAPI + Chromium) | a container host with **≥ ~1 vCPU** — e.g. a Hugging Face Docker Space (free, 2 vCPU), Railway, or Fly.io. A Vercel serverless function won't fit (persistent browser, threads, Postgres), and 0.1-vCPU free tiers (Render/Koyeb free) starve Chromium *and* the health check, so the instance gets killed mid-audit | deploy the repo `Dockerfile`; set `DATABASE_URL`, `AEO__API__AUTH_KEY`, and (optional) `AEO__LLM__*`; boot with `start-api` (= `aeo migrate` + `aeo serve`, reads `$PORT`) |
+| **Web** (Next.js) | **Vercel** (or the same container host via `web/Dockerfile`) | set **runtime** env `API_BASE_URL=https://<your-api-host>` and `API_KEY=<AEO__API__AUTH_KEY>` — the server-side proxy (`app/api/[...path]/route.ts`) injects the key; nothing secret ships to the browser. (`NEXT_PUBLIC_API_BASE`/`NEXT_PUBLIC_API_KEY` are legacy — no code reads them.) |
 
 When public, **turn on auth**: set `AEO__API__AUTH_KEY` on the API and the matching
-`NEXT_PUBLIC_API_KEY` on the web build so `/api/*` requires the `X-API-Key` header.
+`API_KEY` on the web host so the proxy sends the `X-API-Key` header on every `/api/*` call.
+
+Reference deploy (live): Neon (`aeo-pipeline` project) + HF Space `Sanjith12/aeo-api`
+(public wrapper Dockerfile clones this private repo via a `GH_TOKEN` build secret) +
+Vercel project `aeo-studio` → https://aeo-studio-nine.vercel.app
 
 If you tell me which hosts you want (e.g. "Vercel + Render + Neon") and grant access, I'll wire
 up the exact configs/CI for that path.

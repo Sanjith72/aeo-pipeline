@@ -387,11 +387,22 @@ export default function Page() {
     let job = await api.auditStatus(job_id);
     setAuditJob(job);
     let tries = 0;
+    let pollMisses = 0;
     while ((job.status === "queued" || job.status === "running") && tries < 450) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
-      job = await api.auditStatus(job_id);
-      setAuditJob(job);
       tries += 1;
+      try {
+        job = await api.auditStatus(job_id);
+      } catch (err) {
+        // The audit keeps running server-side when a status poll drops (small hosts
+        // hiccup under crawl load), so one miss must not fail the whole run — only
+        // give up after ~30s of consecutive misses (the backend genuinely gone).
+        pollMisses += 1;
+        if (pollMisses >= 15) throw err;
+        continue;
+      }
+      pollMisses = 0;
+      setAuditJob(job);
     }
     if (job.status === "failed") {
       // fall back to the fast profile we already have rather than dead-ending
