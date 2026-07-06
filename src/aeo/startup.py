@@ -54,11 +54,14 @@ def _check_database(s: Settings, fatal: list[str], warnings: list[str]) -> None:
         parse_dsn(url)
     except Exception as exc:
         fatal.append(f"DATABASE_URL is not a valid libpq DSN: {exc}")
-    if s.database.pool_min < 1:
-        fatal.append(f"DB_POOL_MIN must be >= 1 (got {s.database.pool_min})")
-    if s.database.pool_max < s.database.pool_min:
+    # DB_POOL_MIN=0 is valid and deliberate on serverless Postgres (Neon, Supabase
+    # free): a lazy pool that pre-opens nothing and holds no idle connections.
+    if s.database.pool_min < 0:
+        fatal.append(f"DB_POOL_MIN must be >= 0 (got {s.database.pool_min})")
+    if s.database.pool_max < max(1, s.database.pool_min):
         fatal.append(
-            f"DB_POOL_MAX ({s.database.pool_max}) must be >= DB_POOL_MIN ({s.database.pool_min})"
+            f"DB_POOL_MAX ({s.database.pool_max}) must be >= 1 and >= DB_POOL_MIN "
+            f"({s.database.pool_min})"
         )
 
     host = parsed.hostname or ""

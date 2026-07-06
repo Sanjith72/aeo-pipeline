@@ -32,6 +32,14 @@ class TestFatal:
         with pytest.raises(StartupValidationError, match="DB_POOL_MAX"):
             validate_settings()
 
+    def test_pool_min_zero_is_a_valid_lazy_pool(self, settings):
+        # Serverless Postgres (Neon / Supabase free) deployments run DB_POOL_MIN=0 on
+        # purpose — no idle connections held. Must boot cleanly.
+        settings.database = DatabaseCfg(url="postgresql://a:b@h:5432/aeo?sslmode=require",
+                                        pool_min=0, pool_max=5)
+        settings.llm.enabled = False
+        assert validate_settings() == []
+
     def test_unknown_llm_provider(self, settings):
         settings.llm.provider = "gpt-neo-self-hosted"
         with pytest.raises(StartupValidationError, match="AEO__LLM__PROVIDER"):
