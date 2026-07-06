@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
 #
 # AEO Studio web (Next.js) — slim standalone runtime image.
-#   docker build -t aeo-web --build-arg NEXT_PUBLIC_API_BASE=http://localhost:8000 .
+#   docker build -t aeo-web .
 #
-# NEXT_PUBLIC_API_BASE is baked at BUILD time (it ships to the browser), so it must be the
-# URL the *browser* uses to reach the API — for local compose that's the host-published
-# http://localhost:8000, not the in-network http://api:8000.
+# The API is reached ONLY through the server-side proxy (app/api/[...path]/route.ts),
+# configured at RUNTIME with API_BASE_URL (+ API_KEY, injected server-side — nothing
+# secret ships to the browser). No build args needed.
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
@@ -13,8 +13,6 @@ RUN npm ci
 
 FROM node:22-alpine AS build
 WORKDIR /app
-ARG NEXT_PUBLIC_API_BASE=http://localhost:8000
-ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .

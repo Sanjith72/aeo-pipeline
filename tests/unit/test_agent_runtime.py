@@ -52,10 +52,18 @@ def _ctrl(repo, *, research=None, planner=None, builder=None, critic=None, cfg=N
 
 def test_full_flow_records_research_plan_build_critic_in_order() -> None:
     repo = FakeRepo(_row())
-    research = lambda brief, **kw: {"competitors": [{"name": "R7", "domain": "rapid7.com"}]}
-    planner = lambda brief: {"topic": "ctem", "tasks": [{"id": "page:/x", "kind": "content"}]}
-    builder = lambda graph, **kw: {**graph, "built": True}
-    critic = lambda graph, **kw: {**graph, "critiqued": True}
+
+    def research(brief, **kw):
+        return {"competitors": [{"name": "R7", "domain": "rapid7.com"}]}
+
+    def planner(brief):
+        return {"topic": "ctem", "tasks": [{"id": "page:/x", "kind": "content"}]}
+
+    def builder(graph, **kw):
+        return {**graph, "built": True}
+
+    def critic(graph, **kw):
+        return {**graph, "critiqued": True}
 
     out = _ctrl(repo, research=research, planner=planner, builder=builder, critic=critic).run("run1")
 
@@ -75,7 +83,9 @@ def test_competitors_are_folded_into_the_brief() -> None:
         seen["competitors"] = brief.competitors
         return {"topic": "ctem", "tasks": []}
 
-    research = lambda brief, **kw: {"competitors": [{"name": "R7", "domain": "rapid7.com"}]}
+    def research(brief, **kw):
+        return {"competitors": [{"name": "R7", "domain": "rapid7.com"}]}
+
     _ctrl(repo, research=research, planner=planner).run("run1")
     assert seen["competitors"] == ["rapid7.com"]
 

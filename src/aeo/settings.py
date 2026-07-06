@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -80,9 +80,14 @@ class CrawlerCfg(BaseModel):
     discovery: DiscoveryCfg = DiscoveryCfg()
 
 
+# Every provider the LLM layer can build a backend for. "hybrid" is the Gemini+Qwen
+# router with automatic failover; "cloud" is the legacy single OpenAI-compatible endpoint.
+KNOWN_LLM_PROVIDERS = frozenset({"ollama", "cloud", "gemini", "qwen", "hybrid"})
+
+
 class LLMCfg(BaseModel):
     enabled: bool = True          # off → scorers fall back to deterministic-only
-    provider: str = "ollama"      # "ollama" (local) | "cloud" (OpenAI-compatible)
+    provider: str = "ollama"      # see KNOWN_LLM_PROVIDERS; "hybrid" = Gemini+Qwen router
     # Hybrid routing: the BURST path — the async deep audit's per-page scoring/analysis fires
     # dozens of calls and trips cloud free-tier rate limits. Set AEO__LLM__BULK_PROVIDER=ollama
     # to run it on the local model (slower but un-throttled; fine since the audit is async)
@@ -100,6 +105,44 @@ class LLMCfg(BaseModel):
     cloud_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
     cloud_model: str = "gemini-2.5-flash"
     cloud_api_key: str | None = None
+    # ── Hybrid Gemini + Qwen (provider="hybrid", or pin one with "gemini"/"qwen") ──
+    # The router sends REASONING-profile calls (planning, blueprint synthesis, agent
+    # steps) to Gemini and FAST-profile calls (per-page scoring refinement, drafting,
+    # classification) to Qwen, then fails over — first in-family (flash → flash-lite,
+    # Groq → OpenRouter), then across families — on 429/5xx/timeouts/malformed JSON.
+    # Every endpoint speaks OpenAI /chat/completions. Defaults target the $0 tiers
+    # (verified 2026-07): Gemini via AI Studio keys from a NO-billing project
+    # (gemini-2.5-flash ≈10 RPM/250 req-day free; flash-lite ≈15 RPM/1000 req-day),
+    # Qwen primarily via Groq's free plan (qwen3-32b: 60 RPM/1000 req-day/6K TPM —
+    # keep prompts short), with OpenRouter ':free' (20 RPM/50 req-day at strictly $0)
+    # as the in-family fallback. NOTE: ':free' model ids churn within months — if
+    # OpenRouter 404s the model, check https://openrouter.ai/api/v1/models.
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_fallback_model: str = "gemini-2.5-flash-lite"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    qwen_api_key: str | None = None
+    qwen_model: str = "qwen/qwen3-32b"
+    qwen_base_url: str = "https://api.groq.com/openai/v1"
+    qwen_fallback_api_key: str | None = None
+    qwen_fallback_model: str = "qwen/qwen3-next-80b-a3b-instruct:free"
+    qwen_fallback_base_url: str = "https://openrouter.ai/api/v1"
+    # Failover/retry policy for the gemini/qwen/hybrid backends. Retries apply to
+    # RETRYABLE failures (429/5xx/timeouts) with exponential backoff; after the retry
+    # budget the hybrid router switches providers instead of failing the call.
+    retry_max_attempts: int = 3
+    retry_initial_backoff_sec: float = 1.0
+    retry_max_backoff_sec: float = 8.0
+    failover_enabled: bool = True
+    # Embeddings for the pgvector semantic-search substrate (migration 0025). Served by
+    # whichever configured provider exposes /embeddings — in practice Gemini, whose free
+    # tier includes gemini-embedding-001 (768 dims via the OpenAI-compat `dimensions`).
+    embedding_model: str = "gemini-embedding-001"
+    # Index each audited page's title/description/headings into content_embeddings
+    # during the deep audit (skipped for unchanged content via the sha check). Off by
+    # default: it adds one embeddings API call per changed page, which is real quota on
+    # the $0 tiers. Semantic search degrades to an honest "unavailable" when off.
+    embedding_indexing: bool = False
     # Shared generation params
     timeout_sec: int = 120
     temperature: float = 0.1
@@ -119,6 +162,13 @@ class LLMCfg(BaseModel):
     interactive_timeout_sec: int = 45
     draft_concurrency: int = 4
     draft_phase_budget_sec: int = 180
+
+    @field_validator("provider", "bulk_provider", "planning_provider", mode="before")
+    @classmethod
+    def _normalize_provider(cls, v: object) -> object:
+        # "Ollama" / " cloud " and friends worked before strict validation existed;
+        # normalize so startup validation and _make_backend agree on the same token.
+        return v.strip().lower() if isinstance(v, str) else v
 
 
 class DatabaseCfg(BaseModel):
@@ -223,6 +273,12 @@ class AgentsCfg(BaseModel):
     concurrency: int = 2
     step_timeout_sec: int = 120
     max_attempts: int = 3
+    # Orchestration mode. "react": the agentic loop — the LLM plans its own steps over the
+    # tool registry (agents/tools.py), self-corrects on observations, and stages when ready;
+    # falls back to the ladder automatically when no LLM is available or the loop can't
+    # stage a plan. "ladder": the fixed research → plan → build → critic sequence.
+    mode: str = "react"
+    react_max_steps: int = 12
     # Phase 2B agent steps (each has a deterministic floor, so disabling only skips the LLM work).
     research_enabled: bool = True   # discover + live-verify competitors before planning
     build_enabled: bool = True      # draft staged page copy after planning

@@ -1,0 +1,86 @@
+# $0-stack life support. Two jobs:
+#
+#   ping    — every 8 hours, hit the API's /api/health (which runs SELECT 1 against
+#             Postgres). One request simultaneously keeps the free HF Space from its
+#             48h idle sleep AND resets Supabase's 7-day free-project pause clock.
+#             Set the repo VARIABLE `KEEPALIVE_URL` to the health endpoint, e.g.
+#             https://<space>.hf.space/api/health
+#
+#   backup  — weekly pg_dump uploaded as a workflow artifact (90-day retention).
+#             Supabase's free plan has NO automated backups; this is the safety net.
+#             Set the repo SECRET `BACKUP_DATABASE_URL` to the SESSION-pooler URL
+#             (postgresql://postgres.<ref>:...@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require).
+#
+# GitHub cron is best-effort (±minutes of jitter) — fine for keep-alive, not for
+# user-facing scheduling.
+
+name: keepalive
+
+on:
+  schedule:
+    - cron: "17 */8 * * *" # ping: three times a day
+    - cron: "43 2 * * 1" # backup: Mondays 02:43 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    if: ${{ vars.KEEPALIVE_URL != '' }}
+    env:
+      # Env indirection, never inline ${{ }} inside run: — the standard guard against
+      # Actions script injection through a repo variable.
+      KEEPALIVE_URL: ${{ vars.KEEPALIVE_URL }}
+    steps:
+      - name: Ping API health (wakes HF Space, touches Supabase)
+        run: |
+          # The waking request on a slept Space often 503s — retry with backoff for
+          # up to ~2 minutes before calling it a failure.
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 30 "$KEEPALIVE_URL"; then
+              echo "healthy"
+              exit 0
+            fi
+            echo "attempt $i failed — waking? retrying in 20s"
+            sleep 20
+          done
+          echo "API did not become healthy" >&2
+          exit 1
+
+  backup:
+    runs-on: ubuntu-latest
+    # Only meaningful on the weekly schedule or a manual run; skip the 8-hourly pings.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '43 2 * * 1' }}
+    env:
+      BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+    steps:
+      - name: Skip when no database secret is configured
+        id: guard
+        run: |
+          if [ -z "$BACKUP_DATABASE_URL" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "BACKUP_DATABASE_URL secret not set — skipping"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install postgresql-client 17
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+      - name: Dump database
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          pg_dump --no-owner --no-privileges "$BACKUP_DATABASE_URL" | gzip > aeo-backup.sql.gz
+          ls -lh aeo-backup.sql.gz
+      - name: Upload artifact
+        if: steps.guard.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeo-db-backup-${{ github.run_id }}
+          path: aeo-backup.sql.gz
+          retention-days: 90

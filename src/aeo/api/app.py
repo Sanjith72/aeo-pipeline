@@ -116,9 +116,14 @@ def require_api_key(request: Request) -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    """App lifespan. On shutdown, close the shared headless-browser pool (used by the
+    """App lifespan. On startup, validate the environment (fail fast on config that can
+    never work — covers deployments where uvicorn imports this app directly, bypassing
+    ``aeo serve``). On shutdown, close the shared headless-browser pool (used by the
     intake-prefill fallback) so the Chromium subprocess doesn't outlive the server. No-op
     when the pool was never used."""
+    from ..startup import validate_settings
+
+    validate_settings(serving=True)
     yield
     from ..crawl.browser_pool import close_pool
 

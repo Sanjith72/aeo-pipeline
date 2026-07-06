@@ -712,6 +712,12 @@ class Orchestrator:
         self.persist.extraction(bundle)
         summary.extracted += 1
 
+        # Opt-in pgvector indexing for the agent's semantic_search (embed_index.py).
+        # Best-effort by contract — a failure can never touch the audit.
+        from .embed_index import maybe_index_page
+
+        maybe_index_page(page, stored.id, bundle)
+
         if do_score:
             page_score = self.score.run(bundle, run_id)
             self.persist.score(page_score, scored_by=_scored_by(page_score))

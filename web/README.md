@@ -14,7 +14,7 @@ analyze an existing site.
    ```
 2. Start the frontend (from `web/`):
    ```bash
-   cp .env.example .env.local      # adjust NEXT_PUBLIC_API_BASE if the API isn't on :8000
+   cp .env.example .env.local      # adjust API_BASE_URL if the API isn't on :8000
    npm install
    npm run dev                     # http://localhost:3000
    ```

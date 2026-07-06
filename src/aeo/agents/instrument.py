@@ -45,6 +45,12 @@ class InstrumentedLLM:
     def generate_json(self, prompt: str, system: str | None = None) -> dict[str, Any] | None:
         return self._record(prompt, system, lambda: self._inner.generate_json(prompt, system))
 
+    def embed(self, text: str) -> list[float] | None:
+        """Pass-through (uncosted: embeddings are free-tier and tiny next to generation).
+        Without this, wrapping a client would silently disable the semantic_search tool."""
+        embedder = getattr(self._inner, "embed", None)
+        return embedder(text) if embedder is not None else None
+
     def _record(self, prompt: str, system: str | None, call: Any) -> Any:
         t0 = time.perf_counter()
         out = call()

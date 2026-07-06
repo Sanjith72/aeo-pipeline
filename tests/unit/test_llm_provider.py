@@ -1,11 +1,13 @@
 """
 Provider-agnostic LLM client tests.
 
-The hybrid design ships two backends behind one ``LLMClient`` facade:
-``ollama`` (local, default) and ``cloud`` (OpenAI-compatible HTTP). Selection
-is by ``LLMCfg.provider``. These tests pin the dispatch logic, the
-disabled-client contract every scorer relies on, and the exact request each
-backend builds — all without touching the network (httpx is monkeypatched).
+``LLMClient`` fronts several backends — ``ollama`` (local, default), ``cloud``
+(one OpenAI-compatible endpoint), pinned ``gemini``/``qwen``, and the ``hybrid``
+router (covered in test_llm_hybrid.py). Selection is by ``LLMCfg.provider``.
+These tests pin the dispatch logic, the disabled-client contract every scorer
+relies on, and the exact request each backend builds — all without touching the
+network (httpx is monkeypatched; patching the shared module object covers both
+aeo.nlp.llm and aeo.nlp.providers).
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ from aeo.settings import LLMCfg
 
 
 class _FakeResponse:
+    status_code = 200
+    headers: ClassVar[dict[str, str]] = {}
+
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
 

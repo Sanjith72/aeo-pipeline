@@ -84,6 +84,15 @@ def set_status(
         return cur.rowcount > 0
 
 
+def max_seq(run_id: str) -> int:
+    """Highest persisted step seq for a run (0 when none). The controller resumes
+    numbering from here on at-least-once redelivery, so a retried run never collides
+    with the abandoned attempt's rows (UNIQUE(run_id, seq))."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COALESCE(MAX(seq), 0) AS m FROM agent_steps WHERE run_id = %s", (run_id,))
+        return int(cur.fetchone()["m"])
+
+
 def append_step(
     run_id: str,
     *,

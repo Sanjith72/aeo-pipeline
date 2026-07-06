@@ -33,18 +33,28 @@ def test_get_bulk_client_falls_back_to_primary_when_unset(monkeypatch) -> None:
         llm_mod.get_bulk_client.cache_clear()
 
 
-def test_get_interactive_client_uses_the_short_timeout() -> None:
+def test_get_interactive_client_uses_the_short_timeout_and_single_attempt(monkeypatch) -> None:
     # Foreground work (/api/plan, the personalize build) gets a fail-fast per-call timeout
-    # (interactive_timeout_sec), distinct from the bulk/audit timeout_sec, so a slow local
-    # model degrades fast.
-    cfg = LLMCfg(timeout_sec=120, interactive_timeout_sec=45)
-    interactive = LLMClient(cfg.model_copy(update={"timeout_sec": cfg.interactive_timeout_sec}))
-    assert interactive._cfg.timeout_sec == 45  # type: ignore[attr-defined]
+    # (interactive_timeout_sec) AND a single retry attempt — no backoff sleep may ever run
+    # inside a user-facing call (a hybrid chain still fails over, one fast try per backend).
+    monkeypatch.setattr(llm_mod.get_settings().llm, "timeout_sec", 120)
+    monkeypatch.setattr(llm_mod.get_settings().llm, "interactive_timeout_sec", 45)
+    monkeypatch.setattr(llm_mod.get_settings().llm, "retry_max_attempts", 3)
+    llm_mod.get_client.cache_clear()
+    llm_mod.get_interactive_client.cache_clear()
+    try:
+        interactive = llm_mod.get_interactive_client()
+        assert interactive._cfg.timeout_sec == 45  # type: ignore[attr-defined]
+        assert interactive._cfg.retry_max_attempts == 1  # type: ignore[attr-defined]
+    finally:
+        llm_mod.get_client.cache_clear()
+        llm_mod.get_interactive_client.cache_clear()
 
 
-def test_get_interactive_client_falls_back_to_primary_when_not_shorter(monkeypatch) -> None:
-    # interactive_timeout_sec >= timeout_sec → no separate client (nothing to gain).
+def test_get_interactive_client_falls_back_to_primary_when_nothing_differs(monkeypatch) -> None:
+    # interactive_timeout_sec >= timeout_sec AND retries already single → no separate client.
     monkeypatch.setattr(llm_mod.get_settings().llm, "interactive_timeout_sec", 999)
+    monkeypatch.setattr(llm_mod.get_settings().llm, "retry_max_attempts", 1)
     llm_mod.get_client.cache_clear()
     llm_mod.get_interactive_client.cache_clear()
     try:

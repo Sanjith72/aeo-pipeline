@@ -2,17 +2,21 @@
 Provider-agnostic LLM client used across the codebase.
 
 ``LLMClient`` is a thin facade: it picks a backend from ``LLMCfg.provider`` and
-delegates. Two backends ship today —
+delegates. Backends —
 
   - ``ollama`` (default): local Ollama ``/api/generate`` — free, offline, dev.
-  - ``cloud``: any OpenAI-compatible ``/chat/completions`` endpoint (OpenAI,
-    Gemini's compat endpoint, Together, …) — picked in production for quality.
+  - ``cloud``: any single OpenAI-compatible ``/chat/completions`` endpoint (legacy).
+  - ``gemini`` / ``qwen``: one native provider, pinned (with 429/5xx retry).
+  - ``hybrid``: the Gemini+Qwen router (``nlp/providers.py``) — routes by task
+    profile (``reasoning`` → Gemini first, ``fast`` → Qwen first), retries
+    rate limits, fails over between providers, and heals malformed JSON with
+    the other provider. The production default for the $0 stack.
 
-Flip per environment with ``AEO__LLM__PROVIDER=ollama|cloud``; the cloud key
-comes from ``AEO__LLM__CLOUD_API_KEY``. The public surface (``LLMClient``,
-``generate``, ``generate_json``, ``enabled``, ``model``, ``get_client``) is
-unchanged from the old Ollama-only client, so every scorer/pipeline call-site
-keeps working untouched.
+Flip per environment with ``AEO__LLM__PROVIDER``; keys via
+``AEO__LLM__GEMINI_API_KEY`` / ``AEO__LLM__QWEN_API_KEY`` (or the legacy
+``AEO__LLM__CLOUD_API_KEY``). The public surface (``LLMClient``, ``generate``,
+``generate_json``, ``enabled``, ``model``, ``get_client``) is unchanged, so
+every scorer/pipeline call-site keeps working untouched; ``embed`` is additive.
 
 Design notes:
   - Synchronous on purpose: scoring runs in worker threads, not the async crawl
@@ -20,7 +24,8 @@ Design notes:
   - Every method returns ``None`` on failure rather than raising, so a down or
     misconfigured provider never breaks a scoring run.
   - ``generate_json`` asks for JSON output and still defends against models that
-    wrap the object in prose, using a 3-strategy extraction.
+    wrap the object in prose, using a 3-strategy extraction (plus cross-provider
+    healing on the hybrid backend).
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ import httpx
 
 from ..logging import get_logger
 from ..settings import LLMCfg, get_settings
+from .providers import HybridBackend, OpenAICompatBackend
 
 log = get_logger(__name__)
 
@@ -45,7 +51,8 @@ _CONNECT_TIMEOUT_SEC = 5.0
 
 
 class _Backend(Protocol):
-    model: str
+    @property
+    def model(self) -> str: ...
 
     def generate(self, prompt: str, system: str | None, *, json_mode: bool) -> str | None: ...
 
@@ -93,59 +100,40 @@ class _OllamaBackend:
             return None
 
 
-class _CloudBackend:
-    """Any OpenAI-compatible ``/chat/completions`` endpoint."""
-
-    def __init__(self, cfg: LLMCfg) -> None:
-        self._cfg = cfg
-        self.model = cfg.cloud_model
-
-    def generate(self, prompt: str, system: str | None, *, json_mode: bool) -> str | None:
-        messages: list[dict[str, str]] = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-
-        payload: dict[str, Any] = {
-            "model": self._cfg.cloud_model,
-            "messages": messages,
-            "temperature": self._cfg.temperature,
-            "max_tokens": self._cfg.num_predict,
-        }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        headers = {"Authorization": f"Bearer {self._cfg.cloud_api_key or ''}"}
-
-        from ..crawl.transport import sync_transport
-
-        try:
-            with httpx.Client(timeout=self._cfg.timeout_sec, transport=sync_transport()) as client:
-                resp = client.post(
-                    f"{self._cfg.cloud_base_url}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                content = resp.json()["choices"][0]["message"]["content"]
-                return content.strip() if content else None
-        except Exception as exc:  # never let the LLM break a run
-            log.warning("llm_generate_failed", provider="cloud",
-                        model=self._cfg.cloud_model, error=str(exc))
-            return None
-
-
-def _make_backend(cfg: LLMCfg) -> _Backend:
+def _make_backend(cfg: LLMCfg, profile: str = "fast") -> _Backend | None:
+    """Build the backend for ``cfg.provider`` (``None`` = nothing usable → the client
+    reports itself disabled and every call degrades to deterministic output)."""
     if cfg.provider == "cloud":
-        return _CloudBackend(cfg)
+        return OpenAICompatBackend(
+            cfg, name="cloud", base_url=cfg.cloud_base_url,
+            model=cfg.cloud_model, api_key=cfg.cloud_api_key,
+        )
+    if cfg.provider == "gemini":
+        return OpenAICompatBackend(
+            cfg, name="gemini", base_url=cfg.gemini_base_url,
+            model=cfg.gemini_model, api_key=cfg.gemini_api_key,
+        ) if cfg.gemini_api_key else None
+    if cfg.provider == "qwen":
+        return OpenAICompatBackend(
+            cfg, name="qwen", base_url=cfg.qwen_base_url,
+            model=cfg.qwen_model, api_key=cfg.qwen_api_key,
+        ) if cfg.qwen_api_key else None
+    if cfg.provider == "hybrid":
+        hybrid = HybridBackend(cfg, profile=profile)
+        return hybrid if hybrid.available else None
     return _OllamaBackend(cfg)
 
 
 class LLMClient:
-    """Facade over a provider backend. Returns ``None`` on failure or when disabled."""
+    """Facade over a provider backend. Returns ``None`` on failure or when disabled.
 
-    def __init__(self, cfg: LLMCfg) -> None:
+    ``profile`` only matters for the hybrid backend: ``fast`` (default) runs Qwen
+    first, ``reasoning`` runs Gemini first (used by the planning/agent tier)."""
+
+    def __init__(self, cfg: LLMCfg, *, profile: str = "fast") -> None:
         self._cfg = cfg
-        self._backend: _Backend | None = _make_backend(cfg) if cfg.enabled else None
+        self.profile = profile
+        self._backend: _Backend | None = _make_backend(cfg, profile) if cfg.enabled else None
 
     @property
     def enabled(self) -> bool:
@@ -166,10 +154,27 @@ class LLMClient:
         return backend.generate(prompt, system, json_mode=json_mode)
 
     def generate_json(self, prompt: str, system: str | None = None) -> dict[str, Any] | None:
-        raw = self.generate(prompt, system, json_mode=True)
+        backend = self._backend
+        if backend is None or not self._cfg.enabled:
+            return None
+        if isinstance(backend, HybridBackend):
+            # Hybrid path: failover + cross-provider healing live in the router.
+            return backend.generate_json(prompt, system, extract=_extract_json)
+        raw = backend.generate(prompt, system, json_mode=True)
         if not raw:
             return None
         return _extract_json(raw)
+
+    def embed(self, text: str) -> list[float] | None:
+        """One 768-dim embedding vector, or ``None`` when the backend has no embeddings
+        surface (Ollama, OpenRouter free models) — callers degrade to keyword search."""
+        backend = self._backend
+        if backend is None or not self._cfg.enabled:
+            return None
+        embedder = getattr(backend, "embed", None)
+        if embedder is None:
+            return None
+        return embedder(text)
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -237,21 +242,30 @@ def get_interactive_client() -> LLMClient:
     (``interactive_timeout_sec``) so a slow or hung local model degrades to deterministic
     output in bounded time instead of making a user wait minutes. Distinct from the bulk/audit
     path (:func:`get_bulk_client`), which keeps the full ``timeout_sec`` (fire-and-forget
-    batch). Falls back to the primary client when the interactive timeout isn't actually
-    shorter."""
+    batch). Retries are pinned to a single attempt so no backoff sleep ever runs inside
+    a user-facing call — a hybrid chain still fails over, but each backend gets exactly
+    one fast try. Falls back to the primary client when nothing would differ."""
     cfg = get_settings().llm
-    if cfg.interactive_timeout_sec >= cfg.timeout_sec:
+    if cfg.interactive_timeout_sec >= cfg.timeout_sec and cfg.retry_max_attempts <= 1:
         return get_client()
-    return LLMClient(cfg.model_copy(update={"timeout_sec": cfg.interactive_timeout_sec}))
+    return LLMClient(cfg.model_copy(update={
+        "timeout_sec": min(cfg.interactive_timeout_sec, cfg.timeout_sec),
+        "retry_max_attempts": 1,
+    }))
 
 
 @lru_cache(maxsize=1)
 def get_planning_client() -> LLMClient:
     """The reasoning/drafting tier for the agent layer (Planner/Builder). Routed to
-    ``AEO__LLM__PLANNING_PROVIDER`` (e.g. ``cloud`` for a frontier model). Falls back to the
-    primary ``get_client()`` when unset or equal to the primary provider — so a hybrid
-    deployment pays for frontier reasoning without changing the fast sync endpoints."""
+    ``AEO__LLM__PLANNING_PROVIDER`` (e.g. ``cloud`` for a frontier model). On the
+    ``hybrid`` provider this is the ``reasoning`` profile — Gemini first, Qwen as
+    failover — while the fast sync endpoints keep the ``fast`` (Qwen-first) profile.
+    Falls back to the primary ``get_client()`` when nothing distinguishes it."""
     cfg = get_settings().llm
     if not cfg.planning_provider or cfg.planning_provider == cfg.provider:
+        if cfg.provider == "hybrid":
+            return LLMClient(cfg, profile="reasoning")
         return get_client()
-    return LLMClient(cfg.model_copy(update={"provider": cfg.planning_provider}))
+    return LLMClient(
+        cfg.model_copy(update={"provider": cfg.planning_provider}), profile="reasoning"
+    )

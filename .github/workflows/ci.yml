@@ -29,6 +29,22 @@ jobs:
       - name: Lint
         run: ruff check src tests
 
+      # Incremental typing gate: the modules below are kept mypy-clean (the hybrid LLM
+      # layer, the agentic loop, startup validation, the DB seam). Widen this list as
+      # more of the codebase is annotated — never narrow it.
+      - name: Typecheck
+        run: >-
+          mypy
+          src/aeo/startup.py
+          src/aeo/nlp/providers.py
+          src/aeo/nlp/llm.py
+          src/aeo/agents/react.py
+          src/aeo/agents/tools.py
+          src/aeo/agents/runtime.py
+          src/aeo/storage/repos/embeddings.py
+          src/aeo/storage/db.py
+          src/aeo/pipeline/embed_index.py
+
       - name: Test
         run: pytest -q
 

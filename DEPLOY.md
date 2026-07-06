@@ -49,26 +49,29 @@ at build time, so it defaults to the browser-reachable `http://localhost:8000`.
 
 ---
 
-## C. Hosted on a public URL (cloud)
+## C. Hosted on a public URL — the **$0/month stack** (verified 2026-07)
 
 This removes local running entirely, but it uses **your** cloud accounts — I can't create or
-authenticate those for you. Recommended split (all container-friendly):
+authenticate those for you. Every row below is a genuinely free, ongoing tier (no trial
+credits), with its hard limits stated:
 
-| Piece | Where | How |
+| Piece | Where ($0) | How / limits |
 |---|---|---|
-| **Postgres** | Neon / Supabase / RDS | create a DB, grab its `DATABASE_URL` (the app strips URL query params like `?sslmode=` — set `PGSSLMODE=require` as an env var instead; Neon's `-pooler` host works) |
-| **API** (FastAPI + Chromium) | a container host with **≥ ~1 vCPU** — e.g. a Hugging Face Docker Space (free, 2 vCPU), Railway, or Fly.io. A Vercel serverless function won't fit (persistent browser, threads, Postgres), and 0.1-vCPU free tiers (Render/Koyeb free) starve Chromium *and* the health check, so the instance gets killed mid-audit | deploy the repo `Dockerfile`; set `DATABASE_URL`, `AEO__API__AUTH_KEY`, and (optional) `AEO__LLM__*`; boot with `start-api` (= `aeo migrate` + `aeo serve`, reads `$PORT`) |
-| **Web** (Next.js) | **Vercel** (or the same container host via `web/Dockerfile`) | set **runtime** env `API_BASE_URL=https://<your-api-host>` and `API_KEY=<AEO__API__AUTH_KEY>` — the server-side proxy (`app/api/[...path]/route.ts`) injects the key; nothing secret ships to the browser. (`NEXT_PUBLIC_API_BASE`/`NEXT_PUBLIC_API_KEY` are legacy — no code reads them.) |
+| **Postgres + pgvector** | **Supabase Free** | `supabase/README.md` has the full setup. Use the **session pooler** URL — `postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require` (the direct `db.<ref>` host is IPv6-only on free; query params now reach libpq). Limits: 500 MB DB, **pauses after 7 idle days** (manual un-pause), **no automated backups** — both covered by `.github/workflows/keepalive.yml` (8-hourly health ping + weekly `pg_dump` artifact). |
+| **API** (FastAPI + Chromium) | **Hugging Face Docker Space, CPU Basic** (free, 2 vCPU / 16 GB) — the proven live pattern (`Sanjith12/aeo-api`, wrapper Dockerfile clones this repo via a `GH_TOKEN` build secret) | deploy the repo `Dockerfile`; set `DATABASE_URL`, `AEO__API__AUTH_KEY`, `AEO__LLM__PROVIDER=hybrid` + the LLM keys; boot with `start-api` (= `aeo migrate` + `aeo serve`, reads `$PORT`). Limits: disk is **ephemeral** (all state must live in Postgres — it does), sleeps after 48 h idle (the keepalive ping prevents it; the waking request may 503 — the web proxy retries). A Vercel function can't host this (persistent browser); 0.1-vCPU free tiers (Render/Koyeb) starve Chromium. Fly.io no longer has a usable free tier. |
+| **Web** (Next.js) | **Vercel Hobby** (`aeo-studio` → aeo-studio-nine.vercel.app) | set **runtime** env `API_BASE_URL=https://<your-api-host>` and `API_KEY=<AEO__API__AUTH_KEY>` — the server-side proxy (`app/api/[...path]/route.ts`) injects the key; nothing secret ships to the browser. `web/vercel.json` adds security headers + pins the proxy's `maxDuration=300` (the Hobby hard max, needs Fluid Compute on — default for new projects). Caveat: Hobby is contractually **non-commercial**; if this becomes a revenue tool, move to Pro or to Cloudflare Workers (free tier allows commercial use). |
+| **LLM (hybrid Gemini + Qwen)** | **Gemini AI Studio free tier** (key from a **no-billing** Google Cloud project) + **Groq free plan** (Qwen 3 32B, no card) + optional **OpenRouter `:free`** fallback key | `AEO__LLM__PROVIDER=hybrid`, keys per `.env.example`. Free-quota budget ≈ 250 flash + 1000 flash-lite + 1000 Groq + 50 OpenRouter requests/day — the router's retry + failover exists precisely to ride these limits. Free-tier caveat: Google may train on free-tier prompts/outputs. |
+| **Scheduling / keep-warm / backup** | **GitHub Actions cron** (free minutes) | `.github/workflows/keepalive.yml` — set repo **variable** `KEEPALIVE_URL` (the API `/api/health` URL) and repo **secret** `BACKUP_DATABASE_URL` (the session-pooler URL). Replaces host-level cron (Vercel Hobby cron is once/day with jitter). |
 
 When public, **turn on auth**: set `AEO__API__AUTH_KEY` on the API and the matching
 `API_KEY` on the web host so the proxy sends the `X-API-Key` header on every `/api/*` call.
+Set `AEO__API__RATE_LIMIT` too — startup validation warns when either is missing.
 
-Reference deploy (live): Neon (`aeo-pipeline` project) + HF Space `Sanjith12/aeo-api`
-(public wrapper Dockerfile clones this private repo via a `GH_TOKEN` build secret) +
-Vercel project `aeo-studio` → https://aeo-studio-nine.vercel.app
-
-If you tell me which hosts you want (e.g. "Vercel + Render + Neon") and grant access, I'll wire
-up the exact configs/CI for that path.
+**What about Railway?** `railway.json` ships ready to deploy the same image
+(build = Dockerfile, predeploy `aeo migrate`, start `aeo serve`, healthcheck `/api/health`)
+— but Railway has **no ongoing free tier** (one-time $5 trial credit, then Hobby at
+$5/month). It's the documented paid escape hatch if the HF Space free tier ever changes,
+not part of the $0 stack.
 
 ---
 
@@ -76,10 +79,12 @@ up the exact configs/CI for that path.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `DATABASE_URL` | Postgres connection (deep audit + reports) | `postgresql://aeo:aeo@localhost:5432/aeo` |
+| `DATABASE_URL` | Postgres connection (deep audit + reports); query params like `?sslmode=require` are honored | `postgresql://aeo:aeo@localhost:5432/aeo` |
 | `AEO__LLM__ENABLED` | use the LLM (else deterministic) | `true` |
-| `AEO__LLM__PROVIDER` | `ollama` (local) or `cloud` (OpenAI-compatible) | `ollama` |
-| `AEO__LLM__CLOUD_API_KEY` / `AEO__LLM__CLOUD_MODEL` | cloud LLM (faster/better than local qwen2.5:3b) | — |
+| `AEO__LLM__PROVIDER` | `hybrid` (Gemini+Qwen router) \| `gemini` \| `qwen` \| `ollama` \| `cloud` | `ollama` |
+| `AEO__LLM__GEMINI_API_KEY` | Gemini side of the hybrid router (AI Studio key, no-billing project) | — |
+| `AEO__LLM__QWEN_API_KEY` | Qwen side (Groq free plan by default) | — |
+| `AEO__LLM__QWEN_FALLBACK_API_KEY` | optional OpenRouter `:free` fallback | — |
+| `AEO__AGENTS__MODE` | `react` (agentic loop) or `ladder` (fixed sequence) | `react` |
 | `AEO__API__AUTH_KEY` | require `X-API-Key` on `/api/*` (set in any public deploy) | unset (open) |
-| `NEXT_PUBLIC_API_BASE` | (web build) URL the browser calls | `http://localhost:8000` |
-| `NEXT_PUBLIC_API_KEY` | (web build) key sent as `X-API-Key` | unset |
+| `API_BASE_URL` / `API_KEY` | (web host, runtime) backend URL + key for the server-side proxy | `http://localhost:8000` / unset |

@@ -65,8 +65,17 @@ app = typer.Typer(add_completion=False, help="AEO content crawler & rubric score
 log = get_logger(__name__)
 
 
-def _bootstrap() -> None:
+def _bootstrap(*, serving: bool = False) -> None:
     configure()
+    # Fail fast on configuration that can never work (bad DATABASE_URL scheme, unknown
+    # LLM provider, …) — one actionable message at boot instead of a 500 per request.
+    from .startup import StartupValidationError, validate_settings
+
+    try:
+        validate_settings(serving=serving)
+    except StartupValidationError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=2) from exc
 
 
 def _collect_urls(urls: list[str] | None, file: Path | None) -> list[str]:
@@ -498,7 +507,7 @@ def serve(
 
     Requires the optional [api] extra:  pip install -e ".[api]".  Interactive docs at /docs.
     """
-    _bootstrap()
+    _bootstrap(serving=True)
     try:
         import uvicorn
     except ImportError as exc:

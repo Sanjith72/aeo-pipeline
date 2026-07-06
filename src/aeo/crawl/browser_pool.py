@@ -19,6 +19,7 @@ Playwright/Chromium isn't installed, so callers fall back to empty facts exactly
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 from ..logging import get_logger
@@ -56,16 +57,12 @@ class _BrowserPool:
         errors — when the previous event loop is already dead, close() can't complete and we
         just drop the references."""
         if self._browser is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._browser.close()
-            except Exception:
-                pass
             self._browser = None
         if self._pw is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._pw.stop()
-            except Exception:
-                pass
             self._pw = None
         self._loop = None
 
@@ -113,10 +110,8 @@ class _BrowserPool:
                 page = await ctx.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                 # Let a JS challenge resolve / content paint, but never block past the budget.
-                try:
+                with contextlib.suppress(Exception):
                     await page.wait_for_load_state("networkidle", timeout=min(6000, timeout_ms))
-                except Exception:
-                    pass
                 return await page.content()
             except Exception as exc:
                 log.info("playwright_render_failed", url=url, error=str(exc))
@@ -126,10 +121,8 @@ class _BrowserPool:
                 return None
             finally:
                 if ctx is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         await ctx.close()
-                    except Exception:
-                        pass
 
     async def aclose(self) -> None:
         async with self._lock:
