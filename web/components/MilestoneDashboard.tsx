@@ -1,16 +1,18 @@
 "use client";
 
 // The Implementation Dashboard — the "Final Plan" as persisted, trackable milestones,
-// rendered as the plain List view of the tracker. Progress lives on the server (per site)
-// and advances two ways: the owner toggles a task, OR the weekly verification crawl detects
-// the recommended artifact live on the site and auto-marks it "Verified ✓". The data itself
-// is owned by the shared QuestTracker (one instance in TrackerView, read by both the List
-// and the Quest Map), so the two views never disagree.
+// rendered as the tracked list at the heart of the Strategy tab. Progress lives on the
+// server (per site) and advances two ways: the owner toggles a task, OR the weekly
+// verification crawl detects the recommended artifact live on the site and auto-marks it
+// "Verified ✓". The data itself is owned by the shared QuestTracker (one instance in
+// TrackerView, read by this list and the Roadmap tab's Quest Map), so the two tabs never
+// disagree.
 
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { Milestone, MilestoneStatus, MilestoneTask } from "@/lib/types";
 import { manualCopyHint, selectField, useCopyAction } from "@/lib/copy";
+import { phaseDisplayTitle } from "@/lib/phases";
 import { Check } from "./ui/icons";
 import { TaskHowTo } from "./TaskHowTo";
 import type { QuestTracker } from "./quest/useQuestTracker";
@@ -36,7 +38,7 @@ export const STATUS_META: Record<MilestoneStatus, { label: string; pill: string;
 const STATUS_ORDER: MilestoneStatus[] = ["pending", "in_progress", "verified_completed"];
 
 export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
-  const { dash, error, verifying, lastVerify, rotating, shareUrl, checkSite } = tracker;
+  const { dash, error, verifying, lastVerify, shareUrl, checkSite } = tracker;
   const verifyNote = lastVerify
     ? lastVerify.newlyVerified > 0
       ? `Nice — we found ${lastVerify.newlyVerified} change${lastVerify.newlyVerified === 1 ? "" : "s"} live and marked ${lastVerify.newlyVerified === 1 ? "it" : "them"} verified.`
@@ -49,18 +51,6 @@ export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
     if (task.status === status) return;
     api.track("milestone_task_status", { task_key: task.task_key, status });
     void tracker.setStatus(task.task_key, status);
-  };
-
-  // Rotation is destructive for anyone holding the old link — hard-confirm before the
-  // shared tracker revokes it and re-derives shareUrl for every expander in both views.
-  const rotateLink = () => {
-    if (
-      !window.confirm(
-        "This will permanently disable the current link for anyone who has it. Are you sure?",
-      )
-    )
-      return;
-    void tracker.rotateShareLink();
   };
 
   if (error && !dash) {
@@ -84,15 +74,13 @@ export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
 
   return (
     <div className="space-y-6">
-      <ManageAccess shareUrl={shareUrl} rotating={rotating} onRotate={rotateLink} />
-
-      {/* headline progress — the visible "Your implementation roadmap" heading lives in
-          TrackerView (above the List ⇄ Map toggle), so this card shows the count alone; the
-          sr-only heading keeps the outline from filing the roadmap under "Manage developer
-          access" (the previous card's h3). */}
+      {/* headline progress + the automatic site check. The Developer handoff card is its
+          own separate section (DeveloperHandoffPanel), composed by the Strategy tab. */}
       <div className="card p-5 sm:p-6">
-        <h3 className="sr-only">Roadmap progress</h3>
-        <div className="mb-1.5 flex items-baseline justify-end">
+        {/* A real heading so the tracked plan is reachable by heading navigation (the tab's
+            other h3s are the extras and the developer handoff). */}
+        <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="label-mono">Automatic site check</h3>
           <span className="font-mono text-xs text-ink-500">
             {progress.verified} / {progress.total} verified
           </span>
@@ -117,7 +105,8 @@ export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
                 <span className="font-medium text-amber-200">{progress.in_progress} in progress</span> ·{" "}
               </>
             )}
-            We re-check your site every week and tick off changes automatically.
+            Our crawler re-checks your live site every week and marks each step done the moment
+            the change is detected — or check on demand.
           </p>
           <button
             type="button"
@@ -155,32 +144,38 @@ export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
   );
 }
 
-// Manage Developer Access — shows the current master share link and lets the owner kill a
-// leaked one and issue a fresh link in a single click (with a hard confirm). Sits above the
-// progress bar so link hygiene is the first thing an owner sees.
-function ManageAccess({
-  shareUrl,
-  rotating,
-  onRotate,
-}: {
-  shareUrl: string | null;
-  rotating: boolean;
-  onRotate: () => void;
-}) {
+// Developer handoff — its own clearly separate section on the Strategy tab (pulled out of
+// the gamified roadmap). For teams with a dev team: the master read-only tracking link that
+// gives a developer the whole plan and live progress, with one-click revoke+reissue (hard
+// confirm — rotation kills the old link for anyone holding it). Each step's paste-ready
+// technical brief lives in that step's "Send to Developer" expander above.
+export function DeveloperHandoffPanel({ tracker }: { tracker: QuestTracker }) {
+  const { shareUrl, rotating } = tracker;
   const inputRef = useRef<HTMLInputElement>(null);
   const { phase, copy } = useCopyAction({
     getText: () => shareUrl,
     selectFallback: () => selectField(inputRef.current),
     clearSelection: () => inputRef.current?.setSelectionRange(0, 0),
   });
+  const onRotate = () => {
+    if (
+      !window.confirm(
+        "This will permanently disable the current link for anyone who has it. Are you sure?",
+      )
+    )
+      return;
+    void tracker.rotateShareLink();
+  };
   return (
-    <div className="card p-5 sm:p-6">
+    <div className="card border-accent/20 p-5 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-base font-semibold">Manage developer access</h3>
+          <span className="label-mono !text-accent">For teams with a developer</span>
+          <h3 className="mt-1 text-base font-semibold">Developer handoff</h3>
           <p className="mt-0.5 max-w-xl text-sm text-ink-500">
             One read-only link gives a developer your whole plan and live progress — no login. Share
-            it freely; revoke it the moment it should stop working.
+            it freely; revoke it the moment it should stop working. Every step above also carries a
+            paste-ready technical brief under “Send to Developer”.
           </p>
         </div>
         <button
@@ -241,7 +236,7 @@ function MilestoneCard({
       <div className="border-b border-ink/[0.06] bg-paper-200/40 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
           <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.pill}`}>{meta.label}</span>
-          <span className="font-semibold">{milestone.title}</span>
+          <h4 className="font-semibold">{phaseDisplayTitle(milestone.milestone_key, milestone.title)}</h4>
           <span className="font-mono text-xs text-ink-300">
             {verified}/{milestone.tasks.length} verified
           </span>

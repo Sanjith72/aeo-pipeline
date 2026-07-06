@@ -1,10 +1,10 @@
 "use client";
 
 // Data ownership for the implementation tracker — the single source of truth behind BOTH
-// presentations (the gamified Quest Map and the plain List). One instance lives in
-// TrackerView and is handed to both views, so a status change, "check my site" verify, or
-// share-link rotation made in either view is reflected in the other immediately — no
-// duplicate syncs, no drift between the two.
+// presentations (the gamified Quest Map on the Roadmap tab and the merged Strategy list).
+// One instance lives in TrackerView and is handed to both facets, so a status change,
+// "check my site" verify, or share-link rotation made on either tab is reflected in the
+// other immediately — no duplicate syncs, no drift between the two.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 

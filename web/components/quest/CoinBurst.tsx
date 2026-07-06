@@ -46,12 +46,13 @@ export function CoinBurst({ burst, onDone }: { burst: BurstSpec | null; onDone: 
           return (
             <m.span
               key={`${burst.key}-${i}`}
-              className="absolute flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-stone-900 shadow"
+              className="absolute flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-paper shadow"
               style={{
                 left: `${burst.xPct}%`,
                 top: `${burst.yPct}%`,
                 background: burst.color,
-                boxShadow: burst.bonus ? "0 0 0 2px rgba(250,204,21,0.7)" : undefined,
+                // bonus ring = the app's "verified" emerald, not an off-palette yellow
+                boxShadow: burst.bonus ? "0 0 0 2px rgba(16,185,129,0.7)" : undefined,
               }}
               initial={{ x: "-50%", y: "-50%", opacity: 0, scale: 0.3 }}
               animate={{

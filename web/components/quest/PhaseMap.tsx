@@ -163,7 +163,7 @@ export function PhaseMap({
               strokeLinecap="round"
               strokeDasharray={cleared ? undefined : "5 6"}
               vectorEffect="non-scaling-stroke"
-              opacity={cleared ? 0.95 : 0.5}
+              opacity={cleared ? 0.95 : 0.8}
             />
           );
         })}

@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { m, Tally, useReducedMotion } from "@/components/motion/primitives";
+import { phaseDisplayBlurb, phaseDisplayTitle } from "@/lib/phases";
 import type { QuestTheme } from "@/lib/quest/theme";
 import type { QuestPhase } from "@/lib/quest/types";
 import type { MilestoneStatus } from "@/lib/types";
@@ -60,15 +61,21 @@ export function PhaseTab({
 
   const panelId = `quest-phase-${phase.key}`;
   const lockState = phase.locked && !justUnlocked;
+  // Shared display names (Quick Wins / Foundation / Growth & Scale) — the stored title,
+  // stripped of any legacy "Phase N —" prefix, is only the unknown-key fallback.
+  const title = phaseDisplayTitle(phase.key, phase.title.replace(/^Phase \d+\s*[—-]\s*/, ""));
+  const blurb = phaseDisplayBlurb(phase.key, phase.blurb);
 
   return (
-    <div className={`card overflow-hidden transition-opacity ${lockState ? "opacity-65" : "opacity-100"}`}>
+    // Locked phases dim only slightly — the padlock pill is the state signal. A heavier
+    // fade (the old opacity-65) pushed the pill/blurb text below WCAG AA on dark paper.
+    <div className={`card overflow-hidden transition-opacity ${lockState ? "opacity-90" : "opacity-100"}`}>
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={open}
         aria-controls={panelId}
-        aria-label={`Phase ${phase.index + 1}: ${phase.title.replace(/^Phase \d+\s*[—-]\s*/, "")} (${phase.locked ? "locked, preview only" : "unlocked"})`}
+        aria-label={`Phase ${phase.index + 1}: ${title} (${phase.locked ? "locked, preview only" : "unlocked"})`}
         className="flex w-full items-center gap-3 px-4 py-3 text-left sm:px-5"
       >
         <span aria-hidden className="text-ink-300 transition-transform" style={{ transform: open ? "rotate(90deg)" : "none" }}>
@@ -81,9 +88,9 @@ export function PhaseTab({
           </span>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="label-mono !text-[10px]">Phase {phase.index + 1}</span>
-            <span className="truncate font-semibold">{phase.title.replace(/^Phase \d+\s*[—-]\s*/, "")}</span>
+            <span className="truncate font-semibold">{title}</span>
             {lockState && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-ink/[0.06] px-2 py-0.5 text-[10px] text-ink-300">
+              <span className="inline-flex items-center gap-1 rounded-full bg-ink/[0.06] px-2 py-0.5 text-[10px] text-ink-500">
                 🔒 Locked
               </span>
             )}
@@ -121,7 +128,7 @@ export function PhaseTab({
         </div>
         {/* coin total for this phase */}
         <span className="flex shrink-0 items-center gap-1 text-sm">
-          <span className="flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold text-stone-900" style={{ background: theme.coinColor }}>
+          <span className="flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold text-paper" style={{ background: theme.coinColor }}>
             ¢
           </span>
           <Tally value={phase.coinsEarned} className="font-semibold tabular-nums" />
@@ -130,7 +137,7 @@ export function PhaseTab({
 
       {open && (
         <div id={panelId} className="border-t border-ink/[0.06] px-3 pb-4 pt-1 sm:px-4">
-          <p className="px-1 pt-2 text-xs text-ink-500">{phase.blurb}</p>
+          <p className="px-1 pt-2 text-xs text-ink-500">{blurb}</p>
           <PhaseMap
             phase={phase}
             theme={theme}

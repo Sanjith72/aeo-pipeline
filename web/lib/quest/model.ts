@@ -95,6 +95,9 @@ export function buildQuestModel(
     return {
       key: m.milestone_key,
       index: mi,
+      // Raw server titles — the display layer (PhaseTab / MilestoneCard) maps known phase
+      // keys onto the shared Quick Wins / Foundation / Growth & Scale names (lib/phases),
+      // kept out of here so this module stays runnable under node --test.
       title: m.title,
       blurb: m.blurb,
       tasks,

@@ -1,9 +1,10 @@
 "use client";
 
-// The task detail dialog opened from a node. Shows what the task is, why it matters, and the
-// action(s) to complete it, reusing the shipped how-to / DIY / Developer-handoff guide.
-// "Mark Complete" defeats the enemy + drops coins immediately (manual attestation); the
-// weekly crawl later adds the honest "Verified live ✓" flourish. Read-only for locked tasks.
+// The task detail dialog opened from a node. Shows what the task is, why it matters, and
+// the action(s) to complete it, reusing the shipped how-to / DIY guide (the Developer
+// handoff lives on the Strategy tab, not in the map). "Mark Complete" defeats the enemy +
+// drops coins immediately (manual attestation); the weekly crawl later adds the honest
+// "Verified live ✓" flourish. Read-only for locked tasks.
 
 import { useEffect, useRef } from "react";
 
@@ -142,8 +143,10 @@ export function TaskDetailPanel({
             {whyItMatters(task)}
           </p>
 
-          {/* The full guide: context ("Where you are now" / "What to do" / "How to do it")
-              plus the DIY / Send-to-Developer tabs — same component the list view uses. */}
+          {/* The DIY guide: context ("Where you are now" / "What to do" / "How to do it")
+              plus the do-it-yourself steps — same component the Strategy list uses. The
+              Developer Handoff deliberately does NOT live here anymore: it has its own
+              section on the Strategy tab, so the map stays a play surface. */}
           <div className="mt-3">
             <TaskHowTo
               taskKey={task.milestoneTask.task_key}
@@ -156,7 +159,13 @@ export function TaskDetailPanel({
               rawSnippet={task.milestoneTask.raw_snippet}
               devBrief={task.milestoneTask.dev_brief}
               shareUrl={shareUrl}
+              showDeveloper={false}
             />
+            <p className="mt-2 text-[11px] text-ink-300">
+              Working with a developer? The paste-ready brief for this task lives on the{" "}
+              <span className="font-medium text-ink-500">Strategy</span> tab, under each step and in
+              the Developer handoff section.
+            </p>
           </div>
 
           {/* actions */}

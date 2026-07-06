@@ -21,12 +21,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# Human-facing milestone titles per phase — the "roadmap" framing the dashboard shows
-# (Phase 1 / 2 / 3) layered on top of build_plan's time-based phase keys + blurbs.
+# Human-facing milestone titles per phase — the "roadmap" framing the dashboard shows,
+# layered on top of build_plan's time-based phase keys + blurbs. Mirrors the web app's
+# lib/phases.PHASE_DISPLAY (the sync upserts titles, so edits here propagate to saved rows).
 _PHASE_MILESTONE: dict[str, dict[str, str]] = {
-    "week_1": {"title": "Phase 1 — Core setup", "blurb": "The highest-impact pages — do these first."},
-    "week_2_4": {"title": "Phase 2 — Content expansion", "blurb": "Round out coverage and authority."},
-    "later": {"title": "Phase 3 — Polish & reach", "blurb": "Nice-to-haves once the essentials are live."},
+    "week_1": {"title": "Quick Wins", "blurb": "Fast, high-leverage fixes — do these first."},
+    "week_2_4": {"title": "Foundation", "blurb": "Make your core pages solid, complete, and trustworthy."},
+    "later": {"title": "Growth & Scale", "blurb": "Longer-term moves that compound over time."},
 }
 
 

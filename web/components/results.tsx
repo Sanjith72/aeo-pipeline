@@ -5,7 +5,7 @@
 // language here. The centerpiece is the interactive, phased plan (#10/#13): work it in
 // the app, check things off, with both an AI prompt and a human how-to per task.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type {
   AuditJob,
@@ -19,17 +19,18 @@ import type {
   SiteProfile,
   SitemapNode,
   StrategyAction,
-  StrategyView,
   StructuredPlan,
   VerifiedOutcome,
 } from "@/lib/types";
 import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
+import { dedupeActionsAgainstPlan } from "@/lib/phases";
 import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/score";
 import { predictedLiftChip, reconcileLabel } from "@/lib/predictedLift";
 import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
 import { ArrowRight, Check, Sparkle } from "./ui/icons";
-import { Detail, TaskHowTo } from "./TaskHowTo";
-import { TrackerView } from "./quest/TrackerView";
+import { TaskHowTo } from "./TaskHowTo";
+import { StrategyExtras } from "./StrategyExtras";
+import { TrackerView, type TrackerFacet } from "./quest/TrackerView";
 
 const EFFORT_PILL: Record<string, string> = {
   low: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
@@ -238,6 +239,14 @@ function VerifiedLive({ verified }: { verified: VerifiedOutcome[] }) {
   );
 }
 
+// Resume context (Spec #1): present when this view is hydrating a saved /plan/<id> state,
+// so the no-domain checklist seeds from and mirrors to the persisted plan_state.
+export interface ResumeContext {
+  planStateId: string;
+  initialDone: string[];
+  score: number | null;
+}
+
 export function ResultsView({
   businessName,
   domain,
@@ -256,6 +265,8 @@ export function ResultsView({
   personalizeProgress,
   onDownloadZip,
   onEdit,
+  resume,
+  resumed = false,
 }: {
   businessName: string;
   domain?: string;
@@ -275,21 +286,26 @@ export function ResultsView({
   personalizeProgress: string | null;
   onDownloadZip: () => void;
   onEdit: () => void;
+  // Saved-plan hydration (/plan/<id>): identical view, seeded from the persisted state.
+  resume?: ResumeContext;
+  // Tweaks the header copy for the resumed entry ("Your saved plan" instead of
+  // "Analysis complete") — the tabs and panels below are exactly the build-flow ones.
+  resumed?: boolean;
 }) {
   const tabs: { id: TabId; label: string }[] = [
     ...(profile ? [{ id: "overview" as const, label: "Overview" }] : []),
     ...(plan ? [{ id: "blueprint" as const, label: "Your website plan" }] : []),
-    ...(profile && profile.actions.length > 0 ? [{ id: "actions" as const, label: "Roadmap" }] : []),
-    ...(deliverables?.strategy && deliverables.strategy.groups.length > 0
-      ? [{ id: "strategy" as const, label: "Strategy" }]
-      : []),
-    // The plan/tracker (PlanPanel) used to live in its own "Your plan" (kit) tab; it now
-    // renders on the default Overview tab so it loads without a tab switch. A bare-plan
-    // fallback (no profile → no Overview tab) keeps it reachable.
+    // Roadmap = the gamified quest map, and nothing else. It's the play surface for the
+    // site-backed tracker, so it needs a domain to verify against.
+    ...(profile && domain ? [{ id: "actions" as const, label: "Roadmap" }] : []),
+    // Strategy = the single actionable list (the old Roadmap + Strategy tabs merged):
+    // tracked steps in phase order, automatic site-check, and the developer handoff.
+    ...(profile ? [{ id: "strategy" as const, label: "Strategy" }] : []),
+    // A bare-plan fallback (no profile → no Overview/Strategy tabs) keeps the plan reachable.
     ...(profile ? [] : [{ id: "kit" as const, label: "Your plan" }]),
   ];
-  // Land on the first available tab: Overview when there's a profile (which opens on the
-  // Quest map tracker), otherwise the first no-profile tab (the blueprint, in practice).
+  // Land on the first available tab: Overview when there's a profile, otherwise the first
+  // no-profile tab (the blueprint, in practice).
   const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
 
   // Spec #2 "Verified live": a re-crawl can confirm a recommended fix actually landed
@@ -306,22 +322,27 @@ export function ResultsView({
   // tab bar keeps the user oriented across switches, so panels now simply size to their own
   // content and no empty gap remains.
 
-  // The plan/tracker — rendered on the Overview tab (its home now), and reused on the
-  // no-profile fallback "Your plan" tab. Defined once so there's a single PlanPanel.
-  // `visible` lets the always-mounted subtree defer celebrations and "viewed" analytics
-  // until the user can actually see it.
-  const planVisible = tab === "overview" || tab === "kit";
+  // The plan/tracker — one always-mounted PlanPanel serving two tabs as facets: the
+  // Roadmap tab shows the gamified quest map, the Strategy tab the merged actionable list
+  // (plus the no-profile "Your plan" fallback). Mounted once so the plan keeps auto-building
+  // on load even while another tab is open, and `visible` lets the subtree defer
+  // celebrations and "viewed" analytics until the user can actually see it.
+  const planVisible = tab === "actions" || tab === "strategy" || tab === "kit";
+  const planFacet: TrackerFacet = tab === "actions" ? "map" : "strategy";
   const planPanel = (
     <PlanPanel
       visible={planVisible}
+      facet={planFacet}
       deliverables={deliverables}
       loading={delivLoading}
       slowMode={aiPersonalization}
       domain={domain?.trim() || undefined}
       businessName={businessName}
       cmsType={cmsType}
+      profileActions={profile?.actions ?? []}
       error={delivError}
-      storageKey={`aeo-plan:${businessName.toLowerCase()}`}
+      storageKey={resume ? `aeo-plan:resumed:${resume.planStateId}` : `aeo-plan:${businessName.toLowerCase()}`}
+      resume={resume}
       onGenerate={onGenerateDeliverables}
       onDownloadZip={onDownloadZip}
       onPersonalize={onPersonalize}
@@ -340,17 +361,21 @@ export function ResultsView({
             <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-white">
               <Check width={10} height={10} />
             </span>
-            Analysis complete
+            {resumed ? "Your saved plan" : "Analysis complete"}
           </span>
           <h2 className="mt-2 text-2xl font-semibold sm:text-3xl">
-            Here's your plan{businessName ? `, ${businessName}` : ""}
+            {resumed
+              ? `${businessName || "Your"}${businessName ? "'s" : ""} AEO plan`
+              : `Here's your plan${businessName ? `, ${businessName}` : ""}`}
           </h2>
           <p className="mt-1 max-w-2xl text-ink-500">
-            Work through it at your own pace — start with the quick wins.
+            {resumed
+              ? "Pick up where you left off — your progress is saved to this link, on any device."
+              : "Work through it at your own pace — start with the quick wins."}
           </p>
         </div>
         <button onClick={onEdit} className="btn-ghost text-[13px]">
-          ← Change my answers
+          {resumed ? "← Start a new plan" : "← Change my answers"}
         </button>
       </div>
 
@@ -375,12 +400,10 @@ export function ResultsView({
 
       {/* One persistent tabpanel hosts every tab's content, its id/label following the active
           tab so each tab button's aria-controls resolves to the panel that really holds what's
-          on screen. Inside it, the plan/tracker leads the page — the Quest map is the first
-          thing the user sees on the Overview tab (or the no-profile "Your plan" fallback) — and
-          stays MOUNTED across tab switches (hidden, not unmounted, mirroring TrackerView's own
-          Map ⇄ List handling): leaving and returning must not re-sync milestones (a DB write),
-          re-fire analytics, or reset the toggle / open phases — and the plan keeps auto-building
-          on load even when another tab opens first. */}
+          on screen. The plan/tracker serves the Roadmap and Strategy tabs as facets of ONE
+          mounted subtree (hidden, not unmounted): leaving and returning must not re-sync
+          milestones (a DB write), re-fire analytics, or reset open phases — and the plan keeps
+          auto-building on load even while the Overview tab is open. */}
       <div id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`}>
         <div hidden={!planVisible} className="animate-fade-in">
           {planPanel}
@@ -388,18 +411,43 @@ export function ResultsView({
         <div key={tab} className="animate-fade-in">
           {tab === "overview" && profile && (
             <>
-              {/* Below the tracker: the score and its lift story (FixImpact), then the
-                  profile detail. */}
-              <ScoreRing profile={profile} className="mb-6 mt-8" />
+              <ScoreRing profile={profile} className="mb-6" />
               <FixImpact data={recheck} />
+              <PlanTabsPointer hasRoadmap={!!domain} onOpen={setTab} />
               <OverviewPanel profile={profile} auditJob={auditJob} />
             </>
           )}
           {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
-          {tab === "actions" && profile && <RoadmapPanel profile={profile} />}
-          {tab === "strategy" && deliverables?.strategy && <StrategyPanel strategy={deliverables.strategy} />}
-          {/* "kit" (the no-profile fallback) is fully served by the always-mounted plan panel above. */}
+          {/* "actions" (Roadmap), "strategy", and "kit" are fully served by the
+              always-mounted plan panel above. */}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// The Overview's pointer to where the plan now lives: the gamified Roadmap (journey view)
+// and the Strategy checklist (actionable list) — the tracker itself no longer renders here.
+function PlanTabsPointer({ hasRoadmap, onOpen }: { hasRoadmap: boolean; onOpen: (t: TabId) => void }) {
+  return (
+    <div className="card mb-6 flex flex-wrap items-center justify-between gap-3 p-5">
+      <div className="min-w-0">
+        <h3 className="text-base font-semibold">Your step-by-step plan</h3>
+        <p className="mt-0.5 text-sm text-ink-500">
+          {hasRoadmap
+            ? "Play it as a quest on the Roadmap, or run down the full checklist on Strategy — same plan, two views."
+            : "Run down the full checklist on the Strategy tab."}
+        </p>
+      </div>
+      <div className="flex shrink-0 flex-wrap gap-2">
+        {hasRoadmap && (
+          <button type="button" onClick={() => onOpen("actions")} className="btn-primary !py-2 text-[13px]">
+            Open Roadmap
+          </button>
+        )}
+        <button type="button" onClick={() => onOpen("strategy")} className="btn-ghost !py-2 text-[13px]">
+          Open Strategy
+        </button>
       </div>
     </div>
   );
@@ -791,204 +839,10 @@ function Metric({ label, value, sub }: { label: string; value: string; sub: stri
   );
 }
 
-// ── the phased roadmap (#4) — "Big moves" as an ordered, progressively-disclosed plan ──
-// The flat list of equal-weight actions used to overwhelm ("what do I do first?"). We bucket
-// the same actions into four phases that answer that directly: do the low-effort wins now,
-// then shore up the foundation, then grow, then scale. Each phase collapses, the first is
-// open, and a single running number gives the recommended order across the whole roadmap.
-
-type RoadmapPhase = { key: string; num: string; title: string; objective: string; impact: string };
-
-const ROADMAP_PHASES: RoadmapPhase[] = [
-  { key: "quick", num: "01", title: "Quick wins", objective: "Fast, high-leverage fixes you can ship this week.", impact: "Immediate gains in how AI reads you" },
-  { key: "foundation", num: "02", title: "Foundation", objective: "Make your core pages solid, complete, and trustworthy.", impact: "A stable base AI can rely on" },
-  { key: "growth", num: "03", title: "Growth", objective: "Expand your coverage and deepen your authority.", impact: "More questions you're the answer to" },
-  { key: "scale", num: "04", title: "Scale", objective: "Longer-term moves that compound over time.", impact: "A durable lead over competitors" },
-];
-
-// low effort → quick wins; medium → foundation; high effort split by priority into the
-// nearer-term growth moves vs the bigger long-term scale moves.
-function bucketRoadmap(actions: StrategyAction[]): Record<string, StrategyAction[]> {
-  const buckets: Record<string, StrategyAction[]> = { quick: [], foundation: [], growth: [], scale: [] };
-  const sorted = [...actions].sort((a, b) => a.priority - b.priority);
-  const high = sorted.filter((a) => a.effort === "high");
-  for (const a of sorted) {
-    if (a.effort === "low") buckets.quick.push(a);
-    else if (a.effort === "medium") buckets.foundation.push(a);
-    else if (high.indexOf(a) < Math.ceil(high.length / 2)) buckets.growth.push(a);
-    else buckets.scale.push(a);
-  }
-  return buckets;
-}
-
-function summarizeEffort(items: StrategyAction[]): string {
-  const set = new Set(items.map((a) => a.effort));
-  return set.size === 1 ? EFFORT_LABEL[[...set][0]] ?? humanizeToken([...set][0]) : "Mixed effort";
-}
-
-function RoadmapPanel({ profile }: { profile: SiteProfile }) {
-  const buckets = bucketRoadmap(profile.actions);
-  const phases = ROADMAP_PHASES.filter((p) => buckets[p.key].length > 0);
-  const [open, setOpen] = useState<Set<string>>(() => new Set(phases.length ? [phases[0].key] : []));
-  const toggle = (k: string) =>
-    setOpen((prev) => {
-      const next = new Set(prev);
-      if (next.has(k)) next.delete(k);
-      else next.add(k);
-      return next;
-    });
-
-  // one running number across the whole roadmap = the recommended order, regardless of which
-  // phases are expanded (so the numbering never shifts when a phase is collapsed).
-  const ordered = phases.flatMap((p) => buckets[p.key]);
-  const orderOf = new Map(ordered.map((a, i) => [a, i + 1]));
-
-  return (
-    <div>
-      <p className="mb-5 text-sm text-ink-500">
-        Your big moves as a roadmap — in the order that pays off fastest. Start at the top; each phase
-        builds on the one before. The step-by-step, page-by-page version is on the{" "}
-        <span className="font-medium text-ink">Overview</span> tab.
-      </p>
-      <div className="space-y-4">
-        {phases.map((p, pi) => {
-          const items = buckets[p.key];
-          const isOpen = open.has(p.key);
-          return (
-            <div
-              key={p.key}
-              className="step-in overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100"
-              style={{ animationDelay: `${pi * 70}ms` }}
-            >
-              <button
-                type="button"
-                onClick={() => toggle(p.key)}
-                aria-expanded={isOpen}
-                className="flex w-full items-center gap-4 px-4 py-3.5 text-left transition-colors hover:bg-paper-200/40"
-              >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink font-mono text-xs text-paper-100">
-                  {p.num}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold">{p.title}</span>
-                    <span className="rounded-full bg-ink/[0.04] px-2 py-0.5 font-mono text-[11px] text-ink-500">
-                      {items.length} move{items.length === 1 ? "" : "s"}
-                    </span>
-                  </span>
-                  <span className="mt-0.5 block text-xs text-ink-300">{p.objective}</span>
-                </span>
-                <span
-                  aria-hidden
-                  className={`shrink-0 font-mono text-lg leading-none text-ink-300 transition-transform duration-300 ${isOpen ? "rotate-45" : ""}`}
-                >
-                  +
-                </span>
-              </button>
-              {isOpen && (
-                <div className="step-in border-t border-ink/[0.06] px-4 py-4">
-                  <div className="mb-3 flex flex-wrap gap-x-6 gap-y-1 text-xs">
-                    <span>
-                      <span className="label-mono">Expected impact</span>{" "}
-                      <span className="text-ink-500">{p.impact}</span>
-                    </span>
-                    <span>
-                      <span className="label-mono">Effort</span>{" "}
-                      <span className="text-ink-500">{summarizeEffort(items)}</span>
-                    </span>
-                  </div>
-                  <ul className="space-y-2.5">
-                    {items.map((a) => (
-                      <li
-                        key={`${a.priority}-${a.title}`}
-                        className="flex gap-3 rounded-lg border border-ink/[0.06] bg-paper-200/30 p-3"
-                      >
-                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-ink/15 font-mono text-[11px] text-ink-300">
-                          {String(orderOf.get(a) ?? 0).padStart(2, "0")}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-medium">{a.title}</span>
-                            <span className="label-mono rounded bg-ink/[0.04] px-1.5 py-0.5 !tracking-[0.1em]">
-                              {humanizeToken(a.category)}
-                            </span>
-                            <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${EFFORT_PILL[a.effort] ?? "bg-ink/5 text-ink-500"}`}>
-                              {EFFORT_LABEL[a.effort] ?? humanizeToken(a.effort)}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-sm leading-relaxed text-ink-500">{a.detail}</p>
-                          {a.related_slugs.length > 0 && (
-                            <p className="mt-1.5 font-mono text-xs text-ink-300">pages: {a.related_slugs.join("  ·  ")}</p>
-                          )}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ── strategy (tasks clustered by difficulty / maturity) — R2-5 ───────────────────
-
-const DIFFICULTY_PILL: Record<string, string> = {
-  foundation: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
-  growth: "bg-amber-500/10 text-amber-200 ring-1 ring-amber-500/30",
-  advanced: "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30",
-};
-
-function StrategyPanel({ strategy }: { strategy: StrategyView }) {
-  return (
-    <div>
-      <p className="mb-4 text-sm text-ink-500">
-        The same work, grouped by how hard it is — start with the foundations, then build up.
-        Each group explains what it is, why it matters, and how to approach it.
-      </p>
-      <div className="space-y-5">
-        {strategy.groups.map((g, i) => (
-          <div
-            key={g.grade}
-            className="step-in overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100"
-            style={{ animationDelay: `${Math.min(i, 4) * 70}ms` }}
-          >
-            <div className="border-b border-ink/[0.06] bg-paper-200/40 px-4 py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${DIFFICULTY_PILL[g.grade] ?? "bg-ink/5 text-ink-500"}`}>
-                  {g.difficulty}
-                </span>
-                <span className="font-semibold">{g.title}</span>
-                <span className="font-mono text-xs text-ink-300">{g.tasks.length} task{g.tasks.length === 1 ? "" : "s"}</span>
-              </div>
-              <div className="mt-2.5 space-y-2">
-                <Detail label="What" value={g.readme.what} />
-                <Detail label="Why" value={g.readme.why} />
-                <Detail label="How" value={g.readme.how} />
-              </div>
-            </div>
-            <ul className="divide-y divide-ink/[0.06]">
-              {g.tasks.map((t) => (
-                <li key={t.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
-                  <span className="min-w-0">
-                    <span className="font-medium">{t.label}</span>
-                    <span className="mt-0.5 block text-xs text-ink-300">{t.action_required}</span>
-                  </span>
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${EFFORT_PILL[t.effort] ?? "bg-ink/5 text-ink-500"}`}>
-                    {EFFORT_LABEL[t.effort] ?? humanizeToken(t.effort)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+// The old standalone Roadmap ("big moves" accordion) and Strategy (difficulty clusters)
+// panels are gone: their content merged into the single Strategy tab (the tracked milestone
+// list + StrategyExtras via lib/phases.dedupeActionsAgainstPlan), and the Roadmap tab now
+// hosts only the gamified quest map.
 
 // ── website plan (ideal sitemap) ────────────────────────────────────────────────
 
@@ -1644,14 +1498,17 @@ function BuildProgress({ slowMode }: { slowMode: boolean }) {
 
 function PlanPanel({
   visible,
+  facet,
   deliverables,
   loading,
   slowMode,
   domain,
   businessName,
   cmsType,
+  profileActions,
   error,
   storageKey,
+  resume,
   onGenerate,
   onDownloadZip,
   onPersonalize,
@@ -1663,14 +1520,21 @@ function PlanPanel({
   // False while this panel is mounted but hidden behind another results tab — the tracker
   // below defers celebrations and "viewed" analytics until the user can actually see it.
   visible: boolean;
+  // Which face of the plan the active tab wants: the gamified map (Roadmap tab) or the
+  // merged actionable list (Strategy tab / no-profile fallback).
+  facet: TrackerFacet;
   deliverables: DeliverablesResponse | null;
   loading: boolean;
   slowMode: boolean;
   domain?: string;
   businessName: string;
   cmsType?: string | null;
+  // The audit's strategic actions, merged (deduped) into the Strategy list.
+  profileActions: StrategyAction[];
   error: string | null;
   storageKey: string;
+  // Saved-plan hydration: seeds the no-domain checklist from the persisted /plan/<id> state.
+  resume?: ResumeContext;
   onGenerate: () => void;
   onDownloadZip: () => void;
   onPersonalize: () => void;
@@ -1680,6 +1544,13 @@ function PlanPanel({
   aiPersonalization: boolean;
 }) {
   const [filesOpen, setFilesOpen] = useState(false);
+
+  // The no-domain path has no milestone tracker, so the Roadmap↔Strategy merge happens
+  // here: the audit's big moves minus everything the plan already tracks as a task.
+  const extraActions = useMemo(
+    () => dedupeActionsAgainstPlan(profileActions, deliverables?.plan ?? null),
+    [profileActions, deliverables?.plan],
+  );
 
   // Auto-build the plan the moment this panel opens — no "Build my plan" click needed. The
   // build is deterministic + instant, so the user lands straight on the (Quest map) tracker.
@@ -1736,12 +1607,33 @@ function PlanPanel({
     <div>
       {hasPlan && deliverables.plan ? (
         // With a real site, the plan becomes a persisted, server-tracked roadmap that the
-        // weekly crawl auto-verifies. Without one (brief-only flow), fall back to the
-        // local, offline checklist so the experience still works with no DB/site.
+        // weekly crawl auto-verifies — the quest map on the Roadmap tab and the merged
+        // actionable list on the Strategy tab, both reading ONE tracker. Without a site
+        // (brief-only flow / resumed no-domain plan), fall back to the local checklist plus
+        // the same merged strategic moves, so the Strategy tab still tells the whole story.
         domain ? (
-          <TrackerView domain={domain} plan={deliverables.plan} businessName={businessName} cmsType={cmsType} visible={visible} />
+          <TrackerView
+            domain={domain}
+            plan={deliverables.plan}
+            businessName={businessName}
+            cmsType={cmsType}
+            facet={facet}
+            profileActions={profileActions}
+            visible={visible}
+          />
         ) : (
-          <PhasedPlanView plan={deliverables.plan} storageKey={storageKey} visible={visible} />
+          <div className="space-y-6">
+            <PhasedPlanView
+              plan={deliverables.plan}
+              storageKey={storageKey}
+              planStateId={resume?.planStateId}
+              initialDone={resume?.initialDone}
+              serverBacked={!!resume}
+              score={resume?.score ?? null}
+              visible={visible}
+            />
+            {extraActions.length > 0 && <StrategyExtras actions={extraActions} />}
+          </div>
         )
       ) : (
         <div className="rounded-xl border border-dashed border-ink/15 p-8 text-center">
@@ -1756,6 +1648,9 @@ function PlanPanel({
         </div>
       )}
 
+      {/* Hidden entirely when this session holds no downloadable assets (a resumed plan
+          hydrates the interactive plan only — rebuilding regenerates the files). */}
+      {deliverables.assets.length > 0 && (
       <div className="mt-6 rounded-xl border border-ink/[0.08]">
         <button
           type="button"
@@ -1804,6 +1699,7 @@ function PlanPanel({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -1894,64 +1790,98 @@ export function triggerDownload(blob: Blob, filename: string) {
 
 // ── resumable plan view (Spec #1) — what /plan/<id> renders ──────────────────────
 
+// The resumed plan is the SAME tabbed results experience as "Build my plan" (Overview /
+// Roadmap / Strategy), hydrated from the persisted plan state instead of wizard state — not
+// a separate page. A domain-backed plan re-syncs the milestone tracker (so the quest map
+// and Strategy list carry live, crawl-verified progress); a brief-only plan seeds the local
+// checklist from the saved done_task_ids and mirrors changes back to this link.
 export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
-  const hasPlan = !!state.plan && state.plan.total > 0;
+  // Hydrate the plan panel from the saved state — no rebuild needed to see your plan.
+  // (Downloadable assets aren't persisted; "Rebuild my plan" regenerates them.)
+  const [deliverables, setDeliverables] = useState<DeliverablesResponse | null>(() =>
+    state.plan && state.plan.total > 0
+      ? { manifest: { bundle: "", asset_count: 0, assets: [] }, plan: state.plan, assets: [] }
+      : null,
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // The panel's rebuild path (also the auto-build for a saved-but-empty plan): regenerate
+  // the deterministic deliverables from the saved identity, same fast path the studio uses.
+  async function regenerate() {
+    setLoading(true);
+    setError(null);
+    try {
+      setDeliverables(
+        await api.deliverables(
+          {
+            name: state.business_name?.trim() || state.domain || "My business",
+            domain: state.domain ?? undefined,
+            services: [],
+            competitors: [],
+            goals: [],
+            use_llm: false,
+            draft_limit: 10,
+          },
+          { signal: AbortSignal.timeout(90_000) },
+        ),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Zip whatever assets a rebuild produced (the files box only shows once assets exist).
+  async function downloadZip() {
+    if (!deliverables || deliverables.assets.length === 0) return;
+    const { default: JSZip } = await import("jszip");
+    const zip = new JSZip();
+    for (const asset of deliverables.assets) zip.file(asset.path, asset.content);
+    triggerDownload(
+      await zip.generateAsync({ type: "blob" }),
+      `${state.business_name?.trim() || "aeo"}-launch-kit.zip`,
+    );
+  }
+
   return (
-    <section className="mx-auto max-w-3xl px-5 py-12 sm:py-16">
-      <div className="mb-6">
-        <span className="label-mono inline-flex items-center gap-2">
-          <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-white">
-            <Check width={10} height={10} />
-          </span>
-          Your saved plan
-        </span>
-        <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">
-          {state.business_name ? `${state.business_name}'s AEO plan` : "Your AEO plan"}
-        </h1>
-        <p className="mt-1 text-ink-500">
-          Pick up where you left off — your progress is saved to this link, on any device.
-        </p>
-        {/* Upgrade path (not "start over"): a resumed/brief-only plan can't get crawl
-            verification — routing to the site-backed build is what unlocks it. Framed as an
-            add-on so it never reads as discarding the saved plan above. */}
-        <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          {/* When the saved plan is tied to a domain, hand it straight to the studio with an
-              `autobuild` flag so the homepage crawls + builds automatically — no re-typing the
-              URL. A brief-only plan (no domain) still routes to the studio to enter one. */}
-          <a
-            href={
-              state.domain
-                ? `/?domain=${encodeURIComponent(state.domain)}${
-                    state.business_name ? `&name=${encodeURIComponent(state.business_name)}` : ""
-                  }&autobuild=1#studio`
-                : "/#studio"
-            }
-            className="btn-accent inline-flex"
-          >
+    <section className="mx-auto max-w-[1240px] py-12 sm:py-16" style={{ padding: "48px clamp(24px, 5vw, 64px)" }}>
+      {/* Upgrade path for brief-only plans: crawl verification needs a site. Framed as an
+          add-on so it never reads as discarding the saved plan below. */}
+      {!state.domain && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/[0.06] p-4">
+          <p className="text-sm text-ink-500">
+            Tie this plan to your website to unlock the automatic weekly site check.
+          </p>
+          <a href="/#studio" className="btn-accent shrink-0 inline-flex">
             Build a plan for your site →
           </a>
-          <span className="text-xs text-ink-300">
-            Tie this plan to your site to unlock automatic weekly verification.
-          </span>
         </div>
-      </div>
-
-      {state.profile && <ScoreRing profile={state.profile} className="mb-8" />}
-
-      {hasPlan ? (
-        <PhasedPlanView
-          plan={state.plan}
-          storageKey={`aeo-plan:resumed:${state.id}`}
-          planStateId={state.id}
-          initialDone={state.done_task_ids}
-          serverBacked
-          score={state.score_snapshot}
-        />
-      ) : (
-        <p className="rounded-xl border border-dashed border-ink/15 p-8 text-center text-sm text-ink-500">
-          This plan doesn&apos;t have any tasks saved yet.
-        </p>
       )}
+      <ResultsView
+        businessName={state.business_name?.trim() ?? ""}
+        domain={state.domain ?? undefined}
+        profile={state.profile}
+        plan={null}
+        auditJob={null}
+        deliverables={deliverables}
+        delivLoading={loading}
+        delivError={error}
+        aiPersonalization={false}
+        cmsType={null}
+        onGenerateDeliverables={regenerate}
+        onPersonalize={() => {}}
+        personalizing={false}
+        personalizeError={null}
+        personalizeProgress={null}
+        onDownloadZip={downloadZip}
+        onEdit={() => {
+          window.location.href = "/#studio";
+        }}
+        resume={{ planStateId: state.id, initialDone: state.done_task_ids, score: state.score_snapshot }}
+        resumed
+      />
     </section>
   );
 }

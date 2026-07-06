@@ -87,7 +87,9 @@ export function EnemyNode({
       <span
         className={[
           "line-clamp-2 max-w-full text-[11px] font-medium leading-tight",
-          state === "locked" ? `${theme.subInkClass} opacity-70` : theme.inkClass,
+          // No extra opacity on locked labels — subInk alone keeps WCAG AA on the dark
+          // stages; the dimmed/blurred glyph and padlock badge carry the locked state.
+          state === "locked" ? theme.subInkClass : theme.inkClass,
         ].join(" ")}
         title={task.label}
       >

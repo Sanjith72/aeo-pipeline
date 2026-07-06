@@ -1,88 +1,81 @@
 "use client";
 
-// The implementation tracker with a List ⇄ Map toggle. Both views render ONE shared
-// QuestTracker instance (owned here), so progress, verify results, and the share link can
-// never disagree between them; the Map (Quest) is the gamified presentation, the List is
-// the plain, dense view. Defaults to the Map so the journey leads, with List one click away.
+// The implementation tracker behind BOTH results tabs. One shared QuestTracker instance
+// (owned here) feeds two facets, so progress, verify results, and the share link can never
+// disagree between them:
+//   • facet "map"      → the Roadmap tab: the gamified Quest Map, nothing else.
+//   • facet "strategy" → the Strategy tab: the merged actionable list — tracked steps in
+//     roadmap phase order (Quick Wins → Foundation → Growth & Scale) with the automatic
+//     site-check crawler, the deduped strategic "big moves" from the audit, and the
+//     Developer handoff section as its own separate element.
+// Both facets stay mounted once opened and toggle via `hidden`, so switching tabs never
+// drops presentation state (open phases, expanded how-tos) or re-syncs milestones.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
-import { api } from "@/lib/api";
-import { MilestoneDashboard } from "../MilestoneDashboard";
-import type { StructuredPlan } from "@/lib/types";
+import { dedupeActionsAgainstPlan } from "@/lib/phases";
+import { DeveloperHandoffPanel, MilestoneDashboard } from "../MilestoneDashboard";
+import { StrategyExtras } from "../StrategyExtras";
+import type { StrategyAction, StructuredPlan } from "@/lib/types";
 import { QuestMap } from "./QuestMap";
 import { useQuestTracker } from "./useQuestTracker";
 
-type View = "map" | "list";
-
-const TABS: { id: View; label: string }[] = [
-  { id: "map", label: "🗺️ Quest map" },
-  { id: "list", label: "☰ List" },
-];
+export type TrackerFacet = "map" | "strategy";
 
 export function TrackerView({
   domain,
   plan,
   businessName,
   cmsType,
+  facet,
+  profileActions,
   visible = true,
 }: {
   domain: string;
   plan: StructuredPlan;
   businessName: string;
   cmsType?: string | null;
+  /** Which results tab is hosting the tracker right now (Roadmap = map, Strategy = list). */
+  facet: TrackerFacet;
+  /** The audit's strategic actions — deduped against the plan for the Strategy facet. */
+  profileActions?: StrategyAction[];
   // False while the tracker is mounted but hidden behind another results tab — the map
   // defers its celebrations and "opened" analytics until it can actually be seen.
   visible?: boolean;
 }) {
-  // The single tracker instance both views render — syncs once, then every status change,
-  // verify, or link rotation from either view lands in the same state.
+  // The single tracker instance both facets render — syncs once, then every status change,
+  // verify, or link rotation from either facet lands in the same state.
   const tracker = useQuestTracker({ domain, plan, businessName, cmsType });
-  const [view, setView] = useState<View>("map");
-  // Track which views have ever been shown. Both stay mounted once opened and toggle via
-  // CSS, so switching never drops presentation state (open phases, expanded how-tos) — the
-  // inactive view simply waits behind `hidden`.
-  const [mounted, setMounted] = useState<Set<View>>(() => new Set<View>(["map"]));
+
+  // Track which facets have ever been shown; mount lazily, then keep mounted behind
+  // `hidden` so tab switches preserve state without re-firing effects.
+  const [mounted, setMounted] = useState<Set<TrackerFacet>>(() => new Set<TrackerFacet>([facet]));
+  if (!mounted.has(facet)) setMounted(new Set(mounted).add(facet));
+
+  // The old Roadmap tab's "big moves", minus everything the plan already tracks as a task.
+  const extraActions = useMemo(
+    () => dedupeActionsAgainstPlan(profileActions ?? [], plan),
+    [profileActions, plan],
+  );
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-base font-semibold">Your implementation roadmap</h3>
-        <div
-          role="tablist"
-          aria-label="Tracker view"
-          className="flex gap-1 rounded-lg border border-ink/10 bg-paper-200/60 p-1 text-[12px]"
-        >
-          {TABS.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={view === id}
-              onClick={() => {
-                if (view === id) return;
-                setView(id);
-                setMounted((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
-                api.track("tracker_view_switch", { view: id });
-              }}
-              className={`rounded-md px-3 py-1.5 transition-all duration-200 ${
-                view === id ? "bg-paper-100 font-medium text-ink shadow-card" : "text-ink-300 hover:text-ink-500"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
+    <div>
       {mounted.has("map") && (
-        <div hidden={view !== "map"}>
-          <QuestMap domain={domain} tracker={tracker} visible={visible && view === "map"} />
+        <div hidden={facet !== "map"}>
+          <QuestMap domain={domain} tracker={tracker} visible={visible && facet === "map"} />
         </div>
       )}
-      {mounted.has("list") && (
-        <div hidden={view !== "list"}>
+      {mounted.has("strategy") && (
+        <div hidden={facet !== "strategy"} className="space-y-6">
+          <p className="text-sm text-ink-500">
+            Every step to take, in the order that pays off fastest — Quick Wins first. Check
+            things off yourself, or publish the change and let the automatic site check verify
+            it for you. Prefer the journey view? That&apos;s the{" "}
+            <span className="font-medium text-ink">Roadmap</span> tab.
+          </p>
           <MilestoneDashboard tracker={tracker} />
+          {extraActions.length > 0 && <StrategyExtras actions={extraActions} />}
+          <DeveloperHandoffPanel tracker={tracker} />
         </div>
       )}
     </div>

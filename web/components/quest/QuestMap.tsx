@@ -1,10 +1,11 @@
 "use client";
 
-// The Quest Map — the gamified presentation of the implementation tracker. Three phase tabs
-// (Pirate / Dungeon / Space), each a themed map of enemy-nodes you defeat by completing the
-// real task underneath. Renders the shared QuestTracker owned by TrackerView (the same
-// instance the List view reads), so both presentations always agree; coins/enemies are
-// honest projections, never invented progress.
+// The Quest Map — the gamified presentation of the implementation tracker and the sole
+// content of the Roadmap tab. Three themed phases (Quick Wins / Foundation / Growth &
+// Scale), each a map of enemy-nodes you defeat by completing the real task underneath.
+// Renders the shared QuestTracker owned by TrackerView (the same instance the Strategy
+// tab's list reads), so both presentations always agree; coins/enemies are honest
+// projections, never invented progress.
 
 import { useEffect, useRef, useState } from "react";
 

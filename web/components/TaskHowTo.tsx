@@ -40,6 +40,9 @@ export interface TaskHowToProps {
   rawSnippet?: string | null;
   devBrief?: string;
   shareUrl?: string | null;
+  /** False hides the "Send to Developer" tab (the gamified Roadmap keeps only the DIY
+   *  guide — developer handoff lives on the Strategy tab as its own section). */
+  showDeveloper?: boolean;
 }
 
 type GuideTab = "diy" | "developer";
@@ -55,8 +58,10 @@ export function TaskHowTo({
   rawSnippet,
   devBrief,
   shareUrl = null,
+  showDeveloper = true,
 }: TaskHowToProps) {
   const [tab, setTab] = useState<GuideTab>("diy");
+  const activeTab: GuideTab = showDeveloper ? tab : "diy";
   return (
     <div className="step-in mt-3 space-y-3">
       {/* 1. Context block — at least "What to do" always shows; the others when present. */}
@@ -66,33 +71,36 @@ export function TaskHowTo({
         {howTo && <Detail label="How to do it" value={howTo} />}
       </div>
 
-      {/* 2. Two-tab panel — B's tab UX verbatim. */}
-      <div
-        role="tablist"
-        aria-label="Implementation options"
-        className="flex gap-1 rounded-lg border border-ink/10 bg-paper-200/60 p-1 text-[12px]"
-      >
-        {(
-          [
-            { id: "diy" as const, label: "I'll do it myself" },
-            { id: "developer" as const, label: "Send to Developer" },
-          ]
-        ).map(({ id, label: tabLabel }) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            onClick={() => setTab(id)}
-            className={`flex-1 rounded-md px-3 py-1.5 transition-all duration-200 ${
-              tab === id ? "bg-paper-100 font-medium text-ink shadow-card" : "text-ink-300 hover:text-ink-500"
-            }`}
-          >
-            {tabLabel}
-          </button>
-        ))}
-      </div>
-      {tab === "diy" ? (
+      {/* 2. Two-tab panel — B's tab UX verbatim. The tablist collapses away when the
+          developer tab is suppressed (only one option left = no choice to present). */}
+      {showDeveloper && (
+        <div
+          role="tablist"
+          aria-label="Implementation options"
+          className="flex gap-1 rounded-lg border border-ink/10 bg-paper-200/60 p-1 text-[12px]"
+        >
+          {(
+            [
+              { id: "diy" as const, label: "I'll do it myself" },
+              { id: "developer" as const, label: "Send to Developer" },
+            ]
+          ).map(({ id, label: tabLabel }) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              onClick={() => setTab(id)}
+              className={`flex-1 rounded-md px-3 py-1.5 transition-all duration-200 ${
+                tab === id ? "bg-paper-100 font-medium text-ink shadow-card" : "text-ink-300 hover:text-ink-500"
+              }`}
+            >
+              {tabLabel}
+            </button>
+          ))}
+        </div>
+      )}
+      {activeTab === "diy" ? (
         <DiyGuide
           taskKey={taskKey}
           actionRequired={actionRequired}
@@ -114,7 +122,7 @@ export function TaskHowTo({
   );
 }
 
-// A label/value row — also reused by results.tsx's StrategyPanel (single source of truth).
+// A label/value row (single source of truth for the label-over-value pattern).
 export function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div>

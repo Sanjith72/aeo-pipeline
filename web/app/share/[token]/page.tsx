@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
+import { phaseDisplayTitle } from "@/lib/phases";
 import type { Milestone, MilestoneTask, SharedPlanResponse } from "@/lib/types";
 import { STATUS_META } from "@/components/MilestoneDashboard";
 import { Check } from "@/components/ui/icons";
@@ -105,7 +106,7 @@ function ReadOnlyMilestone({ milestone }: { milestone: Milestone }) {
       <div className="border-b border-ink/[0.06] bg-paper-200/40 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
           <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.pill}`}>{meta.label}</span>
-          <span className="font-semibold">{milestone.title}</span>
+          <span className="font-semibold">{phaseDisplayTitle(milestone.milestone_key, milestone.title)}</span>
           <span className="font-mono text-xs text-ink-300">
             {verified}/{milestone.tasks.length} verified
           </span>

@@ -61,7 +61,7 @@ _PLAN = {
 def test_plan_to_milestones_maps_phases_and_verify_signals():
     specs = plan_to_milestones(_PLAN)
     assert [s.milestone_key for s in specs] == ["week_1", "later"]
-    assert specs[0].title == "Phase 1 — Core setup"
+    assert specs[0].title == "Quick Wins"
     assert specs[0].position == 0 and specs[1].position == 1
 
     page_task, vis_task = specs[0].tasks
