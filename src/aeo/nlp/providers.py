@@ -25,6 +25,7 @@ Model/endpoint defaults live in :class:`aeo.settings.LLMCfg` and target the $0 t
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -61,6 +62,17 @@ _REPAIR_PROMPT = (
     "commas, and braces, strip surrounding text, and do not invent new fields.\n\n"
     "TEXT:\n{raw}"
 )
+
+
+# Reasoning/thinking models (Qwen3 on Groq, DeepSeek-R1, …) prefix replies with a
+# <think>…</think> block. That's chain-of-thought, not the answer — stripped so it can
+# never leak into page drafts or JSON extraction. Unclosed tags (truncated output)
+# drop everything from <think> on.
+_THINK_RE = re.compile(r"<think>.*?(?:</think>|\Z)", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(text: str) -> str:
+    return _THINK_RE.sub("", text).strip()
 
 
 def _retry_after_sec(resp: httpx.Response) -> float | None:
@@ -156,7 +168,10 @@ class OpenAICompatBackend:
         try:
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
-            return content.strip() if content else None
+            if not content:
+                return None
+            cleaned = _strip_reasoning(content)
+            return cleaned if cleaned else None
         except Exception as exc:  # 4xx/response-shape problems are terminal for this call
             log.warning("llm_generate_failed", provider=self.name, model=self.model,
                         status=resp.status_code, error=str(exc))

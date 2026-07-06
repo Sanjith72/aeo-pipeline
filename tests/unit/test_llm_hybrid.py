@@ -217,6 +217,31 @@ class TestAvailability:
         assert LLMClient(LLMCfg(provider="gemini")).enabled is False
 
 
+class TestReasoningStripping:
+    def test_think_block_is_stripped_from_generations(self, monkeypatch):
+        # Qwen3 on Groq is a thinking model: replies open with <think>…</think>.
+        # That must never leak into drafts.
+        _fake, _ = _wire(monkeypatch, [
+            _Resp(200, _chat("<think>\nOkay, the user wants a greeting.\n</think>\n\nHello there")),
+        ])
+        assert LLMClient(_cfg(), profile="fast").generate("Q?") == "Hello there"
+
+    def test_unclosed_think_block_yields_none_not_garbage(self, monkeypatch):
+        # Truncated output that never closed the tag: nothing usable survives, and the
+        # router moves to the next backend rather than returning chain-of-thought.
+        _fake, _ = _wire(monkeypatch, [
+            _Resp(200, _chat("<think>reasoning that got cut off mid-")),
+            _Resp(200, _chat("clean answer")),
+        ])
+        assert LLMClient(_cfg(), profile="fast").generate("Q?") == "clean answer"
+
+    def test_json_after_think_block_still_parses(self, monkeypatch):
+        _fake, _ = _wire(monkeypatch, [
+            _Resp(200, _chat('<think>hmm</think>{"score": 3}')),
+        ])
+        assert LLMClient(_cfg(), profile="fast").generate_json("Q?") == {"score": 3}
+
+
 class TestEmbeddings:
     def test_embed_prefers_gemini_and_returns_768_floats(self, monkeypatch):
         vector = [0.25] * 768
