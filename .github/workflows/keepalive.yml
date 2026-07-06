@@ -67,16 +67,26 @@ jobs:
           fi
       - name: Install postgresql-client 17
         if: steps.guard.outputs.run == 'true'
+        # signed-by keyring, not apt-key (removed on ubuntu-24.04 runners — its silent
+        # failure once left the stock pg_dump 16, which refuses a PG 17 server).
         run: |
-          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client-17
+          /usr/lib/postgresql/17/bin/pg_dump --version
       - name: Dump database
         if: steps.guard.outputs.run == 'true'
+        # pipefail is NOT on in the default runner shell — without it a pg_dump error
+        # exits 0 through gzip and a 20-byte "backup" uploads green. The size floor
+        # makes any silently-empty dump a hard failure.
         run: |
-          pg_dump --no-owner --no-privileges "$BACKUP_DATABASE_URL" | gzip > aeo-backup.sql.gz
+          set -euo pipefail
+          /usr/lib/postgresql/17/bin/pg_dump --no-owner --no-privileges "$BACKUP_DATABASE_URL" | gzip > aeo-backup.sql.gz
           ls -lh aeo-backup.sql.gz
+          test "$(stat -c%s aeo-backup.sql.gz)" -ge 4096 || { echo "dump suspiciously small — failing" >&2; exit 1; }
       - name: Upload artifact
         if: steps.guard.outputs.run == 'true'
         uses: actions/upload-artifact@v4
