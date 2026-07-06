@@ -297,6 +297,14 @@ export interface CompetitorSuggestResponse {
   source: "llm" | "onsite" | "unavailable" | string;
   // True when the strict industry+location ask was empty and broader peers were returned.
   relaxed?: boolean;
+  // Only on source="unavailable" — why there are no suggestions. "llm_disabled": this
+  // deployment has no AI configured (permanent until ops adds keys); "llm_failed":
+  // providers errored/timed out (transient — retry-worthy); "no_results": the AI ran
+  // fine and genuinely proposed nothing usable; "verification_failed": it proposed
+  // candidates but live domain probes dropped them all (verify=true callers only).
+  // NOTE: the `| string` widening means tsc can't catch a typo'd literal — the
+  // reason→state mapping lives in lib/suggest.ts and is pinned by lib/suggest.test.ts.
+  reason?: "llm_disabled" | "llm_failed" | "no_results" | "verification_failed" | string;
 }
 
 /** A competitor the user picked or typed — names are enough, URLs are optional. */

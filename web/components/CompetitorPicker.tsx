@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { classifySuggestResponse, unavailableCopy } from "@/lib/suggest";
 import type { CompetitorPick, CompetitorSuggestion } from "@/lib/types";
 import { Check, Plus, Refresh, Search, Sparkle, X } from "./ui/icons";
 import { LiquidButton } from "./ui/liquid-glass";
@@ -13,7 +14,7 @@ import { LiquidButton } from "./ui/liquid-glass";
 type SuggestState =
   | { status: "idle" | "loading" }
   | { status: "ready"; items: CompetitorSuggestion[] }
-  | { status: "unavailable" }
+  | { status: "unavailable"; reason?: string }
   | { status: "error" };
 
 // Session-level cache so revisiting the step doesn't refetch the same brief. Only
@@ -118,13 +119,18 @@ export function CompetitorPicker({
         count: 8,
       });
       if (seq !== requestSeq.current) return; // a newer request superseded this one
-      if (res.source === "unavailable" || res.competitors.length === 0) {
-        // Don't cache the blank — a later visit refetches and may succeed.
-        setSuggest({ status: "unavailable" });
-      } else {
+      // lib/suggest.ts owns the reason→state contract (unit-tested there): llm_failed
+      // is the amber retry state, every other blank is neutral "unavailable".
+      const outcome = classifySuggestResponse(res);
+      if (outcome.kind === "ready") {
         suggestionCache.set(keyAtFetch, res.competitors);
         setSuggest({ status: "ready", items: res.competitors });
         autoSelectTop(res.competitors, keyAtFetch);
+      } else if (outcome.kind === "error") {
+        setSuggest({ status: "error" });
+      } else {
+        // Don't cache the blank — a later visit refetches and may succeed.
+        setSuggest({ status: "unavailable", reason: outcome.reason });
       }
     } catch {
       if (seq === requestSeq.current) setSuggest({ status: "error" });
@@ -174,7 +180,7 @@ export function CompetitorPicker({
             <Sparkle className="text-accent" />
             Recommended for you
           </span>
-          {(suggest.status === "ready" || suggest.status === "error") && (
+          {(suggest.status === "ready" || suggest.status === "error" || suggest.status === "unavailable") && (
             <button
               type="button"
               onClick={() => fetchSuggestions(true)}
@@ -253,8 +259,16 @@ export function CompetitorPicker({
 
         {suggest.status === "unavailable" && (
           <p className="rounded-xl border border-ink/10 bg-paper-200/60 px-4 py-3 text-sm text-ink-500">
-            We couldn't find recommendations for this business yet — add the competitors you know below,
-            or skip this step entirely.
+            {unavailableCopy(suggest.reason)}
+          </p>
+        )}
+
+        {/* Reachable via a stepper jump before the name is typed — without this branch
+            the section renders a bare heading with no explanation and no way forward.
+            (With a name present, idle lasts one pre-effect frame — render nothing.) */}
+        {suggest.status === "idle" && !businessName.trim() && (
+          <p className="rounded-xl border border-ink/10 bg-paper-200/60 px-4 py-3 text-sm text-ink-500">
+            Add your business name first — recommendations are built from it.
           </p>
         )}
 
