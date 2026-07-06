@@ -33,11 +33,25 @@ const CAM_POSITIONS: CamTarget[] = [
   { x: 0, y: 50, z: -700 },
 ];
 const CENTERS = [0, 0.5, 1.0];
+// Each beat holds full opacity across a wide plateau and swaps inside a short window around the
+// 0.25 / 0.75 marks — the outgoing title clears just as the incoming one arrives, so two giant
+// titles never stack up legibly (the old wide crossfade left adjacent beats overlapping across the
+// whole gap between their centers). `in`/`out` are the [start,end] scroll positions of each fade.
+const BEAT_FADE: { in?: [number, number]; out?: [number, number] }[] = [
+  { out: [0.19, 0.27] }, //                    ANSWER  — shown at the top, clears before VISIBLE arrives
+  { in: [0.23, 0.31], out: [0.69, 0.77] }, //  VISIBLE — the middle beat, fades in then back out
+  { in: [0.73, 0.81] }, //                     CHOSEN  — the final beat, fades in and stays
+];
 // The per-character title rise uses a slightly softer ease than the house EASE_OUT.
 const CHAR_EASE = [0.2, 1, 0.3, 1] as const;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 const easeInOut = (t: number) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+// Eased 0→1 ramp for the crossfades; flat outside [0,1] so each beat rests on a clean plateau.
+const smoothstep = (t: number) => {
+  const x = clamp(t, 0, 1);
+  return x * x * (3 - 2 * x);
+};
 
 export function HorizonHero() {
   const sectionRef = useRef<HTMLElement>(null);
@@ -71,14 +85,18 @@ export function HorizonHero() {
         z: cp[i].z + (cp[i + 1].z - cp[i].z) * f,
       };
 
-      // b) Beat crossfade by distance to each center, plus a small parallax drift. Only the active
-      //    beat is clickable (the CTAs live on beat 01).
+      // b) Beat crossfade from each beat's fade window (wide plateau + short swap) so only one title
+      //    is legible at a time, plus a small parallax drift. Only the prominent beat is clickable
+      //    (the CTAs live on beat 01).
       beatsRef.current.forEach((el, k) => {
         if (!el) return;
-        const o = Math.max(0, 1 - Math.abs(p - CENTERS[k]) / 0.5);
-        el.style.opacity = Math.pow(o, 0.6).toFixed(3);
-        el.style.pointerEvents = o > 0.55 ? "auto" : "none";
-        el.style.transform = `translateY(${((CENTERS[k] - p) * 64).toFixed(1)}px)`;
+        const fade = BEAT_FADE[k];
+        let o = 1;
+        if (fade.in) o = Math.min(o, smoothstep((p - fade.in[0]) / (fade.in[1] - fade.in[0])));
+        if (fade.out) o = Math.min(o, 1 - smoothstep((p - fade.out[0]) / (fade.out[1] - fade.out[0])));
+        el.style.opacity = o.toFixed(3);
+        el.style.pointerEvents = o > 0.5 ? "auto" : "none";
+        el.style.transform = `translateY(${((CENTERS[k] - p) * 40).toFixed(1)}px)`;
       });
 
       // c) Readouts: fill tracks progress; counter = active beat; the whole indicator fades near the end.
