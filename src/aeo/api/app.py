@@ -252,6 +252,14 @@ class AuditRequest(BaseModel):
     force: bool = False
 
 
+# Whole-request ceiling for /api/competitors/suggest. Per-call timeouts (interactive
+# client, 45s) don't bound the product of relaxation-ladder passes (up to 4) × hybrid
+# provider chain (up to 4 backends + a healing call each): with hung providers that
+# multiplies into many minutes, and every proxy in front of this (Vercel function cap,
+# browser fetch) gives up at ~300s — losing the honest `reason` to a generic 504.
+_SUGGEST_BUDGET_SEC = 90.0
+
+
 class CompetitorSuggestRequest(BaseModel):
     name: str
     domain: str | None = None
@@ -720,11 +728,15 @@ async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     can offer a pick-list instead of demanding URLs. Source is ``llm`` when the LLM
     generated suggestions; ``onsite`` when we mined the site's own comparison/alternatives
     pages instead (LLM disabled, unreachable, or it proposed nothing usable);
-    ``unavailable`` when neither yielded anything."""
+    ``unavailable`` when neither yielded anything. Unavailable responses carry a
+    ``reason`` so the UI can be honest about WHY: ``llm_disabled`` (this deployment has
+    no AI configured — permanent until ops sets keys, don't imply the business is at
+    fault), ``llm_failed`` (providers errored/timed out — transient, retry-worthy), or
+    ``no_results`` (the AI ran fine and genuinely proposed nothing usable)."""
     import asyncio
 
     from ..intelligence.site_facts import gather_site_facts
-    from ..nlp.llm import get_client
+    from ..nlp.llm import get_interactive_client
     from ..reference.competitor_discovery import discover_competitors
 
     name = req.name.strip()
@@ -744,29 +756,63 @@ async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
             return {"competitors": facts.competitors[: req.count], "source": "onsite"}
         return None
 
-    # The SHARED client: on AEO__LLM__PROVIDER=cloud this is Gemini, so production gets
-    # cloud latency for free. If a slow LOCAL model is the bottleneck here, point the burst
-    # paths at a faster backend via AEO__LLM__BULK_PROVIDER rather than hardcoding a model
-    # (domain verification is already parallelized; the LLM call is the remaining cost).
-    llm = get_client()
+    # The INTERACTIVE client: same provider chain as the shared client, but with the
+    # short fail-fast generation timeout and a single attempt per backend (hybrid
+    # failover still walks the chain). A user is parked on the wizard's competitor step
+    # while this runs — a slow or hung provider must degrade in seconds, not wait out
+    # the bulk 120s timeout × retry backoff across four relaxation-ladder passes.
+    # _SUGGEST_BUDGET_SEC then bounds the WHOLE walk: per-call timeouts don't cap the
+    # ladder (4 passes) × provider chain (up to 4 backends + healing) product, and the
+    # Vercel proxy in front of this dies at 300s — better to answer llm_failed in 90s
+    # than have the proxy 504 and collapse the honest reason into a generic error.
+    llm = get_interactive_client()
     if not llm.enabled:
-        return (await onsite()) or {"competitors": [], "source": "unavailable"}
+        return (await onsite()) or {
+            "competitors": [], "source": "unavailable", "reason": "llm_disabled"
+        }
     # discover_competitors is synchronous (blocking LLM calls + HEAD probes, up to four
     # relaxation-ladder passes) — run it in a worker thread so a slow local model can't
-    # freeze every other request on the event loop for minutes.
-    result = await asyncio.to_thread(
-        discover_competitors,
-        name,
-        domain,
-        topic=(req.category or "").strip() or None,
-        location=(req.location or "").strip() or None,
-        services=req.services,
-        count=req.count,
-        llm=llm,
-        head_check=None if req.verify else (lambda _domain: True),
-    )
+    # freeze every other request on the event loop for minutes. On budget expiry the
+    # orphaned thread finishes harmlessly (it mutates nothing shared) while we answer.
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                discover_competitors,
+                name,
+                domain,
+                topic=(req.category or "").strip() or None,
+                location=(req.location or "").strip() or None,
+                services=req.services,
+                count=req.count,
+                llm=llm,
+                head_check=None if req.verify else (lambda _domain: True),
+            ),
+            timeout=_SUGGEST_BUDGET_SEC,
+        )
+    except TimeoutError:
+        from ..logging import get_logger
+
+        get_logger(__name__).warning(
+            "competitor_suggest_budget_exhausted", name=name, domain=domain
+        )
+        return (await onsite()) or {
+            "competitors": [], "source": "unavailable", "reason": "llm_failed"
+        }
     if not result.verified:
-        return (await onsite()) or {"competitors": [], "source": "unavailable"}
+        # llm_ok distinguishes "the AI answered and found nothing" (no_results — the
+        # honest blank) from "the AI never answered usably" (llm_failed — transient,
+        # the UI should offer a retry instead of implying the business has no peers).
+        # A third case only verify=true callers can hit: the AI proposed candidates but
+        # live domain probes dropped them all — that's our network/their WAF, so it gets
+        # its own label instead of the false "no peers exist" (verify=false callers
+        # can't reach it: with probes skipped, proposed ⇒ verified).
+        if not result.llm_ok:
+            reason = "llm_failed"
+        elif result.raw_count > 0:
+            reason = "verification_failed"
+        else:
+            reason = "no_results"
+        return (await onsite()) or {"competitors": [], "source": "unavailable", "reason": reason}
     return {
         "competitors": [{"name": c.name, "domain": c.domain} for c in result.verified],
         "source": "llm",

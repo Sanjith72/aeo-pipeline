@@ -120,6 +120,13 @@ class CompetitorDiscoveryResult:
     # True when the strict industry+location pass found nothing and a broadened pass
     # (wider location / dropped location / softened industry) supplied these results.
     relaxed: bool = False
+    # True when at least one LLM pass returned a parseable answer CARRYING a
+    # competitors list — an empty list counts (the model explicitly said "none"), but
+    # a dict missing the key or holding a non-list does not (that's truncation/healing
+    # debris, not an answer). False means the LLM never answered usably (unreachable,
+    # rate-limited out, every reply unparseable), which callers must treat as a
+    # transient failure to retry, not as "no competitors exist for this business".
+    llm_ok: bool = False
 
     def to_summary(self) -> dict:
         return {
@@ -205,10 +212,20 @@ def _discover_once(
     if not isinstance(data, dict):
         return CompetitorDiscoveryResult()
 
+    raw_list = data.get("competitors")
+    if not isinstance(raw_list, list):
+        # The model controls the inner shape: a single object instead of a list, null,
+        # or a missing key are all real small-model/healing outputs. Slicing them would
+        # raise (breaking the never-raises contract); counting them as an answer would
+        # mislabel the failure as an honest blank. Unusable pass — llm_ok stays False.
+        log.warning("competitor_discovery_bad_shape", name=name, domain=domain,
+                    shape=type(raw_list).__name__)
+        return CompetitorDiscoveryResult()
+
     self_host = normalize_domain(domain)
     candidates: list[DiscoveredCompetitor] = []
     seen_domains: set[str] = set()
-    for raw in (data.get("competitors") or [])[: _MAX_COUNT]:
+    for raw in raw_list[:_MAX_COUNT]:
         cand = _clean_candidate(raw)
         if cand is None or cand.domain == self_host or cand.domain in seen_domains:
             continue
@@ -232,7 +249,9 @@ def _discover_once(
                 dropped.append(cand)
                 log.info("competitor_candidate_dropped", name=cand.name, domain=cand.domain)
 
-    return CompetitorDiscoveryResult(verified=verified, dropped=dropped, raw_count=len(candidates))
+    return CompetitorDiscoveryResult(
+        verified=verified, dropped=dropped, raw_count=len(candidates), llm_ok=True
+    )
 
 
 def discover_competitors(
@@ -279,6 +298,7 @@ def discover_competitors(
 
     seen: set[tuple[str | None, str | None, bool]] = set()
     fallback = CompetitorDiscoveryResult()
+    any_llm_ok = False
     for idx, (pass_topic, pass_loc, strict) in enumerate(ladder):
         key = (pass_topic, pass_loc, strict)
         if key in seen:
@@ -287,6 +307,7 @@ def discover_competitors(
         result = _discover_once(
             name, domain, pass_topic, pass_loc, services, count, strict, llm, check
         )
+        any_llm_ok = any_llm_ok or result.llm_ok
         # EARLY EXIT: the first pass that yields any verified competitor wins — we return
         # immediately rather than walking the rest of the ladder. So a strict pass that
         # already finds peers costs exactly ONE llm.generate_json call, never four; only a
@@ -303,4 +324,7 @@ def discover_competitors(
         if result.raw_count > fallback.raw_count:
             fallback = result
 
+    # llm_ok is per-ladder, not per-pass: ONE usable answer anywhere means the LLM works
+    # and the emptiness is real, even if the richest (kept) attempt was a failed pass.
+    fallback.llm_ok = any_llm_ok
     return fallback

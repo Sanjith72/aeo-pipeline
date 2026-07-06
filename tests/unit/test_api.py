@@ -276,7 +276,7 @@ class _FakeLLM:
 
 
 def test_competitor_suggest_returns_names(monkeypatch) -> None:
-    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _FakeLLM())
+    monkeypatch.setattr("aeo.nlp.llm.get_interactive_client", lambda: _FakeLLM())
     r = client.post(
         "/api/competitors/suggest",
         json={"name": "Acme", "domain": "acme.com", "category": "cybersecurity", "location": "Boston"},
@@ -301,7 +301,7 @@ def test_competitor_suggest_passes_services_into_the_llm_prompt(monkeypatch) -> 
             seen["prompt"] = prompt
             return {"competitors": [{"name": "Rapid7", "domain": "rapid7.com"}]}
 
-    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _CapturingLLM())
+    monkeypatch.setattr("aeo.nlp.llm.get_interactive_client", lambda: _CapturingLLM())
     r = client.post(
         "/api/competitors/suggest",
         json={"name": "Acme", "domain": "acme.com", "services": ["Penetration Testing", "Attack Surface Management"]},
@@ -315,10 +315,88 @@ def test_competitor_suggest_unavailable_without_llm(monkeypatch) -> None:
     class _Disabled:
         enabled = False
 
-    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _Disabled())
+    monkeypatch.setattr("aeo.nlp.llm.get_interactive_client", lambda: _Disabled())
     r = client.post("/api/competitors/suggest", json={"name": "Acme"})
     assert r.status_code == 200
-    assert r.json() == {"competitors": [], "source": "unavailable"}
+    # reason=llm_disabled: config, not luck — the UI says "AI is off on this server"
+    # instead of blaming the business for having no findable peers.
+    assert r.json() == {"competitors": [], "source": "unavailable", "reason": "llm_disabled"}
+
+
+def test_competitor_suggest_no_results_when_llm_answers_empty(monkeypatch) -> None:
+    # A WORKING LLM that genuinely proposes nothing → reason=no_results (an honest
+    # blank), never llm_failed (which would tell the UI to nudge a retry).
+    class _EmptyLLM:
+        enabled = True
+
+        def generate_json(self, prompt: str, system: str | None = None) -> dict:
+            return {"competitors": []}
+
+    monkeypatch.setattr("aeo.nlp.llm.get_interactive_client", lambda: _EmptyLLM())
+    r = client.post("/api/competitors/suggest", json={"name": "Acme"})
+    assert r.status_code == 200
+    assert r.json() == {"competitors": [], "source": "unavailable", "reason": "no_results"}
+
+
+def test_competitor_suggest_bad_llm_shape_is_llm_failed_not_500(monkeypatch) -> None:
+    # A model answering with a NON-LIST competitors value (single object — classic
+    # small-model JSON drift) must degrade to the honest llm_failed, never crash the
+    # endpoint through discover_competitors' never-raises contract.
+    class _BadShapeLLM:
+        enabled = True
+
+        def generate_json(self, prompt: str, system: str | None = None) -> dict:
+            return {"competitors": {"name": "Rapid7", "domain": "rapid7.com"}}
+
+    monkeypatch.setattr("aeo.nlp.llm.get_interactive_client", lambda: _BadShapeLLM())
+    r = client.post("/api/competitors/suggest", json={"name": "Acme"})
+    assert r.status_code == 200
+    assert r.json() == {"competitors": [], "source": "unavailable", "reason": "llm_failed"}
+
+
+def test_competitor_suggest_verification_failure_is_not_no_results(monkeypatch) -> None:
+    # verify=true + the LLM proposing candidates + every live probe failing: the AI
+    # worked and the domains were dropped by infrastructure — that's
+    # "verification_failed", never the honest-blank no_results (the original bug's
+    # copy) and never llm_failed (which would blame the providers).
+    class _ProposingLLM:
+        enabled = True
+
+        def generate_json(self, prompt: str, system: str | None = None) -> dict:
+            return {"competitors": [{"name": "Rapid7", "domain": "rapid7.com"}]}
+
+    monkeypatch.setattr("aeo.nlp.llm.get_interactive_client", lambda: _ProposingLLM())
+    monkeypatch.setattr(
+        "aeo.reference.competitor_discovery._default_head_check", lambda _d: False
+    )
+    r = client.post("/api/competitors/suggest", json={"name": "Acme", "verify": True})
+    assert r.status_code == 200
+    assert r.json() == {"competitors": [], "source": "unavailable", "reason": "verification_failed"}
+
+
+def test_competitor_suggest_budget_expiry_is_llm_failed(monkeypatch) -> None:
+    # The whole-request budget (_SUGGEST_BUDGET_SEC) must cut a hung discovery walk and
+    # answer with the retry-worthy llm_failed — not let the proxy in front 504 and
+    # collapse the reason into a generic error.
+    import time as _time
+
+    class _Enabled:
+        enabled = True
+
+    def slow_discover(*_a, **_k):
+        _time.sleep(0.5)
+        from aeo.reference.competitor_discovery import CompetitorDiscoveryResult
+
+        return CompetitorDiscoveryResult()
+
+    monkeypatch.setattr("aeo.nlp.llm.get_interactive_client", lambda: _Enabled())
+    monkeypatch.setattr("aeo.api.app._SUGGEST_BUDGET_SEC", 0.05)
+    monkeypatch.setattr(
+        "aeo.reference.competitor_discovery.discover_competitors", slow_discover
+    )
+    r = client.post("/api/competitors/suggest", json={"name": "Acme"})
+    assert r.status_code == 200
+    assert r.json() == {"competitors": [], "source": "unavailable", "reason": "llm_failed"}
 
 
 def test_competitor_suggest_requires_name() -> None:
@@ -596,7 +674,7 @@ def test_competitor_suggest_falls_back_to_onsite_without_llm(monkeypatch) -> Non
     class _Disabled:
         enabled = False
 
-    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _Disabled())
+    monkeypatch.setattr("aeo.nlp.llm.get_interactive_client", lambda: _Disabled())
 
     from aeo.intelligence.site_facts import SiteFacts
 
@@ -623,7 +701,7 @@ class _BrokenLLM:
 def test_competitor_suggest_falls_back_to_onsite_when_llm_fails(monkeypatch) -> None:
     # An enabled-but-broken LLM must degrade exactly like the LLM-off path (mine the
     # site's own comparison pages) — not hand the UI an empty list labelled "llm".
-    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _BrokenLLM())
+    monkeypatch.setattr("aeo.nlp.llm.get_interactive_client", lambda: _BrokenLLM())
 
     from aeo.intelligence.site_facts import SiteFacts
 
@@ -639,10 +717,12 @@ def test_competitor_suggest_falls_back_to_onsite_when_llm_fails(monkeypatch) -> 
 
 
 def test_competitor_suggest_unavailable_when_llm_fails_without_domain(monkeypatch) -> None:
-    monkeypatch.setattr("aeo.nlp.llm.get_client", lambda: _BrokenLLM())
+    monkeypatch.setattr("aeo.nlp.llm.get_interactive_client", lambda: _BrokenLLM())
     r = client.post("/api/competitors/suggest", json={"name": "Acme"})
     assert r.status_code == 200
-    assert r.json() == {"competitors": [], "source": "unavailable"}
+    # reason=llm_failed: the model never answered usably — transient, so the UI shows
+    # the retry-worthy error state instead of "no recommendations for this business".
+    assert r.json() == {"competitors": [], "source": "unavailable", "reason": "llm_failed"}
 
 
 def test_cors_allows_the_web_ui_origin() -> None:
