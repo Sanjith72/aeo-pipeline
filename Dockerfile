@@ -39,6 +39,10 @@ RUN pip install ".[api]" \
 # Runtime config (rubric thresholds, extractor regex packs).
 COPY config ./config
 
+# Single-token PaaS boot command (`start-api` = migrate + serve): some hosts'
+# start-command parsing breaks quoted `sh -c "…"` strings (Render dockerCommand).
+COPY --chmod=755 scripts/start-api.sh /usr/local/bin/start-api
+
 # Drop privileges.
 RUN useradd --create-home --uid 10001 aeo && chown -R aeo:aeo /app
 USER aeo
