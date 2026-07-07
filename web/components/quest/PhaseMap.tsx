@@ -73,6 +73,9 @@ export function PhaseMap({
 
   const stops = layout(phase.tasks.length + 1, narrow);
   const chest = stops[stops.length - 1] ?? { x: 50, y: 90 };
+  // The chest only pays out once every task in the phase has banked (model.ts) — the finale
+  // must not claim bonus coins the header tally won't show.
+  const chestBanked = phase.tasks.every((t) => t.coinsBanked);
   const height = narrow
     ? Math.max(440, (phase.tasks.length + 1) * 116)
     : Math.max(360, 300 + Math.max(0, phase.tasks.length - 4) * 26);
@@ -91,8 +94,10 @@ export function PhaseMap({
       wasComplete.current = true;
       onPhaseComplete(phase);
       // The coin-burst confetti is motion-only, but the "Phase Complete!" banner is a required
-      // deliverable — it always shows (collapsing to a plain fade under reduced motion).
-      if (!reduced) {
+      // deliverable — it always shows (collapsing to a plain fade under reduced motion). The
+      // chest burst only fires when the bonus actually banked — no raining coins that the
+      // header tally won't count.
+      if (!reduced && chestBanked) {
         burstKey.current += 1;
         setBurst({ key: burstKey.current, xPct: chest.x, yPct: chest.y, coins: phase.chestBonus, color: theme.coinColor, bonus: true });
       }
@@ -115,12 +120,26 @@ export function PhaseMap({
     const p = stops[task.index] ?? chest;
     if (!reduced) {
       burstKey.current += 1;
-      setBurst({ key: burstKey.current, xPct: p.x, yPct: p.y, coins: task.coins, color: theme.coinColor });
+      // A crawlable task marked by hand hasn't banked its coins yet — the burst wears the
+      // amber "pending" ring (matching the node treatment) instead of reading as a payout.
+      setBurst({
+        key: burstKey.current,
+        xPct: p.x,
+        yPct: p.y,
+        coins: task.coins,
+        color: theme.coinColor,
+        pending: task.milestoneTask.verify_kind !== "manual",
+      });
     }
     // Motion-independent confirmation so reduced-motion + screen-reader users still get feedback
     // (the coin burst is suppressed for them). "Verified live" is intentionally NOT claimed here —
-    // that only comes from the server crawl, surfaced via the header verify note.
-    setAnnounce(`${enemyAt(theme, task.enemy.slot).name} defeated — +${task.coins} coins earned.`);
+    // that only comes from the server crawl, surfaced via the header verify note. Coins are only
+    // claimed for off-site tasks (self-report banks them); crawlable marks stay pending.
+    setAnnounce(
+      task.milestoneTask.verify_kind === "manual"
+        ? `${enemyAt(theme, task.enemy.slot).name} defeated — +${task.coins} coins earned.`
+        : `${enemyAt(theme, task.enemy.slot).name} defeated — ${task.coins} coins pending until your site is verified.`,
+    );
     setSelected(null);
     onStatus(task.id, "verified_completed");
   }
@@ -233,7 +252,9 @@ export function PhaseMap({
               <p className="text-2xl">{theme.chestGlyph}✨</p>
               <p className="mt-1 text-lg font-bold text-white">Phase Complete!</p>
               <p className="text-xs text-white/70">
-                {theme.rewardLabel} opened · +{phase.chestBonus} bonus coins
+                {chestBanked
+                  ? `${theme.rewardLabel} opened · +${phase.chestBonus} bonus coins`
+                  : `Verify your site to bank +${phase.chestBonus} bonus coins`}
               </p>
             </m.div>
           </m.div>

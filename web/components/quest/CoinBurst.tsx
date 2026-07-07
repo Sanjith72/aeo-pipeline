@@ -15,7 +15,8 @@ export interface BurstSpec {
   yPct: number;
   coins: number; // reward size → coin count
   color: string;
-  bonus?: boolean; // crawl-verified bonus burst (gold-tinted ring)
+  bonus?: boolean; // banked chest-bonus burst (emerald "verified" ring)
+  pending?: boolean; // coins not banked yet (amber "pending verification" ring)
 }
 
 // Map a coin reward to a sensible visible coin count (handful → big burst), capped so a huge
@@ -51,8 +52,13 @@ export function CoinBurst({ burst, onDone }: { burst: BurstSpec | null; onDone: 
                 left: `${burst.xPct}%`,
                 top: `${burst.yPct}%`,
                 background: burst.color,
-                // bonus ring = the app's "verified" emerald, not an off-palette yellow
-                boxShadow: burst.bonus ? "0 0 0 2px rgba(16,185,129,0.7)" : undefined,
+                // bonus ring = the app's "verified" emerald; pending ring = the app's
+                // "pending verification" amber — never an off-palette yellow
+                boxShadow: burst.bonus
+                  ? "0 0 0 2px rgba(16,185,129,0.7)"
+                  : burst.pending
+                    ? "0 0 0 2px rgba(251,191,36,0.65)"
+                    : undefined,
               }}
               initial={{ x: "-50%", y: "-50%", opacity: 0, scale: 0.3 }}
               animate={{

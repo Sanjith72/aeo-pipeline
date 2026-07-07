@@ -52,6 +52,19 @@ export function chestBonusFor(taskCoins: number[]): number {
   return Math.max(150, max + 50, Math.round(sum * 0.5));
 }
 
+/** Coins bank only on a trustworthy completion: the crawl saw it live, or the task is
+ *  off-site (verify_kind "manual") where self-report is the only signal there will ever be —
+ *  milestone_verify.py never auto-verifies those. A crawlable task that's merely marked stays
+ *  pending: it still progresses the phase, but its coins wait for "Check my site". */
+export function banked(
+  task: Pick<QuestTask, "status" | "statusSource"> & {
+    milestoneTask: Pick<QuestTask["milestoneTask"], "verify_kind">;
+  },
+): boolean {
+  if (task.status !== "verified_completed") return false;
+  return task.statusSource === "crawl" || task.milestoneTask.verify_kind === "manual";
+}
+
 export function buildQuestModel(
   plan: StructuredPlan | null | undefined,
   dashboard: MilestoneDashboard | null | undefined,
@@ -70,6 +83,7 @@ export function buildQuestModel(
       const impact = clamp01(pt?.impact_score ?? 0.5);
       const enemy = assignEnemy(i, count);
       const completed = mt.status === "verified_completed";
+      const statusSource = mt.status_source ?? null;
       return {
         id: mt.task_key,
         label: mt.label,
@@ -77,8 +91,9 @@ export function buildQuestModel(
         impact,
         category: mt.task_key.startsWith("vis:") ? "visibility" : "content",
         status: mt.status,
-        statusSource: mt.status_source ?? null,
+        statusSource,
         verifiedLive: completed && mt.status_source === "crawl",
+        coinsBanked: banked({ status: mt.status, statusSource, milestoneTask: mt }),
         index: i,
         enemy,
         enemySize: enemySize(impact, enemy.isBoss),
@@ -120,7 +135,8 @@ export function buildQuestModel(
     if (!ph.isComplete) allPriorComplete = false;
   }
 
-  // Node-state + earned-coins pass (needs the lock result).
+  // Node-state + banked-coins pass (needs the lock result). Progression (nodeState, unlock,
+  // isComplete) stays on mark-complete; only the coin math is gated on banking.
   for (const ph of phases) {
     const activeIndex = ph.locked
       ? -1
@@ -129,11 +145,16 @@ export function buildQuestModel(
       t.nodeState =
         t.status === "verified_completed" ? "completed" : i === activeIndex ? "active" : "locked";
     });
-    const earned = ph.tasks
-      .filter((t) => t.status === "verified_completed")
-      .reduce((s, t) => s + t.coins, 0);
-    ph.coinsEarned = earned + (ph.isComplete ? ph.chestBonus : 0);
+    const bankedCoins = ph.tasks.filter((t) => t.coinsBanked).reduce((s, t) => s + t.coins, 0);
+    // The chest pays out only once every task in the phase has banked — stricter than
+    // isComplete, which a merely-marked crawlable task already satisfies.
+    const chestBanked = ph.tasks.every((t) => t.coinsBanked);
+    ph.coinsEarned = bankedCoins + (chestBanked ? ph.chestBonus : 0);
   }
 
-  return { phases, globalCoins: phases.reduce((s, p) => s + p.coinsEarned, 0) };
+  const maxCoins = phases.reduce(
+    (s, p) => s + p.chestBonus + p.tasks.reduce((s2, t) => s2 + t.coins, 0),
+    0,
+  );
+  return { phases, globalCoins: phases.reduce((s, p) => s + p.coinsEarned, 0), maxCoins };
 }

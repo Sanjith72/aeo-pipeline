@@ -26,6 +26,10 @@ export interface QuestTask {
   statusSource: "manual" | "crawl" | null;
   /** completed AND detected live by the verification crawl — earns the honest flourish. */
   verifiedLive: boolean;
+  /** Coins actually count: crawl-verified, or an off-site (verify_kind "manual") task
+   *  self-reported done. A crawlable task that's merely marked is pending — it progresses
+   *  the phase but its coins wait for "Check my site". */
+  coinsBanked: boolean;
   // derived presentation
   index: number; // position within the phase (0-based)
   enemy: QuestEnemy;
@@ -47,7 +51,7 @@ export interface QuestPhase {
   completed: number;
   total: number;
   pct: number; // 0–100, linear (completed / total)
-  coinsEarned: number; // completed-task coins (+ chest bonus once complete)
+  coinsEarned: number; // banked-task coins (+ chest bonus once every task is banked)
   chestBonus: number; // the phase-completion payout (always > any single task's coins)
   locked: boolean; // preview-only until every earlier phase is 100%
   isComplete: boolean;
@@ -55,5 +59,8 @@ export interface QuestPhase {
 
 export interface QuestModel {
   phases: QuestPhase[];
+  /** Banked coins only — what the header tally shows. */
   globalCoins: number;
+  /** Total earnable across the plan: every task's coins + every phase's chest bonus. */
+  maxCoins: number;
 }

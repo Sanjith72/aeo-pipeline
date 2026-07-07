@@ -14,6 +14,7 @@ import type {
 } from "../types.ts";
 import {
   assignEnemy,
+  banked,
   buildQuestModel,
   chestBonusFor,
   coinsForImpact,
@@ -221,13 +222,117 @@ test("a zero-task phase is vacuously complete and never deadlocks the lock casca
   assert.equal(m.phases[1].locked, false); // not deadlocked behind the empty phase
 });
 
-test("earned coins include the chest bonus once a phase is complete; globalCoins sums phases", () => {
+test("earned coins include the chest bonus once a phase is fully banked; globalCoins sums phases", () => {
   const m = buildQuestModel(
     plan([ptask("page:/a", 1, "week_1")]),
-    dash([milestone("week_1", [mtask("page:/a", "verified_completed", "manual", 0)], 0)]),
+    dash([milestone("week_1", [mtask("page:/a", "verified_completed", "crawl", 0)], 0)]),
   );
   const ph = m.phases[0];
   assert.equal(ph.isComplete, true);
   assert.equal(ph.coinsEarned, coinsForImpact(1) + ph.chestBonus);
   assert.equal(m.globalCoins, ph.coinsEarned);
+});
+
+// ── coin banking ──────────────────────────────────────────────────────────────
+test("banked() predicate: crawl-verified banks, off-site self-report banks, crawlable manual mark does not", () => {
+  const mk = (
+    status: MilestoneStatus,
+    statusSource: "manual" | "crawl" | null,
+    verify_kind: MilestoneTask["verify_kind"],
+  ) => banked({ status, statusSource, milestoneTask: { verify_kind } });
+  assert.equal(mk("verified_completed", "crawl", "page"), true); // verifiedLive
+  assert.equal(mk("verified_completed", "manual", "manual"), true); // off-site, self-reported
+  assert.equal(mk("verified_completed", "manual", "page"), false); // crawlable, not yet verified
+  assert.equal(mk("verified_completed", "manual", "service"), false);
+  assert.equal(mk("verified_completed", "manual", "heading"), false);
+  assert.equal(mk("in_progress", "crawl", "page"), false); // status gates everything
+  assert.equal(mk("pending", "manual", "manual"), false);
+});
+
+test("pending tasks still progress the phase, but only banked coins pay out", () => {
+  const d = dash([
+    milestone(
+      "week_1",
+      [
+        mtask("page:/a", "verified_completed", "crawl", 0), // banked (crawl)
+        mtask("vis:gbp", "verified_completed", "manual", 1), // banked (off-site self-report)
+        mtask("page:/c", "verified_completed", "manual", 2), // pending — marked, unverified
+        mtask("page:/d", "pending", "manual", 3),
+      ],
+      0,
+    ),
+  ]);
+  const ph = buildQuestModel(plan([]), d).phases[0];
+  assert.deepEqual(
+    ph.tasks.map((t) => t.coinsBanked),
+    [true, true, false, false],
+  );
+  // Progression is untouched: the marked task is a defeated node and counts toward pct…
+  assert.deepEqual(
+    ph.tasks.map((t) => t.nodeState),
+    ["completed", "completed", "completed", "active"],
+  );
+  assert.equal(ph.pct, 75);
+  // …but its coins wait for the crawl, and the chest stays shut (phase not fully banked).
+  assert.equal(ph.coinsEarned, ph.tasks[0].coins + ph.tasks[1].coins);
+});
+
+test("chest bonus banks only when every task in the phase is banked, not merely complete", () => {
+  const mixed = buildQuestModel(
+    plan([]),
+    dash([
+      milestone(
+        "week_1",
+        [
+          mtask("page:/a", "verified_completed", "crawl", 0),
+          mtask("page:/b", "verified_completed", "manual", 1),
+        ],
+        0,
+      ),
+    ]),
+  ).phases[0];
+  assert.equal(mixed.isComplete, true); // progression says done…
+  assert.equal(mixed.coinsEarned, mixed.tasks[0].coins); // …but no chest until /b verifies
+
+  const full = buildQuestModel(
+    plan([]),
+    dash([
+      milestone(
+        "week_1",
+        [
+          mtask("page:/a", "verified_completed", "crawl", 0),
+          mtask("page:/b", "verified_completed", "crawl", 1),
+        ],
+        0,
+      ),
+    ]),
+  ).phases[0];
+  assert.equal(full.coinsEarned, full.tasks[0].coins + full.tasks[1].coins + full.chestBonus);
+});
+
+test("phase unlock stays on mark-complete even while coins are pending verification", () => {
+  const m = buildQuestModel(
+    plan([]),
+    dash([
+      milestone("week_1", [mtask("page:/a", "verified_completed", "manual", 0)], 0),
+      milestone("week_2_4", [mtask("page:/b", "pending", "manual", 0)], 1),
+    ]),
+  );
+  assert.equal(m.phases[0].isComplete, true);
+  assert.equal(m.phases[1].locked, false); // next phase opens on the mark…
+  assert.equal(m.globalCoins, 0); // …while the coins wait for "Check my site"
+});
+
+test("maxCoins totals every task's coins plus every chest bonus, regardless of status", () => {
+  const m = buildQuestModel(
+    plan([ptask("page:/a", 1, "week_1"), ptask("vis:gbp", 0.2, "week_2_4")]),
+    dash([
+      milestone("week_1", [mtask("page:/a", "pending", "manual", 0)], 0),
+      milestone("week_2_4", [mtask("vis:gbp", "verified_completed", "manual", 0)], 1),
+    ]),
+  );
+  const expected =
+    coinsForImpact(1) + m.phases[0].chestBonus + coinsForImpact(0.2) + m.phases[1].chestBonus;
+  assert.equal(m.maxCoins, expected);
+  assert.ok(m.globalCoins <= m.maxCoins);
 });

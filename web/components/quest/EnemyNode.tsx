@@ -27,7 +27,9 @@ export function EnemyNode({
     state === "completed"
       ? task.verifiedLive
         ? "defeated, verified live"
-        : "defeated"
+        : task.coinsBanked
+          ? "defeated"
+          : "defeated, coins pending site verification"
       : state === "active"
         ? "ready to take on"
         : "locked";
@@ -46,6 +48,11 @@ export function EnemyNode({
             className="absolute inset-0 rounded-full"
             style={{ boxShadow: `0 0 0 3px ${theme.nodeAccent}, 0 0 22px 4px ${theme.nodeAccent}88` }}
           />
+        )}
+        {/* pending-verification ring: defeated, but the coins haven't banked yet — the map
+            stays honest with the header tally until "Check my site" confirms it live */}
+        {state === "completed" && !task.coinsBanked && (
+          <span className="absolute inset-0 rounded-full border-2 border-dashed border-amber-400/50" aria-hidden />
         )}
         {/* the enemy glyph */}
         <span

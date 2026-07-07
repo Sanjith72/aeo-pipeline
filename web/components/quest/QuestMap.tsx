@@ -7,13 +7,14 @@
 // tab's list reads), so both presentations always agree; coins/enemies are honest
 // projections, never invented progress.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AnimatePresence, m, Tally, useReducedMotion } from "@/components/motion/primitives";
 import { themeForPhase } from "@/lib/quest/theme";
 import type { QuestPhase } from "@/lib/quest/types";
 import type { MilestoneStatus } from "@/lib/types";
 import { api } from "@/lib/api";
+import { CheckpointModal, type Checkpoint } from "./CheckpointModal";
 import { PhaseTab } from "./PhaseTab";
 import type { QuestTracker } from "./useQuestTracker";
 
@@ -62,7 +63,14 @@ export function QuestMap({
   };
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [celebrateKey, setCelebrateKey] = useState(0);
+  const [checkpoint, setCheckpoint] = useState<Checkpoint | null>(null);
   const didInit = useRef(false);
+  // Same didInit idea for the coin checkpoints: the model syncs 0 → current on load, and
+  // that first jump must record a baseline, never celebrate.
+  const didInitCoins = useRef(false);
+  const coinMilestone = useRef(0); // last consumed Math.floor(pct / 25), 0–4
+  // Stable so CheckpointModal's one-shot dismiss timer isn't reset on every re-render.
+  const handleCheckpointDone = useCallback(() => setCheckpoint(null), []);
 
   // Default to single-open on first SHOWING: the first unlocked, not-yet-finished phase.
   // Gated on visibility so a hidden-mounted map (List toggle, other results tab) doesn't
@@ -74,6 +82,29 @@ export function QuestMap({
     didInit.current = true;
     api.track("quest_view_opened", { domain });
   }, [model, domain, visible]);
+
+  // Checkpoint celebration: fires when banked coins cross a 25/50/75/100% milestone of
+  // maxCoins. A single verify that leaps several milestones shows only the highest (the
+  // index is computed from the final total). Crossings that land while the map is hidden
+  // stay un-consumed — the ref isn't advanced — so the modal fires on first reveal, same
+  // latch idea as the phase finale in PhaseMap.
+  useEffect(() => {
+    if (!model || model.maxCoins <= 0) return;
+    const idx = Math.min(4, Math.floor((100 * model.globalCoins) / model.maxCoins / 25));
+    if (!didInitCoins.current) {
+      coinMilestone.current = idx;
+      didInitCoins.current = true;
+      return;
+    }
+    if (idx < coinMilestone.current) {
+      coinMilestone.current = idx; // un-marking dropped the total; allow a later re-crossing
+    } else if (idx > coinMilestone.current && visible) {
+      coinMilestone.current = idx;
+      const pct = (idx * 25) as Checkpoint["pct"];
+      setCheckpoint({ pct, coins: model.globalCoins });
+      api.track("quest_checkpoint_reached", { pct, coins: model.globalCoins });
+    }
+  }, [model, visible]);
 
   function toggle(key: string) {
     setOpen((prev) => {
@@ -111,6 +142,7 @@ export function QuestMap({
   return (
     <div className="space-y-4">
       <Confetti fireKey={celebrateKey} />
+      <CheckpointModal checkpoint={checkpoint} onDone={handleCheckpointDone} />
 
       {/* header: global coin bank + verify */}
       <div className="card flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">

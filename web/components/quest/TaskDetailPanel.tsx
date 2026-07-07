@@ -2,9 +2,9 @@
 
 // The task detail dialog opened from a node. Shows what the task is, why it matters, and
 // the action(s) to complete it, reusing the shipped how-to / DIY guide (the Developer
-// handoff lives on the Strategy tab, not in the map). "Mark Complete" defeats the enemy +
-// drops coins immediately (manual attestation); the weekly crawl later adds the honest
-// "Verified live ✓" flourish. Read-only for locked tasks.
+// handoff lives on the Strategy tab, not in the map). "Mark Complete" defeats the enemy
+// (manual attestation) — but coins only bank once the crawl verifies the change live, or
+// immediately for off-site tasks the crawl can never see. Read-only for locked tasks.
 
 import { useEffect, useRef } from "react";
 
@@ -176,9 +176,17 @@ export function TaskDetailPanel({
                 : "Defeat the enemies before this one on the trail first."}
             </p>
           ) : isDone ? (
-            <p className="mt-5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 text-center text-sm text-emerald-300">
-              {task.verifiedLive ? "Verified live on your site ✓" : "Marked complete — coins earned."}
-            </p>
+            task.coinsBanked ? (
+              <p className="mt-5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 text-center text-sm text-emerald-300">
+                {task.verifiedLive
+                  ? "Verified live on your site ✓ — coins banked"
+                  : "Self-reported ✓ — coins banked"}
+              </p>
+            ) : (
+              <p className="mt-5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-center text-sm text-amber-200">
+                Marked done — verify your site to bank {task.coins} coins.
+              </p>
+            )
           ) : (
             <div className="mt-5 flex flex-wrap gap-2">
               <button type="button" onClick={() => onComplete(task)} className="btn-accent flex-1">
