@@ -1,5 +1,5 @@
 // FAQ content lives here (not in the component) so the visible accordion and the
-// FAQPage JSON-LD in app/layout.tsx are always the same words — an AEO product
+// FAQPage JSON-LD in app/page.tsx are always the same words — an AEO product
 // should practice what it sells.
 
 export type FaqItem = { q: string; a: string };

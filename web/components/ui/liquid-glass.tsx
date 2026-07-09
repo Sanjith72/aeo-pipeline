@@ -13,6 +13,7 @@
 // Selection controls (goal cards, stepper rows, FAQ rows) are NOT glass — pills only.
 
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
+import Link from "next/link";
 
 /** The `#container-glass` displacement filter — defined ONCE per page (app/layout.tsx)
  *  so any glass layer can reference it. Hidden, zero-sized, aria-hidden. */
@@ -114,8 +115,18 @@ export function LiquidButton({ variant = "primary", className = "", children, ..
     </>
   );
   if (rest.href !== undefined) {
+    const { href, ...anchorRest } = rest as { href: string } & AnchorHTMLAttributes<HTMLAnchorElement>;
+    // Internal routes client-side navigate via <Link>; hashes and external URLs
+    // keep the raw anchor's native behavior.
+    if (href.startsWith("/")) {
+      return (
+        <Link href={href} {...anchorRest} className={rootClass}>
+          {body}
+        </Link>
+      );
+    }
     return (
-      <a {...(rest as AnchorHTMLAttributes<HTMLAnchorElement>)} className={rootClass}>
+      <a href={href} {...anchorRest} className={rootClass}>
         {body}
       </a>
     );

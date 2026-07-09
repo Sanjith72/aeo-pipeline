@@ -195,7 +195,7 @@ export function HorizonHero() {
             ctas={
               <>
                 <Magnetic>
-                  <LiquidButton href="#studio" variant="primary" className="group px-7 py-3.5 text-[15px]">
+                  <LiquidButton href="/studio" variant="primary" className="group px-7 py-3.5 text-[15px]">
                     Get my free plan
                     <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" />
                   </LiquidButton>

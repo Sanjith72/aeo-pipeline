@@ -7,6 +7,7 @@
 
 import { Fragment, useState } from "react";
 import type { ReactNode } from "react";
+import Link from "next/link";
 import {
   EASE_OUT,
   Reveal,
@@ -132,26 +133,28 @@ export function TopBar() {
           scrolled ? "py-2.5" : "py-3.5"
         }`}
       >
-        <a href="#" className="group flex items-center gap-2.5">
+        <Link href="/" className="group flex items-center gap-2.5">
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-ink font-display text-sm font-bold text-paper-100 transition-transform duration-300 group-hover:-rotate-6 group-hover:scale-105">
             A
           </span>
           <span className="font-display text-[15px] font-semibold tracking-tight">AEO Studio</span>
-        </a>
+        </Link>
         <nav className="flex items-center gap-1">
-          <a href="#how" className="nav-link hidden sm:block">
+          {/* /#how and /#faq (not bare hashes): the bar also renders on /studio and
+              /plan/<id>, where an in-page anchor would go nowhere. */}
+          <Link href="/#how" className="nav-link hidden sm:block">
             How it works
-          </a>
-          <a href="#faq" className="nav-link hidden sm:block">
+          </Link>
+          <Link href="/#faq" className="nav-link hidden sm:block">
             FAQ
-          </a>
+          </Link>
           <a href="/agents" className="nav-link hidden sm:block">
             Agent Review
           </a>
-          <a href="#studio" className="btn-primary group !px-4 !py-2 text-[13px]">
+          <Link href="/studio" className="btn-primary group !px-4 !py-2 text-[13px]">
             Get started
             <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" width={13} height={13} />
-          </a>
+          </Link>
         </nav>
       </div>
     </header>
@@ -278,7 +281,7 @@ export function TrustBand() {
 export function Faq() {
   // One question open at a time — the first starts open so the section never reads
   // as a wall of closed rows. Content comes from lib/faq.ts, the same source the
-  // FAQPage JSON-LD in app/layout.tsx serializes, so the two can never drift.
+  // FAQPage JSON-LD in app/page.tsx serializes, so the two can never drift.
   const [open, setOpen] = useState<number | null>(0);
   return (
     <section id="faq" className="scroll-mt-20" style={{ padding: "clamp(70px, 10vh, 120px) 0 clamp(110px, 16vh, 180px)" }}>
@@ -298,12 +301,12 @@ export function Faq() {
             The questions business owners ask us most — in the same plain English your plan
             arrives in.
           </p>
-          <a
-            href="#studio"
+          <Link
+            href="/studio"
             className="mt-[30px] inline-flex items-center gap-[9px] border-b border-white/30 pb-[3px] text-[15px] font-medium text-ink transition-[gap,border-color] duration-[250ms] ease-out hover:gap-[14px] hover:border-white/90"
           >
             Still wondering? Get your free plan <span aria-hidden>&rarr;</span>
-          </a>
+          </Link>
         </Reveal>
 
         <Stagger className="border-t border-white/[0.09]" stagger={0.06}>
@@ -395,12 +398,12 @@ export function Footer() {
     <footer className="relative border-t border-ink/[0.06]">
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/25 to-transparent" aria-hidden />
       <Reveal y={12} className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-3 px-5 py-8 text-sm text-ink-300 sm:flex-row sm:items-center">
-        <a href="#" className="group flex items-center gap-2 font-display font-semibold text-ink-500 transition-colors hover:text-ink">
+        <Link href="/" className="group flex items-center gap-2 font-display font-semibold text-ink-500 transition-colors hover:text-ink">
           <span className="flex h-5 w-5 items-center justify-center rounded bg-ink font-display text-[10px] font-bold text-paper-100 transition-transform duration-200 group-hover:-rotate-6">
             A
           </span>
           AEO Studio
-        </a>
+        </Link>
         <span className="label-mono !tracking-[0.1em]">Be the answer customers find</span>
       </Reveal>
     </footer>

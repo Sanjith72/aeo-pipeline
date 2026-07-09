@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import { IBM_Plex_Mono, IBM_Plex_Sans, Instrument_Serif, Space_Grotesk } from "next/font/google";
 import { MotionProvider } from "@/components/motion/primitives";
 import { GlassFilter } from "@/components/ui/liquid-glass";
-import { FAQ_ITEMS } from "@/lib/faq";
 
 // Display: geometric + technical character. Body: IBM Plex Sans — professional and
 // distinctive. Mono: the "measurement" voice for labels & readouts. Serif italic:
@@ -46,29 +45,6 @@ export const metadata: Metadata = {
   },
 };
 
-// Structured data: the product (SoftwareApplication) and the FAQ — generated from
-// the same FAQ_ITEMS the visible accordion renders, so they can never drift apart.
-const APP_JSONLD = {
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  name: "AEO Studio",
-  applicationCategory: "BusinessApplication",
-  operatingSystem: "Web",
-  description:
-    "AEO Studio analyzes how AI answer engines see a business and generates a personalized website blueprint, prioritized action plan, and launch kit.",
-  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-};
-
-const FAQ_JSONLD = {
-  "@context": "https://schema.org",
-  "@type": "FAQPage",
-  mainEntity: FAQ_ITEMS.map(({ q, a }) => ({
-    "@type": "Question",
-    name: q,
-    acceptedAnswer: { "@type": "Answer", text: a },
-  })),
-};
-
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${display.variable} ${sans.variable} ${mono.variable} ${serif.variable}`}>
@@ -79,27 +55,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         className="min-h-screen bg-paper font-sans text-ink antialiased selection:bg-accent/20"
         suppressHydrationWarning
       >
-        {/* Fresh loads must open at the hero, never jump to a deep in-page anchor. Several CTAs use
-            href="#studio" (the plan-builder ~2600px down the page); opening /#studio — or a reload the
-            browser tries to scroll-restore — would skip the hero entirely. This runs synchronously during
-            HTML parse, BEFORE the browser resolves the #studio fragment, so it prevents the jump instead
-            of undoing it after a visible flash. It fires once per hard load only; in-app anchor clicks
-            mutate the hash afterward and are untouched, so "How it works" / "FAQ" / "Get started" still
-            scroll normally. scrollRestoration:'manual' stops the browser guessing scroll on reload. */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html:
-              "try{if('scrollRestoration'in history)history.scrollRestoration='manual';if(location.hash){history.replaceState(null,'',location.pathname+location.search);window.scrollTo(0,0);}}catch(e){}",
-          }}
-        />
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(APP_JSONLD) }}
-        />
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(FAQ_JSONLD) }}
-        />
         {/* The #container-glass displacement filter the liquid-glass CTAs reference —
             defined once per page, here, so any component can use the treatment. */}
         <GlassFilter />

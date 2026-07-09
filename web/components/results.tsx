@@ -6,6 +6,7 @@
 // the app, check things off, with both an AI prompt and a human how-to per task.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api";
 import type {
   AuditJob,
@@ -1854,9 +1855,9 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
           <p className="text-sm text-ink-500">
             Tie this plan to your website to unlock the automatic weekly site check.
           </p>
-          <a href="/#studio" className="btn-accent shrink-0 inline-flex">
+          <Link href="/studio" className="btn-accent shrink-0 inline-flex">
             Build a plan for your site →
-          </a>
+          </Link>
         </div>
       )}
       <ResultsView
@@ -1877,7 +1878,7 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
         personalizeProgress={null}
         onDownloadZip={downloadZip}
         onEdit={() => {
-          window.location.href = "/#studio";
+          window.location.href = "/studio";
         }}
         resume={{ planStateId: state.id, initialDone: state.done_task_ids, score: state.score_snapshot }}
         resumed

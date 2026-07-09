@@ -6,6 +6,7 @@
 // "temporarily unavailable" — never told the user their valid link "expired".
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
 import type { PlanStateResponse } from "@/lib/types";
@@ -64,9 +65,9 @@ export default function PlanPage() {
           <p className="mt-2 text-ink-500">
             It may have expired or the address is incomplete. You can build a fresh plan in a couple of minutes.
           </p>
-          <a href="/#studio" className="btn-accent mt-6 inline-flex">
+          <Link href="/studio" className="btn-accent mt-6 inline-flex">
             Start a new plan →
-          </a>
+          </Link>
         </div>
       )}
       {status === "unavailable" && (

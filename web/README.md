@@ -33,6 +33,8 @@ The UI is a thin client: all intelligence lives in the `aeo` package behind the 
 ## Layout
 
 ```
-app/        layout.tsx, globals.css, page.tsx (the wizard, a client component)
+app/        layout.tsx, globals.css, page.tsx (marketing, a server component),
+            studio/page.tsx (the product route)
+components/ StudioApp.tsx (the wizard + results, a client component)
 lib/        api.ts (typed client), types.ts (API payload mirrors)
 ```
