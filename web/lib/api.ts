@@ -8,6 +8,7 @@ import type {
   AuditJob,
   BriefPlan,
   BriefRequest,
+  BundleAsset,
   CompetitorSuggestResponse,
   DeliverablesJob,
   DeliverablesResponse,
@@ -310,6 +311,12 @@ export const api = {
   },
   cancelAgentRun(runId: string): Promise<{ run_id: string; status: string }> {
     return postJson<{ run_id: string; status: string }>(`/api/agent/run/${encodeURIComponent(runId)}/cancel`, {});
+  },
+  /** The approved run's drafts as launch-kit assets (409 until a human approves). */
+  async agentRunAssets(runId: string): Promise<{ run_id: string; bundle: string; assets: BundleAsset[] }> {
+    const res = await fetch(`${BASE}/api/agent/run/${encodeURIComponent(runId)}/assets`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as { run_id: string; bundle: string; assets: BundleAsset[] };
   },
   /** Live run updates via SSE (browser only). The same-origin proxy injects auth; EventSource
    *  can't set headers. Returns the EventSource so the caller can close() it on unmount. */

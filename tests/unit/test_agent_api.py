@@ -158,6 +158,41 @@ def test_cancel_404_for_unknown_run(monkeypatch) -> None:
     assert client.post("/api/agent/run/nope/cancel").status_code == 404
 
 
+def test_assets_export_an_approved_run(monkeypatch) -> None:
+    from aeo.storage.repos import agent_runs as repo
+
+    monkeypatch.setattr(repo, "get", lambda rid: {
+        "id": rid, "status": "approved", "domain": "acme.com",
+        "result": {"domain": "acme.com", "tasks": [{
+            "id": "page:/about", "title": "Create: About", "slug": "/about",
+            "node": {"slug": "/about", "intent": "informational"},
+            "draft": {"body_markdown": "# About", "jsonld": [], "generator": "llm",
+                      "draft_quality": "full"},
+        }]},
+    })
+    body = client.get("/api/agent/run/run42/assets").json()
+    assert body["bundle"] == "agent-run-run42"
+    assert [a["path"] for a in body["assets"]] == ["README.md", "pages/about.md"]
+    assert body["assets"][1]["kind"] == "page_spec"
+
+
+def test_assets_409_until_approved(monkeypatch) -> None:
+    # staged/rejected/anything-but-approved must not export — approval IS the gate
+    from aeo.storage.repos import agent_runs as repo
+
+    monkeypatch.setattr(repo, "get", lambda rid: {"id": rid, "status": "staged", "result": {}})
+    r = client.get("/api/agent/run/run42/assets")
+    assert r.status_code == 409
+    assert "staged" in r.json()["detail"]
+
+
+def test_assets_404_for_unknown_run(monkeypatch) -> None:
+    from aeo.storage.repos import agent_runs as repo
+
+    monkeypatch.setattr(repo, "get", lambda rid: None)
+    assert client.get("/api/agent/run/nope/assets").status_code == 404
+
+
 def test_list_agent_runs_returns_repo_rows(monkeypatch) -> None:
     from aeo.storage.repos import agent_runs as repo
 

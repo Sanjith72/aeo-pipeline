@@ -15,9 +15,9 @@ export default function AgentsPage() {
         <p className="mt-2.5 max-w-2xl text-sm leading-relaxed text-ink-500">
           AI agents draft new pages for your site and check their own work, then stage everything here
           for your sign-off. Open a run to read each draft and the Critic&apos;s verdict, then{" "}
-          <span className="text-ink">Approve</span> to keep it or{" "}
-          <span className="text-ink">Reject</span> to discard. Nothing is ever published until you
-          approve it.
+          <span className="text-ink">Approve</span> to unlock the ready-to-publish page files or{" "}
+          <span className="text-ink">Reject</span> to discard. Nothing ever ships without your
+          approval.
         </p>
       </header>
       <AgentReviewQueue />

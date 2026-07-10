@@ -974,6 +974,29 @@ def agent_run_cancel(run_id: str) -> dict[str, Any]:
     return {"run_id": run_id, "status": "cancelled"}
 
 
+@app.get("/api/agent/run/{run_id}/assets")
+def agent_run_assets(run_id: str) -> dict[str, Any]:
+    """The run's drafts as launch-kit assets (README + pages/<slug>.md, same shape as
+    /api/deliverables). Approval is the gate: anything not 'approved' 409s — drafts
+    leave the review queue only after a human signs off."""
+    from ..agents.export import bundle_from_run
+    from ..storage.repos import agent_runs as agent_runs_repo
+
+    row = agent_runs_repo.get(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown agent run")
+    if row["status"] != "approved":
+        raise HTTPException(
+            status_code=409, detail=f"run is {row['status']} — only approved runs export"
+        )
+    bundle = bundle_from_run(row)
+    return {
+        "run_id": run_id,
+        "bundle": bundle.name,
+        "assets": [{"path": a.path, "kind": a.kind, "content": a.content} for a in bundle.assets],
+    }
+
+
 def _sse(obj: dict[str, Any]) -> str:
     return f"data: {json.dumps(obj, default=str)}\n\n"
 

@@ -6,6 +6,7 @@ import type { FormEvent } from "react";
 
 import { api } from "../lib/api";
 import { summarizeRun } from "../lib/agentRun";
+import { triggerDownload } from "../lib/download";
 import type { AgentRunDetail, AgentRunSummary, AgentStreamMessage } from "../lib/types";
 
 const TERMINAL = new Set(["staged", "approved", "rejected", "failed", "cancelled"]);
@@ -138,9 +139,15 @@ export function AgentReviewQueue() {
       setBusy(true);
       setError(null);
       try {
-        if (decision === "approve") await api.approveAgentRun(id);
-        else await api.rejectAgentRun(id);
-        setSelected(null);
+        if (decision === "approve") {
+          await api.approveAgentRun(id);
+          // Approval unlocks the launch-kit download — keep the run open so the
+          // button appears right where the decision was made.
+          setSelected(await api.getAgentRun(id));
+        } else {
+          await api.rejectAgentRun(id);
+          setSelected(null);
+        }
         await refreshList();
       } catch (e) {
         setError((e as Error).message);
@@ -150,6 +157,24 @@ export function AgentReviewQueue() {
     },
     [refreshList],
   );
+
+  // Zip the approved drafts the API returns (README + pages/<slug>.md) in the browser —
+  // the same client-side JSZip pattern the wizard's launch kit uses.
+  const downloadKit = useCallback(async (id: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { assets } = await api.agentRunAssets(id);
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      for (const a of assets) zip.file(a.path, a.content);
+      triggerDownload(await zip.generateAsync({ type: "blob" }), `agent-pages-${id}.zip`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
 
   const cancel = useCallback(
     async (id: string) => {
@@ -350,6 +375,15 @@ export function AgentReviewQueue() {
                     className="btn-ghost shrink-0 !px-4 !py-2 text-[13px]"
                   >
                     Cancel run
+                  </button>
+                )}
+                {selected.status === "approved" && (
+                  <button
+                    disabled={busy}
+                    onClick={() => void downloadKit(selected.id)}
+                    className="btn-accent shrink-0 !px-4 !py-2 text-[13px]"
+                  >
+                    ↓ Download pages (.zip)
                   </button>
                 )}
               </header>
