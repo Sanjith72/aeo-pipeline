@@ -40,3 +40,40 @@ def test_default_kinds_include_agent_run() -> None:
     from aeo.pipeline.worker import AGENT_RUN, Worker
 
     assert AGENT_RUN in Worker().kinds
+
+
+def test_reap_fails_the_run_behind_a_dead_agent_job(monkeypatch) -> None:
+    from aeo.pipeline import worker as worker_mod
+    from aeo.storage.repos import agent_runs as agent_runs_repo
+    from aeo.storage.repos import jobs as jobs_repo
+
+    failed = {}
+    only_from = {}
+    monkeypatch.setattr(jobs_repo, "reap_stale", lambda lease: [
+        {"id": 1, "kind": worker_mod.AGENT_RUN, "payload": {"run_id": "r-dead"}, "status": "dead"},
+        # requeued job (attempts remain) — the run resumes, so it must NOT be failed
+        {"id": 2, "kind": worker_mod.AGENT_RUN, "payload": {"run_id": "r-retry"}, "status": "pending"},
+        # dead job of another kind — no agent run to fail
+        {"id": 3, "kind": worker_mod.CRAWL_BATCH, "payload": {}, "status": "dead"},
+    ])
+    monkeypatch.setattr(
+        agent_runs_repo, "set_status",
+        lambda rid, status, **kw: (failed.update({rid: status}), only_from.update({rid: kw.get("only_from")}))
+        and True or True,
+    )
+    worker_mod.Worker()._reap_stale()
+    assert failed == {"r-dead": "failed"}
+    # a run that already staged before its worker died must stay staged
+    assert only_from["r-dead"] == ("queued", "planning")
+
+
+def test_reap_is_throttled(monkeypatch) -> None:
+    from aeo.pipeline import worker as worker_mod
+    from aeo.storage.repos import jobs as jobs_repo
+
+    calls = {"n": 0}
+    monkeypatch.setattr(jobs_repo, "reap_stale", lambda lease: calls.update(n=calls["n"] + 1) or [])
+    w = worker_mod.Worker()
+    w._reap_stale()
+    w._reap_stale()  # immediately again — inside the throttle window
+    assert calls["n"] == 1

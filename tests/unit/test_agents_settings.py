@@ -7,7 +7,8 @@ def test_agents_cfg_defaults() -> None:
     from aeo.settings import AgentsCfg
 
     cfg = AgentsCfg()
-    assert cfg.concurrency == 2
+    # concurrency = the max runs in flight (queued/planning) before POST /api/agent/run 429s
+    assert cfg.concurrency == 4
     assert cfg.step_timeout_sec == 120
     assert cfg.max_attempts == 3
 

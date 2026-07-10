@@ -267,10 +267,11 @@ class ScoringCfg(BaseModel):
 
 class AgentsCfg(BaseModel):
     # Phase 2 agent runtime: scoped LLM agents driven by a deterministic controller on the
-    # existing Postgres job queue (no new broker). concurrency caps how many AGENT_RUN jobs a
-    # worker drains at once; step_timeout_sec bounds a single agent step (Phase 2B enforces it
-    # per-LLM-call); max_attempts is the per-run retry budget before the run is marked failed.
-    concurrency: int = 2
+    # existing Postgres job queue (no new broker). concurrency caps how many runs may be in
+    # flight (queued/planning) at once — POST /api/agent/run answers 429 past it;
+    # step_timeout_sec bounds a single agent step (Phase 2B enforces it per-LLM-call);
+    # max_attempts is the per-run job retry budget before the queue marks it dead.
+    concurrency: int = 4
     step_timeout_sec: int = 120
     max_attempts: int = 3
     # Orchestration mode. "react": the agentic loop — the LLM plans its own steps over the

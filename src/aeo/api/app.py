@@ -232,6 +232,12 @@ class DeliverablesRequest(BriefRequest):
     builder_mode: Literal["dev", "diy", "ai", "hire"] = "dev"
 
 
+class AgentRunRequest(BriefRequest):
+    # Client-supplied dedupe key: a retried POST (double-click, network retry) carrying
+    # the same key returns the existing run instead of minting a duplicate.
+    idempotency_key: str | None = Field(default=None, max_length=128)
+
+
 class BlueprintRequest(BaseModel):
     topic: str | None = None
     domain: str | None = None
@@ -879,27 +885,46 @@ def audit_cancel(job_id: str) -> dict[str, Any]:
 
 
 def _decide_agent_run(run_id: str, decision: str) -> dict[str, Any]:
-    """Approve/reject gate: only a 'staged' run can be decided, and only a human does it."""
+    """Approve/reject gate: only a 'staged' run can be decided, and only a human does it.
+    The write is a compare-and-set from 'staged', so of two racing decisions (or a decision
+    racing a cancel) exactly one wins — the loser gets the 409, never a false 200."""
     from ..storage.repos import agent_runs as agent_runs_repo
 
     row = agent_runs_repo.get(run_id)
     if row is None:
         raise HTTPException(status_code=404, detail="unknown agent run")
-    if row["status"] != "staged":
-        raise HTTPException(status_code=409, detail=f"run is {row['status']}, not staged")
-    agent_runs_repo.set_status(run_id, decision)
+    if not agent_runs_repo.set_status(run_id, decision, only_from=("staged",)):
+        now = agent_runs_repo.get(run_id)
+        raise HTTPException(status_code=409, detail=f"run is {(now or row)['status']}, not staged")
     return {"run_id": run_id, "status": decision}
 
 
 @app.post("/api/agent/run")
-def agent_run_start(req: BriefRequest) -> dict[str, Any]:
+def agent_run_start(req: AgentRunRequest) -> dict[str, Any]:
     """Start an assistive agent run. The Planner stages a task graph for human review; nothing
     is published. Returns the run id to poll."""
     if req.domain:
         _assert_crawlable_host(req.domain)  # SSRF parity — the run may crawl this domain later
     from ..agents.runtime import start_agent_run
+    from ..settings import get_settings
+    from ..storage.repos import agent_runs as agent_runs_repo
 
-    row = start_agent_run(_brief(req).to_dict())
+    # A replayed idempotency key answers BEFORE the cap: the run already exists (it may
+    # itself be what fills the queue), so the retry must learn its id, not get a 429.
+    if req.idempotency_key:
+        existing = agent_runs_repo.by_idempotency_key(req.idempotency_key)
+        if existing is not None:
+            return {"run_id": existing["id"], "status": existing["status"]}
+    # Backpressure, mirroring the audit cap: each run is a multi-minute LLM+crawl job, so
+    # bound how many may be in flight (queued/planning) at once. Soft cap — a race between
+    # two POSTs can overshoot by one, which is fine for what it protects (quota + queue depth).
+    cap = max(1, get_settings().agents.concurrency)
+    if agent_runs_repo.count_active() >= cap:
+        raise HTTPException(
+            status_code=429,
+            detail=f"{cap} agent runs are already in flight — wait for the queue to drain",
+        )
+    row = start_agent_run(_brief(req).to_dict(), idempotency_key=req.idempotency_key)
     return {"run_id": row["id"], "status": row["status"]}
 
 
@@ -925,6 +950,28 @@ def agent_run_reject(run_id: str) -> dict[str, Any]:
 
 
 _AGENT_TERMINAL = frozenset({"staged", "approved", "rejected", "failed", "cancelled"})
+_AGENT_STATUSES = frozenset({"queued", "planning"}) | _AGENT_TERMINAL
+
+
+@app.post("/api/agent/run/{run_id}/cancel")
+def agent_run_cancel(run_id: str) -> dict[str, Any]:
+    """Cancel a queued/in-flight run. Compare-and-set from queued/planning — a run that
+    staged (or settled) in the meantime 409s with its real status instead of being yanked
+    out from under the reviewer. On success the not-yet-claimed job is killed so no worker
+    picks it up; a worker already mid-run has its finishing writes discarded by the repo's
+    settled-status guard."""
+    from ..pipeline.worker import AGENT_RUN
+    from ..storage.repos import agent_runs as agent_runs_repo
+    from ..storage.repos import jobs as jobs_repo
+
+    row = agent_runs_repo.get(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown agent run")
+    if not agent_runs_repo.set_status(run_id, "cancelled", only_from=("queued", "planning")):
+        now = agent_runs_repo.get(run_id)
+        raise HTTPException(status_code=409, detail=f"run is already {(now or row)['status']}")
+    jobs_repo.cancel_pending(AGENT_RUN, run_id)
+    return {"run_id": run_id, "status": "cancelled"}
 
 
 def _sse(obj: dict[str, Any]) -> str:
@@ -933,10 +980,15 @@ def _sse(obj: dict[str, Any]) -> str:
 
 @app.get("/api/agent/runs")
 def agent_runs_list(status: str = "staged", limit: int = 50) -> dict[str, Any]:
-    """Agent runs in a given status (default 'staged' — the review queue)."""
+    """Agent runs by status (default 'staged' — the review queue). ``status`` accepts a
+    comma-separated list, e.g. ``?status=queued,planning`` for the in-flight view."""
     from ..storage.repos import agent_runs as agent_runs_repo
 
-    return {"runs": agent_runs_repo.list_by_status(status, limit=max(1, min(limit, 200)))}
+    statuses = [s.strip() for s in status.split(",") if s.strip()]
+    unknown = [s for s in statuses if s not in _AGENT_STATUSES]
+    if not statuses or unknown:
+        raise HTTPException(status_code=400, detail=f"unknown status: {', '.join(unknown) or '(empty)'}")
+    return {"runs": agent_runs_repo.list_by_status(statuses, limit=max(1, min(limit, 200)))}
 
 
 @app.get("/api/agent/run/{run_id}/stream")

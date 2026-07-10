@@ -8,7 +8,8 @@ import string
 def test_exposes_its_api() -> None:
     from aeo.storage.repos import agent_runs
 
-    for fn in ("new_id", "create", "get", "append_step", "steps_for", "set_status", "list_by_status"):
+    for fn in ("new_id", "create", "get", "by_idempotency_key", "append_step", "steps_for",
+               "set_status", "list_by_status", "count_active"):
         assert callable(getattr(agent_runs, fn))
 
 

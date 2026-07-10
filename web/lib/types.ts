@@ -414,6 +414,7 @@ export interface CriticVerdict {
   claims_flagged: boolean;
   claims: string[];
   needs_review: boolean;
+  reasons?: string[];       // compact "why flagged" summary
 }
 
 export interface AgentTask {
@@ -436,6 +437,7 @@ export interface AgentRunSummary {
 export interface AgentRunDetail extends AgentRunSummary {
   result?: { domain?: string; topic?: string; headline?: string; tasks?: AgentTask[] } | null;
   steps?: AgentStep[];
+  error?: string | null;    // set when status is "failed"
 }
 
 export type AgentStreamMessage =

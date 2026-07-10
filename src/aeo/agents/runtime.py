@@ -290,11 +290,20 @@ class AgentRunController:
 
 def start_agent_run(brief: dict[str, Any], *, idempotency_key: str | None = None) -> dict[str, Any]:
     """Create a run row and enqueue it on the Postgres job queue for a worker to drive.
-    Used by the API and CLI. The worker picks it up via the AGENT_RUN job kind."""
+    Used by the API and CLI. The worker picks it up via the AGENT_RUN job kind. A replayed
+    ``idempotency_key`` returns the existing run without enqueueing a second job."""
     from ..pipeline.worker import enqueue_agent_run  # lazy: avoid import cycle with worker
+    from ..settings import get_settings
 
+    if idempotency_key:
+        existing = agent_runs_repo.by_idempotency_key(idempotency_key)
+        if existing is not None:
+            return existing
     row = agent_runs_repo.create(
         idempotency_key=idempotency_key, domain=brief.get("domain"), client_id=None, brief=brief
     )
-    enqueue_agent_run(row["id"])
+    # `_inserted` False = we lost a same-key race and got the other request's row back;
+    # that request enqueued the job, so enqueueing again would double-process the run.
+    if row.pop("_inserted", True):
+        enqueue_agent_run(row["id"], max_attempts=get_settings().agents.max_attempts)
     return row

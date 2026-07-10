@@ -10,28 +10,55 @@ import type { AgentRunDetail, AgentRunSummary, AgentStreamMessage } from "../lib
 
 const TERMINAL = new Set(["staged", "approved", "rejected", "failed", "cancelled"]);
 
+// Queue tabs → the API statuses each one lists. "In progress" and "Failed" exist so a
+// run can never silently vanish: every lifecycle state is visible somewhere.
+const FILTERS = [
+  { key: "active", label: "In progress", statuses: "queued,planning" },
+  { key: "staged", label: "Needs review", statuses: "staged" },
+  { key: "approved", label: "Approved", statuses: "approved" },
+  { key: "rejected", label: "Rejected", statuses: "rejected" },
+  { key: "failed", label: "Failed", statuses: "failed,cancelled" },
+] as const;
+type FilterKey = (typeof FILTERS)[number]["key"];
+
+function newIdempotencyKey(): string {
+  // crypto.randomUUID exists only in secure contexts; fall back for plain-http LAN dev.
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function AgentReviewQueue() {
   const [runs, setRuns] = useState<AgentRunSummary[]>([]);
   const [selected, setSelected] = useState<AgentRunDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<"staged" | "approved" | "rejected">("staged");
+  const [statusFilter, setStatusFilter] = useState<FilterKey>("staged");
   const esRef = useRef<EventSource | null>(null);
 
   // "Start a run" form state.
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Dedupe key for the in-flight start request: minted per attempt, kept across a failed
+  // attempt so retrying the same submission can never enqueue a duplicate run.
+  const idemKeyRef = useRef<string | null>(null);
   const [form, setForm] = useState({ name: "", domain: "", topic: "" });
   const [starting, setStarting] = useState(false);
   const [startMsg, setStartMsg] = useState<string | null>(null);
 
   const refreshList = useCallback(async () => {
     try {
-      const { runs } = await api.listAgentRuns(statusFilter);
+      const filter = FILTERS.find((f) => f.key === statusFilter) ?? FILTERS[1];
+      const { runs } = await api.listAgentRuns(filter.statuses);
       setRuns(runs);
     } catch (e) {
       setError((e as Error).message);
     }
   }, [statusFilter]);
+  // Always the CURRENT tab's fetcher. The 5s poll started in startRun would otherwise
+  // capture the refreshList of the tab that was active at submit time and keep
+  // overwriting whatever tab the user is actually looking at with that tab's rows.
+  const refreshRef = useRef(refreshList);
+  refreshRef.current = refreshList;
 
   useEffect(() => {
     void refreshList();
@@ -71,6 +98,7 @@ export function AgentReviewQueue() {
       setError(null);
       setStartMsg(null);
       try {
+        if (!idemKeyRef.current) idemKeyRef.current = newIdempotencyKey();
         await api.startAgentRun({
           name,
           domain: form.domain.trim() || undefined,
@@ -79,19 +107,21 @@ export function AgentReviewQueue() {
           competitors: [],
           goals: [],
           use_llm: false,
+          idempotency_key: idemKeyRef.current,
         });
+        idemKeyRef.current = null; // consumed — the next submission gets a fresh key
         setStartMsg(
-          "✓ Run started — the agents are researching, planning, drafting, and reviewing. It will appear in the queue below when it's ready.",
+          "✓ Run started — watch it under In progress; it moves to Needs review when the agents finish.",
         );
         setForm({ name: "", domain: "", topic: "" });
-        setStatusFilter("staged"); // make sure the new run is visible in the right tab
-        // Poll the queue so the new run surfaces automatically once it stages. Local-model runs
-        // can take a few minutes, so keep checking for ~6 min before stopping.
+        setStatusFilter("active"); // the new run is visible here immediately
+        // Poll so the tab stays live while the run works. Local-model runs can take a few
+        // minutes, so keep checking for ~6 min before stopping.
         if (pollRef.current) clearInterval(pollRef.current);
         let ticks = 0;
         pollRef.current = setInterval(() => {
           ticks += 1;
-          void refreshList();
+          void refreshRef.current(); // via the ref: always refreshes the tab in view
           if (ticks >= 72 && pollRef.current) clearInterval(pollRef.current);
         }, 5000);
       } catch (err) {
@@ -110,6 +140,26 @@ export function AgentReviewQueue() {
       try {
         if (decision === "approve") await api.approveAgentRun(id);
         else await api.rejectAgentRun(id);
+        setSelected(null);
+        await refreshList();
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [refreshList],
+  );
+
+  const cancel = useCallback(
+    async (id: string) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await api.cancelAgentRun(id);
+        // The run's live stream would otherwise emit the terminal "cancelled" frame a
+        // second later and re-open the detail pane the user just dismissed.
+        esRef.current?.close();
         setSelected(null);
         await refreshList();
       } catch (e) {
@@ -173,21 +223,21 @@ export function AgentReviewQueue() {
         {/* ── queue sidebar ── */}
         <aside className="space-y-3">
         <div className="flex items-center justify-between">
-          <div className="flex gap-1">
-            {(["staged", "approved", "rejected"] as const).map((s) => (
+          <div className="flex flex-wrap gap-1">
+            {FILTERS.map(({ key, label }) => (
               <button
-                key={s}
+                key={key}
                 onClick={() => {
                   setSelected(null);
-                  setStatusFilter(s);
+                  setStatusFilter(key);
                 }}
-                className={`rounded-lg border px-2.5 py-1 text-[12px] capitalize transition-colors ${
-                  statusFilter === s
+                className={`rounded-lg border px-2.5 py-1 text-[12px] transition-colors ${
+                  statusFilter === key
                     ? "border-accent bg-accent-50 text-ink"
                     : "border-transparent text-ink-300 hover:text-ink"
                 }`}
               >
-                {s === "staged" ? "Needs review" : s}
+                {label}
               </button>
             ))}
           </div>
@@ -203,7 +253,9 @@ export function AgentReviewQueue() {
           <div className="card p-5 text-sm text-ink-300">
             {statusFilter === "staged"
               ? "No runs staged yet — start one above and it will appear here once the agents finish (about a minute or two)."
-              : `No ${statusFilter} runs yet.`}
+              : statusFilter === "active"
+                ? "Nothing in flight — a new run lands here the moment you start it."
+                : `No ${FILTERS.find((f) => f.key === statusFilter)?.label.toLowerCase()} runs yet.`}
           </div>
         ) : (
           <ul className="space-y-2">
@@ -291,7 +343,22 @@ export function AgentReviewQueue() {
                     </button>
                   </div>
                 )}
+                {(selected.status === "queued" || selected.status === "planning") && (
+                  <button
+                    disabled={busy}
+                    onClick={() => void cancel(selected.id)}
+                    className="btn-ghost shrink-0 !px-4 !py-2 text-[13px]"
+                  >
+                    Cancel run
+                  </button>
+                )}
               </header>
+
+              {selected.status === "failed" && selected.error && (
+                <p className="rounded-xl border border-rose-500/25 bg-rose-500/[0.08] px-4 py-2.5 text-sm text-rose-300">
+                  <span className="font-medium">Run failed:</span> {selected.error}
+                </p>
+              )}
 
               {/* step trace */}
               <ol className="flex flex-wrap gap-2">

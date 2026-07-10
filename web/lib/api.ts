@@ -287,7 +287,9 @@ export const api = {
   },
 
   // ── agent runs (Phase 2) ──────────────────────────────────────────────────
-  startAgentRun(req: BriefRequest): Promise<{ run_id: string; status: string }> {
+  startAgentRun(
+    req: BriefRequest & { idempotency_key?: string },
+  ): Promise<{ run_id: string; status: string }> {
     return postJson<{ run_id: string; status: string }>("/api/agent/run", req);
   },
   async listAgentRuns(status = "staged"): Promise<{ runs: AgentRunSummary[] }> {
@@ -305,6 +307,9 @@ export const api = {
   },
   rejectAgentRun(runId: string): Promise<{ run_id: string; status: string }> {
     return postJson<{ run_id: string; status: string }>(`/api/agent/run/${encodeURIComponent(runId)}/reject`, {});
+  },
+  cancelAgentRun(runId: string): Promise<{ run_id: string; status: string }> {
+    return postJson<{ run_id: string; status: string }>(`/api/agent/run/${encodeURIComponent(runId)}/cancel`, {});
   },
   /** Live run updates via SSE (browser only). The same-origin proxy injects auth; EventSource
    *  can't set headers. Returns the EventSource so the caller can close() it on unmount. */

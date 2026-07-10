@@ -31,7 +31,9 @@ def create(
 ) -> dict[str, Any]:
     """Insert a new run (status 'queued') and return its row. When ``idempotency_key`` is
     set and already exists, return the existing run instead (dedupe). A NULL key never
-    dedupes (Postgres treats NULLs as distinct)."""
+    dedupes (Postgres treats NULLs as distinct). The returned dict carries a transient
+    ``_inserted`` flag (True = this call created the row) so the caller can decide whether
+    to enqueue work — a deduped replay must not get a second job."""
     rid = new_id()
     with transaction() as conn, conn.cursor() as cur:
         cur.execute(
@@ -45,9 +47,9 @@ def create(
         )
         row = cur.fetchone()
         if row is not None:
-            return dict(row)
+            return {**dict(row), "_inserted": True}
         cur.execute("SELECT * FROM agent_runs WHERE idempotency_key = %s", (idempotency_key,))
-        return dict(cur.fetchone())
+        return {**dict(cur.fetchone()), "_inserted": False}
 
 
 def get(run_id: str) -> dict[str, Any] | None:
@@ -57,6 +59,19 @@ def get(run_id: str) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
+def by_idempotency_key(key: str) -> dict[str, Any] | None:
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM agent_runs WHERE idempotency_key = %s", (key,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+# Once a run settles nothing may move it again: a worker finishing after a user's cancel
+# (or a reaped duplicate delivery) must not resurrect the run. 'staged' is deliberately
+# NOT settled — the human approve/reject transition starts there.
+_SETTLED = ("approved", "rejected", "failed", "cancelled")
+
+
 def set_status(
     run_id: str,
     status: str,
@@ -64,9 +79,14 @@ def set_status(
     current_step: str | None = None,
     result: dict[str, Any] | None = None,
     error: str | None = None,
+    only_from: tuple[str, ...] | None = None,
 ) -> bool:
     """Advance a run's status. Optional fields are written only when provided, so a
-    transition never clobbers an existing result/error with NULL."""
+    transition never clobbers an existing result/error with NULL. Returns False when the
+    run is unknown or already settled (see ``_SETTLED``) — settled runs are immutable.
+    ``only_from`` makes the transition a compare-and-set: it applies only while the run is
+    in one of those statuses, so racing writers (approve vs reject vs cancel vs a late
+    worker) cannot both report success."""
     sets = ["status = %s"]
     params: list[Any] = [status]
     if current_step is not None:
@@ -79,8 +99,13 @@ def set_status(
         sets.append("error = %s")
         params.append(error)
     params.append(run_id)
+    params.append(list(_SETTLED))
+    where = "id = %s AND NOT (status = ANY(%s))"
+    if only_from is not None:
+        where += " AND status = ANY(%s)"
+        params.append(list(only_from))
     with transaction() as conn, conn.cursor() as cur:
-        cur.execute(f"UPDATE agent_runs SET {', '.join(sets)} WHERE id = %s", tuple(params))
+        cur.execute(f"UPDATE agent_runs SET {', '.join(sets)} WHERE {where}", tuple(params))
         return cur.rowcount > 0
 
 
@@ -127,10 +152,19 @@ def steps_for(run_id: str) -> list[dict[str, Any]]:
         return [dict(row) for row in cur.fetchall()]
 
 
-def list_by_status(status: str, limit: int = 50) -> list[dict[str, Any]]:
+def list_by_status(status: str | list[str], limit: int = 50) -> list[dict[str, Any]]:
+    """Runs in the given status (or any of a list of statuses), newest first."""
+    statuses = [status] if isinstance(status, str) else list(status)
     with transaction() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT * FROM agent_runs WHERE status = %s ORDER BY updated_at DESC LIMIT %s",
-            (status, limit),
+            "SELECT * FROM agent_runs WHERE status = ANY(%s) ORDER BY updated_at DESC LIMIT %s",
+            (statuses, limit),
         )
         return [dict(row) for row in cur.fetchall()]
+
+
+def count_active() -> int:
+    """Runs currently in flight (queued or planning) — the enqueue cap reads this."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM agent_runs WHERE status IN ('queued', 'planning')")
+        return int(cur.fetchone()["n"])

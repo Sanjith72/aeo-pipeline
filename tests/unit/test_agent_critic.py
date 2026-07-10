@@ -49,3 +49,19 @@ def test_review_skips_tasks_without_a_draft() -> None:
     graph = {"tasks": [{"id": "x", "slug": "/x"}]}
     out = review_drafts(graph, llm=None)
     assert "critic" not in out["tasks"][0]
+
+
+def test_review_reasons_say_why_and_track_needs_review() -> None:
+    # `reasons` is what the react loop's critique_drafts observation surfaces — it must be
+    # non-empty exactly when the draft needs review, and name the failing check.
+    graph = {"tasks": [
+        {"id": "a", "slug": "/a", "draft": _draft_payload()},
+        {"id": "b", "slug": "/b", "draft": _draft_payload("Source: http://no-dot-host/page")},
+    ]}
+    out = review_drafts(graph, llm=None, origin="https://acme.com")
+    for task in out["tasks"]:
+        verdict = task["critic"]
+        assert bool(verdict["reasons"]) == verdict["needs_review"]
+    flagged = out["tasks"][1]["critic"]
+    assert flagged["needs_review"] is True
+    assert any("adversarial" in r or "independent" in r for r in flagged["reasons"])

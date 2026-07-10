@@ -81,17 +81,34 @@ def review_drafts(
             body, llm=llm, verify_reachability=verify_citations, max_attempts=adversarial_max_attempts
         )
         claims = claim_audit(body, llm=llm)
+        adversarial_detail = adversarial.to_detail()
 
         passed = bool(independent["passed"]) and adversarial.passed
         needs_review = (not passed) or claims["flagged"]
+        # Compact human/agent-readable summary of WHY the draft is flagged — the react
+        # loop's critique_drafts observation surfaces this so the model can act on flags
+        # without a follow-up inspect_task call.
+        reasons: list[str] = []
+        if not independent["passed"]:
+            hallucinated = int(independent.get("hallucinated_citations") or 0)
+            reasons.append(
+                "independent validation failed"
+                + (f" ({hallucinated} hallucinated citation(s))" if hallucinated else "")
+            )
+        if not adversarial.passed:
+            why = adversarial_detail.get("failure_reason") if isinstance(adversarial_detail, dict) else None
+            reasons.append("adversarial audit refuted the draft" + (f": {why}" if why else ""))
+        if claims["flagged"]:
+            reasons.append(f"{len(claims['claims'])} claim(s) need publisher verification")
         task["critic"] = {
             "passed": passed,
             "independent_passed": bool(independent["passed"]),
             "independent": independent,
-            "adversarial": adversarial.to_detail(),
+            "adversarial": adversarial_detail,
             "claims_flagged": claims["flagged"],
             "claims": claims["claims"],
             "needs_review": needs_review,
+            "reasons": reasons,
         }
         task["status"] = "reviewed" if not needs_review else "flagged"
     return graph
