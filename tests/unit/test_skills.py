@@ -42,7 +42,7 @@ def test_every_page_gets_five_skills_0_100() -> None:
     assert set(out["skills"].keys()) == set(SKILL_KEYS)
     for skill in out["skills"].values():
         assert 0 <= skill["score"] <= 100
-        assert 1 <= len(skill["suggestions"]) or skill["score"] >= 100 or skill["confidence"] == "neutral"
+        assert len(skill["suggestions"]) >= 1 or skill["score"] >= 100 or skill["confidence"] == "neutral"
 
 
 def test_messaging_conversion_provisional_without_llm() -> None:

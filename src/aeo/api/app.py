@@ -19,7 +19,6 @@ require a matching ``X-API-Key`` header (see :func:`require_api_key`). Unset = o
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import socket
 import time
@@ -239,7 +238,7 @@ class BriefRequest(BaseModel):
     use_llm: bool = True
 
     @model_validator(mode="after")
-    def _default_name_from_domain(self) -> "BriefRequest":
+    def _default_name_from_domain(self) -> BriefRequest:
         if not self.name.strip():
             derived = derive_business_name(self.domain)
             if not derived:
