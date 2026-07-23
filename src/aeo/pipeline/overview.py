@@ -80,12 +80,15 @@ def _store(domain: str, payload: dict[str, Any]) -> None:
     _CACHE[_cache_key(domain)] = (now, payload)
 
 
-def _homepage_skills(docs: list[Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def _homepage_skills(
+    docs: list[Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, Any]:
     """Score the homepage in memory from the already-fetched HTML: extract → 10-criterion
     score (deterministic — a disabled LLM client keeps this synchronous path off any
-    model) → the 5-skill derived layer. Returns (skills payload, homepage summary)."""
+    model) → the 5-skill derived layer. Returns (skills payload, homepage summary, the
+    extraction bundle — reused by the CH-14 AI-visibility check)."""
     if not docs:
-        return None, None
+        return None, None, None
     home = docs[0]
     page = FetchedPage(
         url=home.url,
@@ -109,7 +112,7 @@ def _homepage_skills(docs: list[Any]) -> tuple[dict[str, Any] | None, dict[str, 
         "aeo_max": page_score.max_possible,
         "priority_tier": page_score.priority_tier,
     }
-    return skills, homepage
+    return skills, homepage, bundle
 
 
 async def build_overview(domain: str, *, max_urls: int | None = None) -> dict[str, Any]:
@@ -169,18 +172,33 @@ async def build_overview(domain: str, *, max_urls: int | None = None) -> dict[st
     if not services and industry:
         services = [industry]
 
-    skills, homepage = (None, None)
+    skills, homepage, home_bundle = (None, None, None)
     skills_unavailable_reason: str | None = None
     try:
         # Parse+score is CPU-bound (BeautifulSoup over a full homepage) — keep it off
         # the event loop so concurrent overview/profile requests aren't starved.
-        skills, homepage = await asyncio.to_thread(_homepage_skills, docs)
+        skills, homepage, home_bundle = await asyncio.to_thread(_homepage_skills, docs)
     except Exception as exc:  # scoring is the payload's core but must degrade honestly
         log.warning("overview_homepage_score_failed", domain=domain, error=str(exc))
     if skills is None:
         skills_unavailable_reason = (
             "homepage_unreachable" if not docs else "homepage_scoring_failed"
         )
+
+    # v5 CH-14: does the homepage get CITED by AI answer engines? Best-effort + bounded +
+    # degradable — 'unavailable' (never a fake verdict) when Perplexity is unconfigured
+    # (the default), so this adds zero cost/latency on the free tier unless ops enables it.
+    # Skipped on a dead/unreadable site (the UI hides it there — don't spend a probe on it).
+    is_dead = prof is None or route == DEAD
+    ai_visibility: dict[str, Any] = {"status": "unavailable", "engine": "perplexity", "reason": "no_homepage"}
+    if home_bundle is not None and not is_dead:
+        try:
+            from .ai_visibility import check_ai_visibility
+
+            ai_visibility = await check_ai_visibility(home_bundle, docs[0].url)
+        except Exception as exc:  # never fail the overview over the visibility check
+            log.warning("overview_ai_visibility_failed", domain=domain, error=str(exc))
+            ai_visibility = {"status": "unavailable", "engine": "perplexity", "reason": "error"}
 
     # Anonymous free tier: no grants → decorate_pack unlocks only Pack 1, locks the rest.
     # Routing through the shared resolver (not an inline pack_index>1) keeps the overview
@@ -228,6 +246,7 @@ async def build_overview(domain: str, *, max_urls: int | None = None) -> dict[st
         "homepage": homepage,
         "skills": skills,
         "skills_unavailable_reason": skills_unavailable_reason,
+        "ai_visibility": ai_visibility,  # v5 CH-14 — cited by AI answer engines?
         "packs": packs,
         "competitors": {
             "names": competitor_names,

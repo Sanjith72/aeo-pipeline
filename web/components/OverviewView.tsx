@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
-import type { OverviewResponse, SkillKey, SkillScore } from "@/lib/types";
+import type { AiVisibility, OverviewResponse, SkillKey, SkillScore } from "@/lib/types";
 import { SheetTag } from "@/components/chrome";
 import { Reveal } from "@/components/motion/primitives";
 import { ArrowRight } from "@/components/ui/icons";
@@ -43,6 +43,47 @@ const LOADING_STAGES = [
   "Grouping pages into packs",
   "Checking what's missing",
 ] as const;
+
+// CH-14 — the AI-snapshot headline: does an AI answer engine cite this site? Honest about
+// the three states; shows the question so a "cited" claim is verifiable.
+function AiSnapshot({ data }: { data: AiVisibility }) {
+  if (data.status === "cited") {
+    return (
+      <div className="card flex flex-col gap-1 border-emerald-500/25 p-5">
+        <span className="label-mono !text-[10px] text-emerald-300">AI visibility</span>
+        <p className="m-0 text-[15px] font-semibold text-ink">
+          ✓ You’re cited by AI answer engines
+          {data.via === "answer_text" ? " (mentioned in the answer)" : ""}
+        </p>
+        {data.question && <p className="m-0 text-[13px] text-ink-300">for “{data.question}”</p>}
+      </div>
+    );
+  }
+  if (data.status === "not_cited") {
+    return (
+      <div className="card flex flex-col gap-1 p-5">
+        <span className="label-mono !text-[10px] text-ink-300">AI visibility</span>
+        <p className="m-0 text-[15px] font-semibold text-ink">Not yet cited by AI answer engines</p>
+        {data.question && (
+          <p className="m-0 text-[13px] text-ink-300">
+            We asked “{data.question}” — your site didn’t come up. The Discovery fixes below are how you change that.
+          </p>
+        )}
+      </div>
+    );
+  }
+  // unavailable — honest "not measured", never a fake verdict.
+  return (
+    <div className="card flex flex-col gap-1 p-5">
+      <span className="label-mono !text-[10px] text-ink-300">AI visibility</span>
+      <p className="m-0 text-[13.5px] text-ink-500">
+        {data.reason === "not_configured"
+          ? "AI-citation check isn’t enabled on this instance — the Discovery score below still measures how findable you are."
+          : "We couldn’t check AI citations for this page right now."}
+      </p>
+    </div>
+  );
+}
 
 /** Length-encoded 0-100 meter in house monochrome (track white/10, fill accent). */
 function Meter({ value }: { value: number }) {
@@ -259,6 +300,9 @@ export function OverviewView() {
                 </Link>
               </div>
             )}
+
+            {/* CH-14 — the AI-snapshot headline (does an answer engine cite you?). */}
+            {data.ai_visibility && data.route !== "dead" && <AiSnapshot data={data.ai_visibility} />}
 
             {data.skills && (
               <section aria-labelledby="skills-h">

@@ -556,6 +556,20 @@ export interface PackDetailResponse {
   pages: PackPageDetail[];
 }
 
+// v5 CH-14 — the AI-snapshot: does the page get cited by AI answer engines (Perplexity)?
+// "unavailable" = the check didn't run (engine unconfigured / no question / timed out) —
+// never conflated with "not_cited". `via` says whether a match was a structured citation
+// (hard) or an answer-text mention (softer).
+export interface AiVisibility {
+  status: "cited" | "not_cited" | "unavailable" | string;
+  engine: string;
+  question?: string | null;
+  reason?: string | null; // only on status="unavailable"
+  via?: "citations" | "answer_text" | null;
+  matched?: string[];
+  cached?: boolean;
+}
+
 // POST /api/overview — the free URL-first entry (CH-09). No auth, cached per domain.
 export interface OverviewResponse {
   domain: string;
@@ -582,6 +596,7 @@ export interface OverviewResponse {
   homepage: { url: string; aeo_total: number; aeo_max: number; priority_tier: string } | null;
   skills: SkillScores | null;
   skills_unavailable_reason?: string | null;
+  ai_visibility?: AiVisibility | null;
   packs: PackPreview[];
   competitors: { names: string[]; reason: string | null };
   next: { deeper: string };

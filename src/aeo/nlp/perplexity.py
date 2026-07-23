@@ -61,11 +61,14 @@ class PerplexityClient:
     def model(self) -> str:
         return self._cfg.model
 
-    def cited(self, question: str, *, target_url: str) -> CitationProbe | None:
+    def cited(self, question: str, *, target_url: str, timeout: float | None = None) -> CitationProbe | None:
         """Query ``question`` and report whether ``target_url``'s domain is cited.
 
         Returns ``None`` when disabled or on any transport/parse failure, so the
-        validator can distinguish "not run" from a real "not cited" result."""
+        validator can distinguish "not run" from a real "not cited" result. ``timeout``
+        overrides ``timeout_sec`` per call — latency-sensitive callers (the free-overview
+        AI-visibility probe) pass a short cap so the underlying HTTP call itself is bounded,
+        not just an outer wait, and no thread lingers past the cap."""
         if not self.enabled or not question.strip():
             return None
         from ..crawl.transport import sync_transport
@@ -76,7 +79,7 @@ class PerplexityClient:
         }
         headers = {"Authorization": f"Bearer {self._cfg.api_key or ''}"}
         try:
-            with httpx.Client(timeout=self._cfg.timeout_sec, transport=sync_transport()) as client:
+            with httpx.Client(timeout=timeout or self._cfg.timeout_sec, transport=sync_transport()) as client:
                 resp = client.post(
                     f"{self._cfg.base_url.rstrip('/')}/chat/completions",
                     json=payload,

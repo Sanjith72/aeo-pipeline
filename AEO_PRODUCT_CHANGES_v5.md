@@ -31,9 +31,9 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 | **P6** | UI redesign + friction reductions | CH-10, CH-11c–g, CH-12 | Consolidate strategy/roadmap, journey-to-top, visual rankings, Prerender friction fixes. |
 | **P7** | AI-snapshot visibility metric | CH-14 | Marketable Discovery metric; reuses existing Perplexity check. |
 
-> **Status: P0 + P1 + P2 + P3 + P4 + P5 + P6 implemented.** §9 decisions resolved (see §9);
-> contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0032` applied + Supabase
-> baseline regenerated. Only **P7** (CH-14 AI-snapshot metric) remains.
+> **Status: ALL PHASES (P0–P7) implemented — the v5 build is complete.** §9 decisions
+> resolved (see §9); contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0032`
+> applied + Supabase baseline regenerated.
 >
 > - **P0/P1** — `POST /api/overview` (free 5-skill homepage overview + pack preview,
 >   per-domain 24h cache, per-IP + global daily caps, SSRF-guarded crawl transport),
@@ -98,6 +98,25 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 >   wizard, route split). Verified: `next build` + 52 lib tests, browser screenshot pass of
 >   the landing (all sections render, no console errors, JSON-LD intact), and a focused review
 >   confirming the fragile plan-panel/tracker machinery is unbroken.
+> - **P7 (CH-14)** — the AI-snapshot visibility metric: `pipeline/ai_visibility.py` surfaces
+>   the existing Perplexity citation engine (`nlp/perplexity.py` + `validation/independent.
+>   derive_question`) as a per-page **cited / not_cited / unavailable** signal — honest by
+>   construction (the three states are never conflated; a soft answer-text mention is
+>   distinguished from a structured citation via `via`). It's on the free overview headline
+>   (`ai_visibility` in the payload, rendered by `OverviewView.AiSnapshot` near the top, under
+>   Discovery & Visibility) and is **degradable + cheap**: instant `unavailable` with zero
+>   network when Perplexity is unconfigured (the default), a bounded probe (short HTTP timeout,
+>   per-(domain,question) cache with real memory bound) + skipped on dead sites when ops
+>   enables it. Backed by a real engine query when `AEO__PERPLEXITY__ENABLED=true` +
+>   `AEO__PERPLEXITY__API_KEY`.
+>
+> **The full v5 slice (spec §10 Definition of Done) is now in place: a first-time visitor
+> pastes a URL → fast metadata overview with five weighted skill scores + AI-visibility +
+> competitor comparison + a homepage-pack preview (no signup, no wizard); going deeper prompts
+> signup; Pack 1 is free, deeper packs require an entitlement; findings are impact-ranked
+> tickets (id/status/assignee/date) in a unified strategy-driven roadmap with the progress
+> visual on top and section-level exists/missing/wrong/fix rankings; completing a fix triggers
+> a re-crawl that shows the before/after score change; all surfaces use the design system.**
 >
 > Note: the codebase reality differs from some "Current" notes below — the wizard is 4 steps
 > (not 9), and the LLM router lives at `src/aeo/nlp/providers.py` (not `src/aeo/llm/`).
