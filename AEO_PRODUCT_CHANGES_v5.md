@@ -31,8 +31,8 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 | **P6** | UI redesign + friction reductions | CH-10, CH-11c–g, CH-12 | Consolidate strategy/roadmap, journey-to-top, visual rankings, Prerender friction fixes. |
 | **P7** | AI-snapshot visibility metric | CH-14 | Marketable Discovery metric; reuses existing Perplexity check. |
 
-> **Status (2026-07-23): P0 + P1 + P2 + P3 implemented.** §9 decisions resolved (see §9);
-> contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0030` applied + Supabase
+> **Status (2026-07-23): P0 + P1 + P2 + P3 + P4 implemented.** §9 decisions resolved (see §9);
+> contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0031` applied + Supabase
 > baseline regenerated.
 >
 > - **P0/P1** — `POST /api/overview` (free 5-skill homepage overview + pack preview,
@@ -56,9 +56,21 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 >   `entitlements/logic.py` resolver): unlock = OR, entitlements authoritative — Pack 1 free,
 >   `all_packs` override, `pack` grant unlocks that index, else progressive (see
 >   `docs/V5_CONTRACTS.md §d`). `POST /api/entitlements/grant` (X-API-Key-gated manual/promo,
->   payments stubbed). Anonymous tier = Pack 1 unlocked, deeper locked. **Deferred to P4:**
->   binding grants to an authenticated `user_id` (`get_current_user`) + rejecting
->   unauthorized pack-detail requests; `completed_pack_indices` stays empty until P5 tickets.
+>   payments stubbed). Anonymous tier = Pack 1 unlocked, deeper locked.
+> - **P4 (CH-07/CH-02a)** — Supabase-JWT user auth (`api/auth.py`, stateless HS256; the
+>   `role`/`aud`/UUID-`sub` checks reject the public anon + service_role keys, which are
+>   same-secret JWTs). `get_optional_user`/`get_current_user` compose with (never replace)
+>   the global service `require_api_key`. **Server-side gating:** `GET /api/packs/{run_id}`
+>   binds `locked` to the logged-in user's real grants; `GET /api/packs/{run_id}/{pack_index}`
+>   returns the pack's page-level skill detail only if unlocked (**403 enforced server-side**,
+>   Pack 1 free even anon). `POST /api/entitlements/redeem` (promo code → real `all_packs`
+>   grant, source='promo'; monetization stub — payments still deferred). Migration `0031`
+>   adds `implementation_milestones.owner_user_id` (unused until P5). Frontend: degradable
+>   `@supabase/supabase-js` login/signup + Bearer attach + unlock UI (all hidden without env).
+>   **Deploy env:** backend `AEO__AUTH__JWT_SECRET` (+ `AEO__AUTH__PROMO_CODES`), frontend
+>   `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` — both sides must be
+>   configured together (HS256; JWKS/asymmetric is a documented follow-up). `completed_pack_indices`
+>   stays empty until P5 tickets, so login alone never unlocks — only an entitlement does.
 >
 > Note: the codebase reality differs from some "Current" notes below — the wizard is 4 steps
 > (not 9), and the LLM router lives at `src/aeo/nlp/providers.py` (not `src/aeo/llm/`).

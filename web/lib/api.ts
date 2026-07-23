@@ -1,6 +1,7 @@
 // Typed client for the AEO HTTP API (SP-4a). Every call maps to one endpoint;
 // no business logic lives here. Calls are same-origin to the server proxy (app/api/[...path]).
 
+import { getAccessToken } from "./supabase";
 import type {
   AgentRunDetail,
   AgentRunSummary,
@@ -17,6 +18,7 @@ import type {
   MilestoneStatus,
   MilestoneVerifyResult,
   OverviewResponse,
+  PackDetailResponse,
   PacksResponse,
   PlanStateResponse,
   ProfileResponse,
@@ -35,9 +37,14 @@ import type {
 const BASE = "";
 
 function headers(extra?: Record<string, string>): Record<string, string> {
-  // No client-side API key — the server proxy adds X-API-Key. (Auth headers added here would
-  // be pointless and would only re-expose the secret in the bundle.)
-  return { ...extra };
+  // The server proxy adds the SERVICE X-API-Key. Here we attach the USER's Supabase JWT
+  // (v5 CH-07) so the backend can bind entitlements to the logged-in user — the proxy
+  // forwards Authorization untouched. Anonymous (no session) → no header, so overview /
+  // profile stay tokenless-OK and the free tier is unchanged. The token is NOT a security
+  // boundary: the backend verifies its signature/aud/role and derives the user only from
+  // the verified claim.
+  const token = getAccessToken();
+  return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra };
 }
 
 // ── instrumentation (Block F) ──────────────────────────────────────────────
@@ -89,7 +96,11 @@ async function postJson<T>(path: string, body: unknown, init?: RequestInit): Pro
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`API ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`);
+    // Attach the HTTP status so callers can branch on it (e.g. a 422 invalid promo code vs
+    // a transient failure) — mirrors the status-carrying errors from me()/getPackDetail().
+    throw Object.assign(new Error(`API ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`), {
+      status: res.status,
+    });
   }
   return (await res.json()) as T;
 }
@@ -171,11 +182,34 @@ export const api = {
     return (await res.json()) as SiteReportResponse;
   },
   /** The impact-ordered packs persisted for a deep-audit run (CH-03). Empty `packs` for
-   *  older/dry-run-only runs — callers fall back to the live overview preview. */
+   *  older/dry-run-only runs — callers fall back to the live overview preview. Auth-aware:
+   *  a logged-in user's `locked` flags reflect their real entitlements. */
   async getPacks(runId: number): Promise<PacksResponse> {
     const res = await fetch(`${BASE}/api/packs/${runId}`, { headers: headers() });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as PacksResponse;
+  },
+  /** A pack's gated per-page skill detail (CH-02a). 403 when the pack is locked for the
+   *  caller (enforced server-side — Pack 1 is free even anonymous). */
+  async getPackDetail(runId: number, packIndex: number): Promise<PackDetailResponse> {
+    const res = await fetch(`${BASE}/api/packs/${runId}/${packIndex}`, { headers: headers() });
+    if (res.status === 403) throw Object.assign(new Error("locked"), { status: 403 });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as PackDetailResponse;
+  },
+
+  // ── auth (v5 CH-07) ────────────────────────────────────────────────────────
+  /** Confirm the session + provision the user server-side (also claims the aeo_sid session,
+   *  cookie-sourced). Requires a valid Supabase JWT; throws on 401. */
+  async me(): Promise<{ id: string; email: string | null }> {
+    const res = await fetch(`${BASE}/api/auth/me`, { headers: headers() });
+    if (!res.ok) throw Object.assign(new Error(`API ${res.status}`), { status: res.status });
+    return (await res.json()) as { id: string; email: string | null };
+  },
+  /** Redeem a promo code to unlock a domain's packs (monetization stub — payments deferred).
+   *  Requires login; the backend binds the grant to the verified user, not anything sent. */
+  async redeemPromo(domain: string, code: string): Promise<{ unlocked: boolean; domain: string }> {
+    return postJson<{ unlocked: boolean; domain: string }>("/api/entitlements/redeem", { domain, code });
   },
 
   // ── implementation milestones (persisted + auto-verified plan) ────────────

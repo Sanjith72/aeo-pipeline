@@ -138,6 +138,35 @@ def _check_api(s: Settings, fatal: list[str], warnings: list[str], *, serving: b
         )
 
 
+_SAFE_JWT_ALGS = frozenset({"HS256", "HS384", "HS512", "RS256", "ES256"})
+
+
+def _check_auth(s: Settings, fatal: list[str], warnings: list[str], *, serving: bool) -> None:
+    """v5 CH-07 user-auth config. Pure config (no I/O). The algorithm allowlist is the
+    load-bearing check: 'none' or an unpinned algorithm reopens the alg=none / RS256→HS256
+    forgery class."""
+    auth = s.auth
+    if auth.jwt_secret is not None and not auth.jwt_secret.strip():
+        fatal.append("AEO__AUTH__JWT_SECRET is set but blank — unset it or give it a real value")
+    if not auth.jwt_aud.strip():
+        fatal.append("AEO__AUTH__JWT_AUD must not be blank")
+    bad = [a for a in auth.jwt_algorithms if a.strip().lower() == "none" or a not in _SAFE_JWT_ALGS]
+    if bad:
+        fatal.append(f"AEO__AUTH__JWT_ALGORITHMS has unsafe/unknown entries: {bad}")
+    auth_active = auth.enabled and bool(auth.jwt_secret)
+    if serving and not auth_active:
+        warnings.append(
+            "serving without AEO__AUTH__JWT_SECRET — deep-value routes (pack detail, per-user "
+            "unlocks) are open and bind to a shared dev user; set it in any public deployment"
+        )
+    # Prod-posture mismatch: the service key is set but user auth is off.
+    if serving and s.api.auth_key and not auth_active:
+        warnings.append(
+            "AEO__API__AUTH_KEY is set but user auth is disabled — deep-value routes have no "
+            "per-user gate (shared dev user); set AEO__AUTH__JWT_SECRET too"
+        )
+
+
 def validate_settings(*, serving: bool = False) -> list[str]:
     """Validate settings; raise :class:`StartupValidationError` on fatal problems.
 
@@ -152,6 +181,7 @@ def validate_settings(*, serving: bool = False) -> list[str]:
     _check_llm(s, fatal, warnings)
     _check_agents(s, fatal)
     _check_api(s, fatal, warnings, serving=serving)
+    _check_auth(s, fatal, warnings, serving=serving)
 
     for w in warnings:
         log.warning("startup_config_warning", detail=w)

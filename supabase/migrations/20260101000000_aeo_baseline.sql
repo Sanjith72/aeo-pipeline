@@ -1,7 +1,7 @@
 -- AEO pipeline — Supabase baseline (GENERATED — do not edit by hand).
 -- Source of truth: src/aeo/storage/migrations/*.sql
 -- Regenerate with: python scripts/export_supabase_baseline.py
--- Includes migrations 0001..0030.
+-- Includes migrations 0001..0031.
 
 -- schema_versions bootstrap (mirrors src/aeo/storage/migrate.py) so the app's own
 -- migration runner recognises everything below as already applied.
@@ -1254,3 +1254,17 @@ CREATE INDEX IF NOT EXISTS idx_entitlements_user_domain ON entitlements (user_id
 ALTER TABLE app_users    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE entitlements ENABLE ROW LEVEL SECURITY;
 INSERT INTO schema_versions (version, name) VALUES ('0030', 'users_entitlements') ON CONFLICT (version) DO NOTHING;
+
+-- ═══ 0031_milestones_owner ══════════════════════════════════════════════
+-- v5 P4 identity bridge (CH-07): stamp milestone ownership so P5 can flip per-user
+-- enforcement on without another migration + backfill. Additive ONLY — GET /api/milestones
+-- stays domain-keyed/anonymous in P4 (gating it now would break the shipped dashboard).
+-- implementation_milestones already self-enabled RLS at 0026, so no new ENABLE line here;
+-- the backend connects as table owner and owners bypass non-FORCE RLS (app-level checks).
+
+ALTER TABLE implementation_milestones
+    ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES app_users(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_milestones_owner_user
+    ON implementation_milestones (owner_user_id) WHERE owner_user_id IS NOT NULL;
+INSERT INTO schema_versions (version, name) VALUES ('0031', 'milestones_owner') ON CONFLICT (version) DO NOTHING;

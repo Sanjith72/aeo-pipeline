@@ -39,6 +39,7 @@ from ..reference.framework import Framework
 from ..reference.generator import generate_blueprint
 from ..report.packager import build_asset_bundle, checklist_for, plan_for
 from . import jobs as jobs_mod
+from .auth import User, get_current_user, get_optional_user
 from .jobs import JOBS
 
 # Bounds for the persisted-plan payloads (B1) — keep a stored plan/profile blob and its
@@ -213,7 +214,9 @@ def _install_cors(application: FastAPI) -> None:
             CORSMiddleware,
             allow_origins=origins,
             allow_methods=["GET", "POST"],
-            allow_headers=["Content-Type", "X-API-Key"],
+            # Authorization added for defense-in-depth: browser→proxy is same-origin (no CORS),
+            # but this prevents a confusing failure if a browser is pointed straight at the API.
+            allow_headers=["Content-Type", "X-API-Key", "Authorization"],
         )
 
 
@@ -357,6 +360,15 @@ class GrantRequest(BaseModel):
     pack_index: int | None = None
     source: str = "manual"
     expires_at: datetime | None = None
+
+
+class RedeemRequest(BaseModel):
+    """Redeem a promo code to unlock a domain's packs (v5 monetization stub — payments
+    deferred; a valid code grants an ``all_packs`` entitlement, source='promo'). The user
+    comes from the verified JWT, never the body."""
+
+    domain: str
+    code: str
 
 
 class OverrideRequest(BaseModel):
@@ -933,18 +945,58 @@ def site_report(run_id: int) -> dict[str, Any]:
     return dict(row)
 
 
+def _grants_for(user: User | None, run_id: int) -> list[dict[str, Any]]:
+    """The viewer's currently-valid entitlement rows for the run's domain — the input to
+    the lock resolver. Anonymous (no user) or a run with no resolvable domain → ``[]`` (the
+    P3 anonymous path: Pack 1 unlocked, deeper locked). ``user_id`` comes ONLY from the
+    verified JWT, never the request, so no one can unlock another user's domain."""
+    if user is None:
+        return []
+    from ..storage.repos import entitlements as entitlements_repo
+    from ..storage.repos import runs as runs_repo
+
+    domain = runs_repo.domain_for_run(run_id)
+    return entitlements_repo.list_for_user_domain(user.id, domain) if domain else []
+
+
 @app.get("/api/packs/{run_id}")
-def get_packs(run_id: int) -> dict[str, Any]:
+def get_packs(run_id: int, user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
     """The impact-ordered packs persisted for a run (v5 CH-03), each with its
     entitlement-derived ``locked`` flag. Empty ``packs`` (200, not 404) for older or
     dry-run-only runs that never persisted packs — the UI falls back to the live overview
-    preview. In P3 the viewer is anonymous (``grants=[]`` → Pack 1 unlocked, deeper packs
-    locked); P4 swaps in the logged-in user's real grants."""
+    preview. Auth-aware (v5 CH-02a): anonymous callers get Pack 1 unlocked + deeper locked;
+    a logged-in user gets their REAL grants. Login alone never unlocks — only an entitlement
+    row does (``completed_pack_indices`` is empty until P5)."""
     from ..entitlements.logic import decorate_pack
     from ..storage.repos import packs as packs_repo
 
     rows = packs_repo.by_run(run_id)
-    return {"run_id": run_id, "packs": [decorate_pack(r, grants=[]) for r in rows]}
+    grants = _grants_for(user, run_id)
+    return {"run_id": run_id, "packs": [decorate_pack(r, grants=grants) for r in rows]}
+
+
+@app.get("/api/packs/{run_id}/{pack_index}")
+def get_pack_detail(
+    run_id: int, pack_index: int, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
+    """The gated deep value (v5 CH-02a): a pack's per-page five-skill detail (scores +
+    suggestions + priorities). Enforced SERVER-SIDE — a locked pack returns 403 regardless
+    of what the client renders (we never ship locked detail with a flag the browser can
+    ignore). Pack 1 is unlocked for everyone (overview stays public); deeper packs require
+    both a logged-in user AND a real entitlement (anonymous → no grants → locked → 403)."""
+    from ..entitlements.logic import decorate_pack
+    from ..storage.repos import packs as packs_repo
+    from ..storage.repos import skill_scores as skill_scores_repo
+
+    header = next((r for r in packs_repo.by_run(run_id) if r["pack_index"] == pack_index), None)
+    if header is None:
+        raise HTTPException(status_code=404, detail="no such pack")
+    if decorate_pack(header, grants=_grants_for(user, run_id))["locked"]:
+        raise HTTPException(status_code=403, detail="unlock this pack to view its detail")
+    return {
+        "run_id": run_id, "pack_index": pack_index, "title": header["title"],
+        "pages": skill_scores_repo.detail_for_pack(run_id, pack_index),
+    }
 
 
 @app.post("/api/audit")
@@ -1401,6 +1453,34 @@ def list_entitlements(user_id: UUID, domain: str) -> dict[str, Any]:
 
     canon = normalize_domain(domain) or domain.strip().lower()
     return {"entitlements": entitlements_repo.list_for_user_domain(str(user_id), canon)}
+
+
+@app.get("/api/auth/me")
+def auth_me(user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """The authenticated user (v5 CH-07). Requires a valid Supabase JWT; 401 otherwise.
+    Also the frontend's post-login call that provisions app_users + claims the aeo_sid
+    session (cookie-sourced, in get_current_user)."""
+    return {"id": user.id, "email": user.email}
+
+
+@app.post("/api/entitlements/redeem")
+def redeem_promo(req: RedeemRequest, user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Redeem a promo code to unlock a domain's packs (v5 CH-02b monetization stub). The
+    user is taken ONLY from the verified JWT — never the body — so no one can unlock for
+    another account. A valid code grants ``all_packs`` (source='promo'); an unknown code is
+    a 422. Redemption is disabled (all codes invalid) when no promo codes are configured."""
+    from ..reference.domain_config import normalize_domain
+    from ..settings import get_settings
+    from ..storage.repos import entitlements as entitlements_repo
+
+    code = req.code.strip()
+    if not code or code not in get_settings().auth.promo_code_set:
+        raise HTTPException(status_code=422, detail="invalid or expired promo code")
+    domain = normalize_domain(req.domain) or req.domain.strip().lower()
+    if not domain:
+        raise HTTPException(status_code=422, detail="a domain is required")
+    row = entitlements_repo.grant(user.id, domain, scope="all_packs", source="promo")
+    return {"unlocked": True, "domain": domain, "entitlement": row}
 
 
 @app.get("/api/metrics")

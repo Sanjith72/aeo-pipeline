@@ -49,6 +49,33 @@ def get(run_id: int) -> CrawlRun | None:
     return CrawlRun(**{k: row[k] for k in ("id", "run_key", "label", "started_at", "status")})
 
 
+def domain_for_run(run_id: int) -> str | None:
+    """The canonical domain of a run (v5 P4 — the pack gate keys entitlements on domain,
+    but crawl_runs has no domain column). Resolves from the run's crawled pages, preferring
+    the homepage (page_type lives on page_priorities), and applies the SAME
+    ``normalize_domain`` the grant path uses so grant-time and check-time keys always agree
+    (``www.x.io`` grant and a run resolved from ``x.io/blog`` collapse to one key). ``None``
+    for a run with no crawled pages (a dry-run-only run) → caller uses ``grants=[]``."""
+    from ...reference.domain_config import normalize_domain
+
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT cp.url
+            FROM crawled_pages cp
+            LEFT JOIN page_priorities pp ON pp.run_id = cp.run_id AND pp.url = cp.url
+            WHERE cp.run_id = %s
+            ORDER BY (pp.page_type = 'homepage') DESC NULLS LAST, cp.id
+            LIMIT 1
+            """,
+            (run_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return normalize_domain(row["url"]) or None
+
+
 def latest_for_domain(domain: str) -> dict | None:
     """The most recent crawl run that touched this domain's pages, with when it ran —
     drives the 'Last reviewed N days ago' / use-existing affordance (Task 3, Slice 2b).

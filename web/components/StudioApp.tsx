@@ -25,6 +25,8 @@ import { DisplayH2, SheetTag } from "@/components/chrome";
 import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { PackCard } from "@/components/PackCard";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { UnlockModal } from "@/components/auth/UnlockModal";
 import { GamificationStrip } from "@/components/GamificationStrip";
 import { Combobox } from "@/components/ui/Combobox";
 import { LiquidButton } from "@/components/ui/liquid-glass";
@@ -152,6 +154,9 @@ export function StudioApp() {
   // v5 CH-03: the impact-ordered packs the deep audit persisted (fetched beside the site
   // report). Best-effort — a run without persisted packs just shows nothing here.
   const [packs, setPacks] = useState<PackPreview[]>([]);
+  const [runId, setRunId] = useState<number | null>(null);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const { authEnabled, user, openAuth } = useAuth();
   // R2-2 re-crawl: when the homepage was crawled recently, default to reusing that data
   // (fast) and let the user opt into a fresh re-crawl that bypasses the skip gate.
   const [forceRecrawl, setForceRecrawl] = useState(false);
@@ -221,6 +226,16 @@ export function StudioApp() {
   useEffect(() => {
     api.trackVisit();
   }, []);
+
+  // v5 CH-02a: when the user signs in (or out), re-fetch the current run's packs so the
+  // per-user `locked` flags recompute — an entitled user's deeper packs unlock without a
+  // page reload. Runs only once packs exist for a run.
+  useEffect(() => {
+    if (runId == null) return;
+    void refreshPacks();
+    // refreshPacks is a stable closure over runId; re-run when the signed-in user changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   // moving between steps always shows the top of the new step
   useEffect(() => {
@@ -350,6 +365,7 @@ export function StudioApp() {
     setAuditJob(null);
     setDeepProfile(null);
     setPacks([]); // clear a prior run's packs so they never leak into this build (incl. no-site)
+    setRunId(null);
     setLoading(true);
     try {
       if (noSite) {
@@ -427,11 +443,31 @@ export function StudioApp() {
       try {
         const p = await api.getPacks(runId);
         setPacks(p.packs);
+        setRunId(runId);
       } catch {
         /* best-effort — a run without persisted packs just renders no pack section */
       }
     }
     return true;
+  }
+
+  // v5 CH-02a/b: clicking "Unlock" on a locked pack. Anonymous → sign in first; a logged-in
+  // user gets the promo-code dialog. On unlock we re-fetch packs so the locks recompute.
+  function handleUnlock() {
+    if (!user) {
+      openAuth("unlock-pack");
+      return;
+    }
+    setUnlockOpen(true);
+  }
+  async function refreshPacks() {
+    if (runId == null) return;
+    try {
+      const p = await api.getPacks(runId);
+      setPacks(p.packs);
+    } catch {
+      /* best-effort */
+    }
   }
 
   // One-click build from a saved plan's "Build a plan for your site" link. Mirrors the manual
@@ -449,6 +485,7 @@ export function StudioApp() {
     setAuditJob(null);
     setDeepProfile(null);
     setPacks([]); // clear a prior run's packs before the unattended build
+    setRunId(null);
 
     setPrefilling(true);
     setPrefillDone(false);
@@ -717,10 +754,25 @@ export function StudioApp() {
               </p>
               <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-4">
                 {packs.map((pack) => (
-                  <PackCard key={pack.pack_index} pack={pack} />
+                  <PackCard
+                    key={pack.pack_index}
+                    pack={pack}
+                    ctaMode={authEnabled ? "gated" : "preview"}
+                    onUnlock={handleUnlock}
+                  />
                 ))}
               </div>
             </section>
+          )}
+          {unlockOpen && domain.trim() && (
+            <UnlockModal
+              domain={domain.trim()}
+              onUnlocked={() => {
+                setUnlockOpen(false);
+                void refreshPacks();
+              }}
+              onClose={() => setUnlockOpen(false)}
+            />
           )}
           <ResultsView
             // Derive the display name the same way briefFromForm / the server do, so an

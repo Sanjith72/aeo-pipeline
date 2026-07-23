@@ -56,6 +56,53 @@ def put(page_id: int, run_id: int, payload: dict) -> int:
         return cur.fetchone()["id"]
 
 
+def detail_for_pack(run_id: int, pack_index: int) -> list[dict]:
+    """The gated deep value for a pack (v5 P4): each of the pack's pages with its five-skill
+    detail (scores + suggestions + impact-ranked priorities). Pack membership lives on
+    page_priorities.pack_index; the skill detail on skill_scores (keyed by crawled_pages.id).
+    page_priorities.url (the discovered URL) and crawled_pages.url_normalized can differ in
+    form, so the two sides are matched on the normalized URL in Python. A page not yet
+    skill-scored yields ``detail: None`` (row kept, so the detail set == the pack page set)."""
+    from ...utils.url import normalize
+
+    with transaction() as conn, conn.cursor() as cur:
+        # The pack's pages, homepage first then by rank (mirrors packs.by_run ordering).
+        cur.execute(
+            """
+            SELECT url, page_type, final_rank
+            FROM page_priorities
+            WHERE run_id = %s AND pack_index = %s
+            ORDER BY (page_type = 'homepage') DESC, final_rank NULLS LAST, final_score DESC
+            """,
+            (run_id, pack_index),
+        )
+        pack_pages = [dict(row) for row in cur.fetchall()]
+        # Skill detail for every scored page in the run, keyed by normalized URL.
+        cur.execute(
+            """
+            SELECT cp.url_normalized, ss.overall_score, ss.detail
+            FROM crawled_pages cp
+            JOIN skill_scores ss ON ss.page_id = cp.id AND ss.run_id = cp.run_id
+            WHERE cp.run_id = %s
+            """,
+            (run_id,),
+        )
+        by_url = {row["url_normalized"]: row for row in cur.fetchall()}
+
+    out: list[dict] = []
+    for page in pack_pages:
+        scored = by_url.get(normalize(page["url"]))
+        out.append(
+            {
+                "url": page["url"],
+                "page_type": page["page_type"],
+                "overall": scored["overall_score"] if scored else None,
+                "detail": scored["detail"] if scored else None,
+            }
+        )
+    return out
+
+
 def latest_for_url(url_normalized: str) -> dict | None:
     """The most recent skill-score row for a URL (across runs) — the before/after
     baseline source for ticket verification (CH-15)."""

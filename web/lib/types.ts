@@ -540,6 +540,22 @@ export interface PacksResponse {
   packs: PackPreview[];
 }
 
+// GET /api/packs/{run_id}/{pack_index} — the gated deep value (CH-02a): per-page five-skill
+// detail. 403 when the pack is locked for the caller (enforced server-side).
+export interface PackPageDetail {
+  url: string;
+  page_type: string;
+  overall: number | null;
+  detail: { skills: Record<SkillKey, SkillScore>; priorities: SkillPriority[] } | null;
+}
+
+export interface PackDetailResponse {
+  run_id: number;
+  pack_index: number;
+  title: string;
+  pages: PackPageDetail[];
+}
+
 // POST /api/overview — the free URL-first entry (CH-09). No auth, cached per domain.
 export interface OverviewResponse {
   domain: string;

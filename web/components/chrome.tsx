@@ -20,6 +20,7 @@ import {
   useSpring,
 } from "@/components/motion/primitives";
 import { FAQ_ITEMS } from "@/lib/faq";
+import { useAuth } from "./auth/AuthProvider";
 import { HorizonHero } from "./ui/horizon-hero";
 import { useScrolled } from "./ui/hooks";
 import { ArrowRight, ChartUp, DocLines, ShieldCheck } from "./ui/icons";
@@ -151,6 +152,7 @@ export function TopBar() {
           <a href="/agents" className="nav-link hidden sm:block">
             Agent Review
           </a>
+          <AccountSlot />
           <Link href="/studio" className="btn-primary group !px-4 !py-2 text-[13px]">
             Get started
             <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" width={13} height={13} />
@@ -168,6 +170,30 @@ export function TopBar() {
 // a thin wrapper so page.tsx's <Hero /> integration point is unchanged.
 export function Hero() {
   return <HorizonHero />;
+}
+
+// v5 CH-07 — the account slot in the top bar. Degradable: renders NOTHING when Supabase
+// auth isn't configured, so the marketing chrome is unchanged without env.
+function AccountSlot() {
+  const { authEnabled, user, openAuth, signOut } = useAuth();
+  if (!authEnabled) return null;
+  if (user) {
+    return (
+      <div className="hidden items-center gap-2 sm:flex">
+        <span className="max-w-[16ch] truncate text-[12.5px] text-ink-300" title={user.email ?? ""}>
+          {user.email}
+        </span>
+        <button type="button" onClick={() => void signOut()} className="nav-link">
+          Sign out
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button type="button" onClick={() => openAuth()} className="nav-link hidden sm:block">
+      Sign in
+    </button>
+  );
 }
 
 export function HowItWorks() {

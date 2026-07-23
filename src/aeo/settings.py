@@ -329,6 +329,37 @@ class ApiCfg(BaseModel):
     overview_global_daily_limit: int = 0
 
 
+class AuthCfg(BaseModel):
+    # v5 CH-07 Supabase-JWT user auth — a SEPARATE credential/boundary from ApiCfg.auth_key
+    # (which is the service proxy→backend key). This gates per-USER deep value (pack detail,
+    # per-user unlocks). Stateless HS256 verification against the Supabase project JWT secret
+    # (AEO__AUTH__JWT_SECRET) — the backend never calls Supabase, so it works with a Neon DB.
+    # Degrades to disabled/open when the secret is unset, exactly like auth_key.
+    enabled: bool = True
+    # The Supabase project JWT secret (Settings → API → JWT Secret). HS256 sign==verify key:
+    # treat as a SIGNING key — env-only, never logged. Unset → auth inactive (dev/open).
+    jwt_secret: str | None = None
+    # Supabase access tokens carry aud="authenticated"; the anon/service_role keys (also JWTs
+    # signed with the SAME secret) do NOT — this + the role check is what blocks them.
+    jwt_aud: str = "authenticated"
+    # Pinned explicitly so alg=none / RS256→HS256 confusion is impossible. HS256 only unless
+    # a project migrates to asymmetric signing (JWKS path is out of scope for P4).
+    jwt_algorithms: list[str] = Field(default_factory=lambda: ["HS256"])
+    # Optional issuer pin (https://<ref>.supabase.co/auth/v1) — defends against a token minted
+    # for a different project with the same secret. Off unless configured.
+    jwt_issuer: str | None = None
+    leeway_sec: int = 10
+    # Comma-separated promo codes that redeem to an all_packs grant (v5 monetization stub —
+    # payments deferred; grants arrive via source='promo'). Empty → redemption disabled.
+    promo_codes: str = ""
+    # Disabled-mode stand-in so pack-detail routes stay reachable in local dev with no secret.
+    dev_user_id: str = "00000000-0000-0000-0000-000000000000"
+
+    @property
+    def promo_code_set(self) -> frozenset[str]:
+        return frozenset(c.strip() for c in self.promo_codes.split(",") if c.strip())
+
+
 class ReferenceArchitectureCfg(BaseModel):
     # v4 Reference Architecture Generator: the versioned, per-topic ideal-site
     # blueprint. Generated on a slow cadence and pinned per run so the measuring
@@ -382,6 +413,7 @@ class Settings(BaseSettings):
     reference_architecture: ReferenceArchitectureCfg = ReferenceArchitectureCfg()
     obs: ObsCfg = ObsCfg()
     api: ApiCfg = ApiCfg()
+    auth: AuthCfg = AuthCfg()
 
     log_level: str = "INFO"
     log_format: str = "console"

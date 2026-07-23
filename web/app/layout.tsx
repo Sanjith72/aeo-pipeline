@@ -3,6 +3,7 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { IBM_Plex_Mono, IBM_Plex_Sans, Instrument_Serif, Space_Grotesk } from "next/font/google";
 import { MotionProvider } from "@/components/motion/primitives";
+import { AuthProvider } from "@/components/auth/AuthProvider";
 import { GlassFilter } from "@/components/ui/liquid-glass";
 
 // Display: geometric + technical character. Body: IBM Plex Sans — professional and
@@ -58,7 +59,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         {/* The #container-glass displacement filter the liquid-glass CTAs reference —
             defined once per page, here, so any component can use the treatment. */}
         <GlassFilter />
-        <MotionProvider>{children}</MotionProvider>
+        <MotionProvider>
+          <AuthProvider>{children}</AuthProvider>
+        </MotionProvider>
       </body>
     </html>
   );

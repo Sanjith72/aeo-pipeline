@@ -1,6 +1,9 @@
+"use client";
+
 // Shared pack card (v5 CH-03) — renders one PackPreview identically in the free overview
 // preview and the persisted deep-audit pack list. Design system per CH-12: existing
 // tokens (.card, ink/accent, label-mono); the locked state dims + labels, never a new color.
+// In the gated context (studio results, CH-02a) a locked pack shows an "Unlock" CTA.
 
 import type { PackPreview } from "@/lib/types";
 
@@ -13,9 +16,19 @@ function pathOf(url: string): string {
   }
 }
 
-export function PackCard({ pack }: { pack: PackPreview }) {
+export function PackCard({
+  pack,
+  ctaMode = "preview",
+  onUnlock,
+}: {
+  pack: PackPreview;
+  // "preview" (overview/public — never asks for auth, per CH-11b) vs "gated" (studio
+  // results — a locked pack invites unlock).
+  ctaMode?: "preview" | "gated";
+  onUnlock?: () => void;
+}) {
   return (
-    <div className={`card flex h-full flex-col gap-3 p-5 ${pack.locked ? "opacity-70" : ""}`}>
+    <div className={`card flex h-full flex-col gap-3 p-5 ${pack.locked ? "opacity-80" : ""}`}>
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-[15px] font-semibold text-ink">
           <span className="label-mono mr-2 !text-[10px] text-ink-300">
@@ -32,9 +45,14 @@ export function PackCard({ pack }: { pack: PackPreview }) {
           </li>
         ))}
       </ul>
-      {pack.locked && (
-        <p className="m-0 mt-auto text-[12.5px] text-ink-300">Unlocks after your homepage pack.</p>
-      )}
+      {pack.locked &&
+        (ctaMode === "gated" && onUnlock ? (
+          <button type="button" onClick={onUnlock} className="btn-ghost mt-auto self-start text-[12.5px]">
+            Unlock this pack →
+          </button>
+        ) : (
+          <p className="m-0 mt-auto text-[12.5px] text-ink-300">Unlocks after your homepage pack.</p>
+        ))}
     </div>
   );
 }

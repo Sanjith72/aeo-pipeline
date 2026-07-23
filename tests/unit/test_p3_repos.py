@@ -13,6 +13,14 @@ def test_packs_repo_exposes_its_api() -> None:
         assert callable(getattr(packs, fn))
 
 
+def test_p4_repo_helpers_exist() -> None:
+    # v5 P4 gating helpers: run→domain resolution + the gated pack detail.
+    from aeo.storage.repos import runs, skill_scores
+
+    assert callable(runs.domain_for_run)
+    assert callable(skill_scores.detail_for_pack)
+
+
 def test_entitlements_repo_exposes_its_api() -> None:
     from aeo.storage.repos import entitlements
 
