@@ -107,8 +107,11 @@ def get_dashboard(client_id: int) -> dict[str, Any]:
     """The dashboard payload: ordered milestones (each with its tasks) + a progress roll-up
     (verified / total and a percentage) the UI renders as the headline progress bar."""
     with transaction() as conn, conn.cursor() as cur:
+        # Do-no-harm: v5 skill tickets live in 'pack:N' milestones on the same client; the
+        # agency dashboard/roll-up must never see them (disjoint product surfaces).
         cur.execute(
-            "SELECT * FROM implementation_milestones WHERE client_id = %s ORDER BY position, id",
+            "SELECT * FROM implementation_milestones "
+            "WHERE client_id = %s AND milestone_key NOT LIKE 'pack:%%' ORDER BY position, id",
             (client_id,),
         )
         milestone_rows = [dict(r) for r in cur.fetchall()]
@@ -198,6 +201,7 @@ def pending_verifiable(client_id: int) -> list[dict[str, Any]]:
               FROM milestone_tasks t
               JOIN implementation_milestones m ON m.id = t.milestone_id
              WHERE m.client_id = %s
+               AND m.milestone_key NOT LIKE 'pack:%%'
                AND t.status <> 'verified_completed'
                AND t.verify_kind <> 'manual'
             """,
@@ -230,6 +234,347 @@ def mark_verified(client_id: int, task_keys: list[str], run_id: int | None) -> i
         flipped = cur.rowcount
         if flipped:
             _recompute_statuses(cur, client_id)
+    return flipped
+
+
+# ── v5 tickets (CH-08/CH-15) — pack:N milestones, one ticket per (page, skill) ──────
+# Reuses the clients→milestones→tasks chain: one milestone_key='pack:<N>' per pack, one
+# ticket per (page, skill) from the skill_scores findings. Disjoint from the agency
+# 'week_*' milestones (guarded above), so the shipped dashboard is untouched. A pack is
+# complete iff every ticket in its milestone is verified_completed (_recompute_statuses).
+
+CLOSED_PENDING = "closed_pending_verify"
+_PACK_PREFIX = "pack:"
+
+# Human labels for the five skills (the ticket label + card heading).
+_SKILL_LABEL = {
+    "messaging": "Messaging",
+    "conversion": "Conversion",
+    "discovery_visibility": "Discovery & Visibility",
+    "proof_trust": "Proof & Trust",
+    "structure_ux": "Structure & UX",
+}
+
+# UNSET sentinel so set_ticket_fields can distinguish "clear to NULL" from "leave alone".
+_UNSET = object()
+
+
+def _ticket_dict(row: dict) -> dict[str, Any]:
+    """The v5 ticket shape (distinct from _task_dict, which the agency dashboard + /share
+    depend on)."""
+    return {
+        "id": row["id"],
+        "task_key": row["task_key"],
+        "label": row["label"],
+        "action_required": row.get("action_required"),
+        "how_to": row.get("how_to"),
+        "page_url": row.get("page_url"),
+        "skill": row.get("skill"),
+        "status": row["status"],
+        "status_source": row["status_source"],
+        "assignee": row.get("assignee"),
+        "target_date": row["target_date"].isoformat() if row.get("target_date") else None,
+        "baseline_score": row.get("baseline_score"),
+        "current_score": row.get("current_score"),
+        "closed_at": row["closed_at"].isoformat() if row.get("closed_at") else None,
+        "detected_at": row["detected_at"].isoformat() if row.get("detected_at") else None,
+        "pack_index": row.get("pack_index"),
+    }
+
+
+def _client_for_run(cur, run_id: int) -> int | None:
+    """The clients.id for a run's domain, creating/reusing the row (idempotent). None when
+    the run has no resolvable domain (dry-run-only)."""
+    from ...storage.repos import runs as runs_repo
+    from ...storage.repos import targets as targets_repo
+
+    domain = runs_repo.domain_for_run(run_id)
+    if not domain:
+        return None
+    return targets_repo.upsert(domain, domain, "client").id
+
+
+def generate_tickets_from_run(run_id: int, *, owner_user_id: str | None = None) -> dict[str, int]:
+    """Turn a run's per-page skill findings into tickets: one milestone per pack
+    ('pack:<N>'), one ticket per (page, skill) that has findings. Idempotent + regeneration-
+    stable (task_key = 'skill:<skill>@<url_normalized>'): owner/verification fields
+    (status, assignee, target_date, current_score, closed_at) survive a re-gen, and
+    baseline_score is COALESCE-preserved so a re-gen after work starts never destroys the
+    before/after delta. Stale tickets (page left the pack) are pruned. Returns counts."""
+    from ...storage.repos import packs as packs_repo
+    from ...storage.repos import skill_scores as skill_scores_repo
+    from ...utils.url import normalize
+
+    packs = 0
+    tickets = 0
+    with transaction() as conn, conn.cursor() as cur:
+        client_id = _client_for_run(cur, run_id)
+        if client_id is None:
+            return {"tickets": 0, "packs": 0}
+        for pack in packs_repo.by_run(run_id):
+            pack_index = pack["pack_index"]
+            cur.execute(
+                """
+                INSERT INTO implementation_milestones
+                    (client_id, milestone_key, title, blurb, position, owner_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (client_id, milestone_key) DO UPDATE SET
+                    title = EXCLUDED.title, position = EXCLUDED.position,
+                    owner_user_id = COALESCE(EXCLUDED.owner_user_id,
+                                             implementation_milestones.owner_user_id)
+                RETURNING id
+                """,
+                (client_id, f"{_PACK_PREFIX}{pack_index}", pack["title"], None, pack_index, owner_user_id),
+            )
+            milestone_id = cur.fetchone()["id"]
+            packs += 1
+
+            live_keys: list[str] = []
+            for page in skill_scores_repo.detail_for_pack(run_id, pack_index):
+                detail = page.get("detail")
+                if not detail:  # unscored page → no baseline → skip (a later re-gen creates it)
+                    continue
+                page_url = page["url"]
+                url_norm = normalize(page_url)
+                path = _url_path(page_url)
+                skills = detail.get("skills") or {}
+                for skill in _skills_with_findings(detail):
+                    task_key = f"skill:{skill}@{url_norm}"
+                    live_keys.append(task_key)
+                    suggestions = [s.get("text", "") for s in (skills.get(skill, {}).get("suggestions") or [])]
+                    body = " ".join(t for t in suggestions if t) or "Improve this skill on the page."
+                    baseline = int(skills.get(skill, {}).get("score", 0))
+                    cur.execute(
+                        """
+                        INSERT INTO milestone_tasks
+                            (milestone_id, task_key, label, action_required, how_to,
+                             verify_kind, verify_target, position, page_url, skill, baseline_score)
+                        VALUES (%s, %s, %s, %s, %s, 'manual', %s, %s, %s, %s, %s)
+                        ON CONFLICT (milestone_id, task_key) DO UPDATE SET
+                            label = EXCLUDED.label,
+                            action_required = EXCLUDED.action_required,
+                            how_to = EXCLUDED.how_to,
+                            verify_target = EXCLUDED.verify_target,
+                            position = EXCLUDED.position,
+                            page_url = EXCLUDED.page_url,
+                            skill = EXCLUDED.skill,
+                            baseline_score = COALESCE(milestone_tasks.baseline_score,
+                                                      EXCLUDED.baseline_score)
+                            -- status/status_source/assignee/target_date/current_score/
+                            -- closed_at/detected_* are owner/verification-owned: preserved.
+                        """,
+                        (
+                            milestone_id, task_key, f"{_SKILL_LABEL.get(skill, skill)} — {path}",
+                            body, body, path, len(live_keys), page_url, skill, baseline,
+                        ),
+                    )
+                    tickets += 1
+            # Prune-on-regen: drop ONLY phantom pending/in_progress tickets no longer among
+            # the current findings (a page left the pack, or a finding was fixed but never
+            # marked done). NEVER delete closed_pending_verify or verified_completed tickets
+            # — they hold the pinned baseline→current before/after record and the pack's
+            # completion signal; deleting a verified ticket would destroy the CH-15 delta and
+            # re-lock an earned pack on the next audit. (An empty live_keys correctly clears
+            # all remaining phantom pending work while preserving verified history.)
+            cur.execute(
+                "DELETE FROM milestone_tasks WHERE milestone_id = %s "
+                "AND status IN ('pending', 'in_progress') AND NOT (task_key = ANY(%s))",
+                (milestone_id, live_keys),
+            )
+        _recompute_statuses(cur, client_id)
+    return {"tickets": tickets, "packs": packs}
+
+
+def _skills_with_findings(detail: dict) -> list[str]:
+    """The skills to make tickets for on a page: those in the impact-ranked priorities,
+    falling back to any skill with non-empty suggestions. Deterministic order."""
+    priorities = detail.get("priorities") or []
+    ordered = list(dict.fromkeys(p.get("skill") for p in priorities if p.get("skill")))
+    if ordered:
+        return ordered
+    skills = detail.get("skills") or {}
+    return [s for s, v in skills.items() if (v or {}).get("suggestions")]
+
+
+def _url_path(url: str) -> str:
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+        return parts.path if parts.path and parts.path != "/" else (parts.netloc or url)
+    except Exception:
+        return url
+
+
+def list_tickets_for_run(client_id: int, pack_index: int | None = None) -> list[dict[str, Any]]:
+    """The v5 tickets for a client's packs (all, or one pack), with their pack_index."""
+    where = "m.client_id = %s AND m.milestone_key LIKE 'pack:%%'"
+    params: list[Any] = [client_id]
+    if pack_index is not None:
+        where += " AND m.milestone_key = %s"
+        params.append(f"{_PACK_PREFIX}{pack_index}")
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT t.*, CAST(SUBSTRING(m.milestone_key FROM 6) AS INTEGER) AS pack_index
+              FROM milestone_tasks t
+              JOIN implementation_milestones m ON m.id = t.milestone_id
+             WHERE {where}
+             ORDER BY pack_index, t.position, t.id
+            """,
+            tuple(params),
+        )
+        return [_ticket_dict(dict(r)) for r in cur.fetchall()]
+
+
+def set_ticket_fields(
+    client_id: int, task_key: str, *, assignee: Any = _UNSET, target_date: Any = _UNSET
+) -> dict[str, Any] | None:
+    """Set a ticket's assignee and/or target_date (CH-08 async board). UNSET fields are
+    left alone; passing None clears. Returns the updated ticket, or None if not found."""
+    sets: list[str] = []
+    params: list[Any] = []
+    if assignee is not _UNSET:
+        sets.append("assignee = %s")
+        params.append(assignee)
+    if target_date is not _UNSET:
+        sets.append("target_date = %s")
+        params.append(target_date)
+    if not sets:
+        return get_ticket(client_id, task_key)
+    params += [client_id, task_key]
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE milestone_tasks t SET {", ".join(sets)}
+              FROM implementation_milestones m
+             WHERE t.milestone_id = m.id AND m.client_id = %s AND t.task_key = %s
+               AND m.milestone_key LIKE 'pack:%%'
+            RETURNING t.id
+            """,
+            tuple(params),
+        )
+        if cur.fetchone() is None:
+            return None
+    return get_ticket(client_id, task_key)
+
+
+def get_ticket(client_id: int, task_key: str) -> dict[str, Any] | None:
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT t.*, CAST(SUBSTRING(m.milestone_key FROM 6) AS INTEGER) AS pack_index
+              FROM milestone_tasks t
+              JOIN implementation_milestones m ON m.id = t.milestone_id
+             WHERE m.client_id = %s AND t.task_key = %s AND m.milestone_key LIKE 'pack:%%'
+            """,
+            (client_id, task_key),
+        )
+        row = cur.fetchone()
+        return _ticket_dict(dict(row)) if row else None
+
+
+def close_ticket(client_id: int, task_key: str, *, baseline_score: int | None = None) -> dict[str, Any] | None:
+    """Owner marks a ticket done → closed_pending_verify (CH-15). Pins baseline_score (if
+    not already pinned) and stamps closed_at (the re-crawl trigger). Only pending/
+    in_progress tickets can close. Returns the ticket, or None if not found/closeable."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE milestone_tasks t
+               SET status = 'closed_pending_verify', status_source = 'manual',
+                   baseline_score = COALESCE(t.baseline_score, %s),
+                   closed_at = NOW()
+              FROM implementation_milestones m
+             WHERE t.milestone_id = m.id AND m.client_id = %s AND t.task_key = %s
+               AND m.milestone_key LIKE 'pack:%%'
+               AND t.status IN ('pending', 'in_progress')
+            RETURNING t.id
+            """,
+            (baseline_score, client_id, task_key),
+        )
+        if cur.fetchone() is None:
+            return None
+        _recompute_statuses(cur, client_id)
+    return get_ticket(client_id, task_key)
+
+
+def reopen_ticket(client_id: int, task_key: str) -> dict[str, Any] | None:
+    """Reopen a ticket (closed_pending_verify → in_progress), clearing closed_at."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE milestone_tasks t
+               SET status = 'in_progress', status_source = 'manual', closed_at = NULL
+              FROM implementation_milestones m
+             WHERE t.milestone_id = m.id AND m.client_id = %s AND t.task_key = %s
+               AND m.milestone_key LIKE 'pack:%%'
+               AND t.status = 'closed_pending_verify'
+            RETURNING t.id
+            """,
+            (client_id, task_key),
+        )
+        if cur.fetchone() is None:
+            return None
+        _recompute_statuses(cur, client_id)
+    return get_ticket(client_id, task_key)
+
+
+def verify_tickets_by_recrawl(url_normalized: str, run_id: int, skills: dict[str, int]) -> int:
+    """CH-15 completion hook: for tickets the owner closed on this page, record the
+    re-scored current_score and — when the lift gate passes (current >= baseline, or the
+    gate is relaxed) — flip to verified_completed (status_source='crawl'). Advance-only
+    (only touches closed_pending_verify), so repeated crawls are idempotent. Returns the
+    number flipped to verified."""
+    from ...settings import get_settings
+    from ...utils.url import normalize
+
+    require_lift = get_settings().milestones.verify_require_lift
+    flipped = 0
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT t.id, t.skill, t.page_url, t.baseline_score, m.client_id
+              FROM milestone_tasks t
+              JOIN implementation_milestones m ON m.id = t.milestone_id
+             WHERE t.status = 'closed_pending_verify' AND t.skill IS NOT NULL
+               AND m.milestone_key LIKE 'pack:%%'
+            """,
+        )
+        candidates = [dict(r) for r in cur.fetchall()]
+        clients: set[int] = set()
+        for row in candidates:
+            if normalize(row["page_url"] or "") != url_normalized:
+                continue
+            current = skills.get(row["skill"])
+            if current is None:
+                continue
+            baseline = row.get("baseline_score")
+            proven = (baseline is None) or (current >= baseline) or (not require_lift)
+            if proven:
+                cur.execute(
+                    """
+                    UPDATE milestone_tasks
+                       SET status = 'verified_completed', status_source = 'crawl',
+                           current_score = %s, detected_run_id = %s, detected_at = NOW(),
+                           closed_at = COALESCE(closed_at, NOW())
+                     WHERE id = %s AND status = 'closed_pending_verify'
+                    """,
+                    (current, run_id, row["id"]),
+                )
+                if cur.rowcount:
+                    flipped += 1
+                    clients.add(row["client_id"])
+            else:
+                # Record the (regressed) score but leave it closed_pending_verify — the UI
+                # shows "not proven yet" + a recheck affordance.
+                cur.execute(
+                    "UPDATE milestone_tasks SET current_score = %s WHERE id = %s "
+                    "AND status = 'closed_pending_verify'",
+                    (current, row["id"]),
+                )
+        for cid in clients:
+            _recompute_statuses(cur, cid)
     return flipped
 
 

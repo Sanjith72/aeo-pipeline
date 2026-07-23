@@ -41,11 +41,14 @@ def enqueue_batch(
     target_name: str,
     label: str | None = None,
     max_attempts: int = 4,
+    force_recrawl: bool = False,
 ) -> int:
-    """Enqueue a crawl batch. Returns the job id."""
+    """Enqueue a crawl batch. Returns the job id. ``force_recrawl`` bypasses the
+    fingerprint skip gate so an unchanged page is re-read + re-scored — required for the
+    v5 CH-15 close→verify re-crawl (the edit may not be live yet)."""
     return jobs_repo.enqueue(
         CRAWL_BATCH,
-        {"urls": urls, "target": target_name, "label": label},
+        {"urls": urls, "target": target_name, "label": label, "force_recrawl": force_recrawl},
         max_attempts=max_attempts,
     )
 
@@ -139,7 +142,11 @@ class Worker:
             target = targets_repo.find(payload["target"])
             if target is None:
                 raise ValueError(f"unknown target: {payload['target']!r}")
-            asyncio.run(self._orch.run_urls(payload["urls"], target=target, label=payload.get("label")))
+            # payload.get keeps pre-v5 queued jobs (no key) at force_recrawl=False.
+            asyncio.run(self._orch.run_urls(
+                payload["urls"], target=target, label=payload.get("label"),
+                force_recrawl=bool(payload.get("force_recrawl")),
+            ))
         elif kind == ANALYZE_RUN:
             self._orch.analyze_run(int(payload["run_id"]))
         elif kind == AGENT_RUN:

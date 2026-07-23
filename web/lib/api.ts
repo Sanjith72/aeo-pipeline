@@ -22,6 +22,8 @@ import type {
   PacksResponse,
   PlanStateResponse,
   ProfileResponse,
+  Ticket,
+  TicketsResponse,
   RecheckStatusResponse,
   ResumeResponse,
   SharedPlanResponse,
@@ -196,6 +198,49 @@ export const api = {
     if (res.status === 403) throw Object.assign(new Error("locked"), { status: 403 });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as PackDetailResponse;
+  },
+
+  // ── tickets (v5 CH-08 board + CH-15 before/after) ──────────────────────────
+  /** The tickets for a run's packs (lazily generated on first view). */
+  async getTickets(runId: number): Promise<TicketsResponse> {
+    const res = await fetch(`${BASE}/api/tickets/${runId}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as TicketsResponse;
+  },
+  /** The tickets for one pack of a run. */
+  async getPackTickets(runId: number, packIndex: number): Promise<TicketsResponse> {
+    const res = await fetch(`${BASE}/api/tickets/${runId}/${packIndex}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as TicketsResponse;
+  },
+  /** Set a ticket's assignee / target_date (CH-08). Only the flagged fields change. */
+  setTicketFields(
+    runId: number,
+    body: { task_key: string; assignee?: string | null; target_date?: string | null },
+  ): Promise<{ ticket: Ticket }> {
+    const payload: Record<string, unknown> = { task_key: body.task_key };
+    if ("assignee" in body) {
+      payload.set_assignee = true;
+      payload.assignee = body.assignee ?? null;
+    }
+    if ("target_date" in body) {
+      payload.set_target_date = true;
+      payload.target_date = body.target_date ?? null;
+    }
+    return postJson<{ ticket: Ticket }>(`/api/tickets/${runId}/fields`, payload);
+  },
+  /** Mark a ticket done (CH-15) → closed_pending_verify + a forced re-crawl to prove the
+   *  lift. Poll getPackTickets until the ticket flips to verified_completed. */
+  closeTicket(runId: number, taskKey: string): Promise<{ ticket: Ticket; verify_job_id: number | null }> {
+    return postJson(`/api/tickets/${runId}/close`, { task_key: taskKey });
+  },
+  reopenTicket(runId: number, taskKey: string): Promise<{ ticket: Ticket }> {
+    return postJson(`/api/tickets/${runId}/reopen`, { task_key: taskKey });
+  },
+  /** Re-run verification on an already-closed ticket (re-enqueues the forced re-crawl)
+   *  without changing its status — the "Recheck" affordance. */
+  recheckTicket(runId: number, taskKey: string): Promise<{ ticket: Ticket; verify_job_id: number | null }> {
+    return postJson(`/api/tickets/${runId}/recheck`, { task_key: taskKey });
   },
 
   // ── auth (v5 CH-07) ────────────────────────────────────────────────────────

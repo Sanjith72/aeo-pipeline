@@ -25,6 +25,7 @@ import { DisplayH2, SheetTag } from "@/components/chrome";
 import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { PackCard } from "@/components/PackCard";
+import { TicketBoard } from "@/components/TicketBoard";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { UnlockModal } from "@/components/auth/UnlockModal";
 import { GamificationStrip } from "@/components/GamificationStrip";
@@ -156,6 +157,7 @@ export function StudioApp() {
   const [packs, setPacks] = useState<PackPreview[]>([]);
   const [runId, setRunId] = useState<number | null>(null);
   const [unlockOpen, setUnlockOpen] = useState(false);
+  const [openPack, setOpenPack] = useState<number | null>(null);
   const { authEnabled, user, openAuth } = useAuth();
   // R2-2 re-crawl: when the homepage was crawled recently, default to reusing that data
   // (fast) and let the user opt into a fresh re-crawl that bypasses the skip gate.
@@ -366,6 +368,7 @@ export function StudioApp() {
     setDeepProfile(null);
     setPacks([]); // clear a prior run's packs so they never leak into this build (incl. no-site)
     setRunId(null);
+    setOpenPack(null);
     setLoading(true);
     try {
       if (noSite) {
@@ -486,6 +489,7 @@ export function StudioApp() {
     setDeepProfile(null);
     setPacks([]); // clear a prior run's packs before the unattended build
     setRunId(null);
+    setOpenPack(null);
 
     setPrefilling(true);
     setPrefillDone(false);
@@ -759,9 +763,20 @@ export function StudioApp() {
                     pack={pack}
                     ctaMode={authEnabled ? "gated" : "preview"}
                     onUnlock={handleUnlock}
+                    onOpen={pack.locked ? undefined : () => setOpenPack((cur) => (cur === pack.pack_index ? null : pack.pack_index))}
+                    opened={openPack === pack.pack_index}
                   />
                 ))}
               </div>
+              {/* v5 CH-08/CH-15: the ticket board for the opened (unlocked) pack. */}
+              {runId != null && openPack != null && packs.some((p) => p.pack_index === openPack && !p.locked) && (
+                <div className="mt-5 rounded-[18px] border border-white/[0.09] p-5">
+                  <h4 className="mb-3 text-[15px] font-semibold text-ink">
+                    Pack {String(openPack).padStart(2, "0")} — your fixes
+                  </h4>
+                  <TicketBoard runId={runId} packIndex={openPack} />
+                </div>
+              )}
             </section>
           )}
           {unlockOpen && domain.trim() && (

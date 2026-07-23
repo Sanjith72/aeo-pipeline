@@ -31,9 +31,9 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 | **P6** | UI redesign + friction reductions | CH-10, CH-11c–g, CH-12 | Consolidate strategy/roadmap, journey-to-top, visual rankings, Prerender friction fixes. |
 | **P7** | AI-snapshot visibility metric | CH-14 | Marketable Discovery metric; reuses existing Perplexity check. |
 
-> **Status (2026-07-23): P0 + P1 + P2 + P3 + P4 implemented.** §9 decisions resolved (see §9);
-> contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0031` applied + Supabase
-> baseline regenerated.
+> **Status (2026-07-23): P0 + P1 + P2 + P3 + P4 + P5 implemented.** §9 decisions resolved
+> (see §9); contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0032` applied +
+> Supabase baseline regenerated.
 >
 > - **P0/P1** — `POST /api/overview` (free 5-skill homepage overview + pack preview,
 >   per-domain 24h cache, per-IP + global daily caps, SSRF-guarded crawl transport),
@@ -69,8 +69,22 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 >   `@supabase/supabase-js` login/signup + Bearer attach + unlock UI (all hidden without env).
 >   **Deploy env:** backend `AEO__AUTH__JWT_SECRET` (+ `AEO__AUTH__PROMO_CODES`), frontend
 >   `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` — both sides must be
->   configured together (HS256; JWKS/asymmetric is a documented follow-up). `completed_pack_indices`
->   stays empty until P5 tickets, so login alone never unlocks — only an entitlement does.
+>   configured together (HS256; JWKS/asymmetric is a documented follow-up).
+> - **P5 (CH-08/CH-15)** — findings become **tickets** (one per page×skill), reusing the
+>   `clients → milestones → tasks` chain with one milestone per pack (`pack:N`) — so pack
+>   completion is free and the shipped agency dashboard/quest stays byte-stable (`pack:`
+>   guards). Tickets carry id/status/assignee/target_date + the before→after skill score.
+>   **Close→re-crawl→verify** (`storage/repos/milestones.py` + orchestrator `_verify_tickets`):
+>   closing a ticket pins the baseline and enqueues a **`force_recrawl`** verify job (the P0
+>   trap is fixed across `run_urls`←`enqueue_batch`←`_dispatch`); the re-score flips it to
+>   verified and records `current_score`, with an **honest lift gate** (a regression stays
+>   unverified). This fills `completed_pack_indices` (≥1 ticket + all verified), so P3/P4
+>   **progressive unlock now activates** — completing Pack 1 opens Pack 2. New ticket API
+>   (`/api/tickets/*`), `TicketBoard` UI, `AEO__MILESTONES__VERIFY_TICKETS_ON_CRAWL` /
+>   `VERIFY_REQUIRE_LIFT` flags. Migration `0032` fixes a latent 0029 bug (the
+>   `closed_pending_verify` status value didn't fit `VARCHAR(20)`). Deferred to a later slice:
+>   per-user `owner_user_id` enforcement (stamped only) and scoping v5 clients out of agency
+>   views.
 >
 > Note: the codebase reality differs from some "Current" notes below — the wizard is 4 steps
 > (not 9), and the LLM router lives at `src/aeo/nlp/providers.py` (not `src/aeo/llm/`).

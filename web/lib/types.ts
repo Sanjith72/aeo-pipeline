@@ -602,6 +602,26 @@ export interface TicketFields {
   closed_at: string | null;
 }
 
+// A v5 ticket (CH-08/CH-15) — one per (page, skill), grouped one milestone per pack.
+// Distinct from the agency MilestoneTask; carries the 4-state TicketStatus + before/after.
+export interface Ticket extends TicketFields {
+  id: number;
+  task_key: string;
+  label: string;
+  action_required: string | null;
+  how_to: string | null;
+  status: TicketStatus;
+  status_source: "manual" | "crawl";
+  detected_at: string | null;
+  pack_index: number;
+}
+
+export interface TicketsResponse {
+  run_id: number;
+  pack_index?: number;
+  tickets: Ticket[];
+}
+
 // Entitlements (CH-02b) — P0 lock; enforcement arrives with auth in P4. Payments are
 // stubbed by decision (§9.2): grants come from source "manual" | "promo" until a
 // provider is chosen.

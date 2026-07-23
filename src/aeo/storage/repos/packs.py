@@ -89,6 +89,41 @@ def by_run(run_id: int) -> list[dict[str, Any]]:
     ]
 
 
+def completed_pack_indices(run_id: int) -> set[int]:
+    """The pack indices whose v5 tickets are ALL verified_completed (v5 CH-15) — the input
+    to the progressive-unlock resolver (is_pack_locked's completed_pack_indices). A pack
+    counts only when it has ≥1 ticket AND every ticket is verified (so a pack with no
+    tickets never unlocks the next one for free). Domain-scoped: resolves the run's domain
+    → client → its 'pack:N' milestones, so verification by a newer re-crawl run still
+    counts. Empty set when the domain has no client/tickets (Pack-1-only preserved)."""
+    from . import runs as runs_repo
+    from . import targets as targets_repo
+
+    domain = runs_repo.domain_for_run(run_id)
+    if not domain:
+        return set()
+    target = targets_repo.by_domain(domain)
+    if target is None:
+        return set()
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT CAST(SUBSTRING(m.milestone_key FROM 6) AS INTEGER) AS pack_index,
+                   COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE t.status = 'verified_completed') AS verified
+              FROM implementation_milestones m
+              JOIN milestone_tasks t ON t.milestone_id = m.id
+             WHERE m.client_id = %s AND m.milestone_key LIKE 'pack:%%'
+             GROUP BY m.milestone_key
+            """,
+            (target.id,),
+        )
+        return {
+            r["pack_index"] for r in cur.fetchall()
+            if r["total"] > 0 and r["verified"] == r["total"]
+        }
+
+
 def by_domain(domain: str) -> list[dict[str, Any]]:
     """The latest run's packs for a domain (crawl_runs has no domain column — reuse the
     host join in runs.latest_for_domain). Empty when the domain has no scored run."""

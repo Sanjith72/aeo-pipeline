@@ -1,7 +1,7 @@
 -- AEO pipeline — Supabase baseline (GENERATED — do not edit by hand).
 -- Source of truth: src/aeo/storage/migrations/*.sql
 -- Regenerate with: python scripts/export_supabase_baseline.py
--- Includes migrations 0001..0031.
+-- Includes migrations 0001..0032.
 
 -- schema_versions bootstrap (mirrors src/aeo/storage/migrate.py) so the app's own
 -- migration runner recognises everything below as already applied.
@@ -1268,3 +1268,15 @@ ALTER TABLE implementation_milestones
 CREATE INDEX IF NOT EXISTS idx_milestones_owner_user
     ON implementation_milestones (owner_user_id) WHERE owner_user_id IS NOT NULL;
 INSERT INTO schema_versions (version, name) VALUES ('0031', 'milestones_owner') ON CONFLICT (version) DO NOTHING;
+
+-- ═══ 0032_ticket_status_width ══════════════════════════════════════════════
+-- v5 P5 fix: migration 0029 added the 4th status value 'closed_pending_verify' to the
+-- milestone_tasks status CHECK, but the column was still VARCHAR(20) from 0015 — and that
+-- value is 21 chars, so it could never actually be stored (a latent bug that only P5's
+-- ticket close→verify flow exercises). Widen the column so the value fits. Additive; the
+-- 0029 CHECK is unchanged. implementation_milestones.status stays VARCHAR(20)/3-state — it
+-- is never assigned the 4th value (_recompute_statuses only emits pending/in_progress/
+-- verified_completed, all ≤20 chars).
+
+ALTER TABLE milestone_tasks ALTER COLUMN status TYPE VARCHAR(30);
+INSERT INTO schema_versions (version, name) VALUES ('0032', 'ticket_status_width') ON CONFLICT (version) DO NOTHING;

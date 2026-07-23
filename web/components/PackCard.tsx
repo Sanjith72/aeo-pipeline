@@ -20,12 +20,17 @@ export function PackCard({
   pack,
   ctaMode = "preview",
   onUnlock,
+  onOpen,
+  opened = false,
 }: {
   pack: PackPreview;
   // "preview" (overview/public — never asks for auth, per CH-11b) vs "gated" (studio
   // results — a locked pack invites unlock).
   ctaMode?: "preview" | "gated";
   onUnlock?: () => void;
+  // Present on an UNLOCKED pack in the gated context — opens its ticket board (CH-08).
+  onOpen?: () => void;
+  opened?: boolean;
 }) {
   return (
     <div className={`card flex h-full flex-col gap-3 p-5 ${pack.locked ? "opacity-80" : ""}`}>
@@ -45,14 +50,21 @@ export function PackCard({
           </li>
         ))}
       </ul>
-      {pack.locked &&
-        (ctaMode === "gated" && onUnlock ? (
+      {pack.locked ? (
+        ctaMode === "gated" && onUnlock ? (
           <button type="button" onClick={onUnlock} className="btn-ghost mt-auto self-start text-[12.5px]">
             Unlock this pack →
           </button>
         ) : (
           <p className="m-0 mt-auto text-[12.5px] text-ink-300">Unlocks after your homepage pack.</p>
-        ))}
+        )
+      ) : (
+        onOpen && (
+          <button type="button" onClick={onOpen} className="btn-ghost mt-auto self-start text-[12.5px]">
+            {opened ? "Hide fixes" : "Open fixes →"}
+          </button>
+        )
+      )}
     </div>
   );
 }

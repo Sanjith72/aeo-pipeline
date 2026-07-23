@@ -371,6 +371,23 @@ class RedeemRequest(BaseModel):
     code: str
 
 
+class TicketKeyRequest(BaseModel):
+    """A v5 ticket action keyed by its stable task_key (CH-08/CH-15)."""
+
+    task_key: str
+
+
+class TicketFieldsRequest(BaseModel):
+    """Set a v5 ticket's async board fields (CH-08). Omitted fields are left alone;
+    ``assignee``/``target_date`` of null clears. ``target_date`` is ISO ``YYYY-MM-DD``."""
+
+    task_key: str
+    assignee: str | None = None
+    target_date: str | None = None
+    set_assignee: bool = False   # explicit flags so null means "clear", omission means "leave"
+    set_target_date: bool = False
+
+
 class OverrideRequest(BaseModel):
     """One human override (R2-4): an edited prefilled value, or a rejected
     recommendation. Captured as eval signal + a human-gated proposal — never auto-applied."""
@@ -972,7 +989,8 @@ def get_packs(run_id: int, user: User | None = Depends(get_optional_user)) -> di
 
     rows = packs_repo.by_run(run_id)
     grants = _grants_for(user, run_id)
-    return {"run_id": run_id, "packs": [decorate_pack(r, grants=grants) for r in rows]}
+    completed = packs_repo.completed_pack_indices(run_id)  # v5 CH-15: earned-forward unlock
+    return {"run_id": run_id, "packs": [decorate_pack(r, grants=grants, completed=completed) for r in rows]}
 
 
 @app.get("/api/packs/{run_id}/{pack_index}")
@@ -991,12 +1009,143 @@ def get_pack_detail(
     header = next((r for r in packs_repo.by_run(run_id) if r["pack_index"] == pack_index), None)
     if header is None:
         raise HTTPException(status_code=404, detail="no such pack")
-    if decorate_pack(header, grants=_grants_for(user, run_id))["locked"]:
+    completed = packs_repo.completed_pack_indices(run_id)
+    if decorate_pack(header, grants=_grants_for(user, run_id), completed=completed)["locked"]:
         raise HTTPException(status_code=403, detail="unlock this pack to view its detail")
     return {
         "run_id": run_id, "pack_index": pack_index, "title": header["title"],
         "pages": skill_scores_repo.detail_for_pack(run_id, pack_index),
     }
+
+
+# ── v5 tickets (CH-08 board + CH-15 before/after verify) ────────────────────────
+
+
+def _ticket_client(run_id: int) -> tuple[int, Any]:
+    """(client_id, target) for a run's domain, or 404 when the run has no resolvable
+    domain / persisted work. Tickets are domain-keyed, reusing the milestone chain."""
+    from ..storage.repos import runs as runs_repo
+    from ..storage.repos import targets as targets_repo
+
+    domain = runs_repo.domain_for_run(run_id)
+    target = targets_repo.by_domain(domain) if domain else None
+    if target is None:
+        raise HTTPException(status_code=404, detail="no tickets for this run yet")
+    return target.id, target
+
+
+@app.get("/api/tickets/{run_id}")
+def get_tickets(run_id: int, user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
+    """The v5 tickets for a run's packs (CH-08): one per (page, skill), with status /
+    assignee / target_date / baseline→current score. Lazily GENERATES them on first view
+    (stamping owner_user_id when a logged-in user views) so tickets exist even for audits
+    that predate this path. Empty list (200) when the run produced no packs."""
+    from ..storage.repos import milestones as milestones_repo
+    from ..storage.repos import runs as runs_repo
+    from ..storage.repos import targets as targets_repo
+
+    domain = runs_repo.domain_for_run(run_id)
+    if not domain:
+        return {"run_id": run_id, "tickets": []}
+    target = targets_repo.by_domain(domain)
+    tickets = milestones_repo.list_tickets_for_run(target.id) if target else []
+    if not tickets:
+        milestones_repo.generate_tickets_from_run(run_id, owner_user_id=(user.id if user else None))
+        target = targets_repo.by_domain(domain)
+        tickets = milestones_repo.list_tickets_for_run(target.id) if target else []
+    return {"run_id": run_id, "tickets": tickets}
+
+
+@app.get("/api/tickets/{run_id}/{pack_index}")
+def get_pack_tickets(run_id: int, pack_index: int) -> dict[str, Any]:
+    """The v5 tickets for one pack of a run."""
+    from ..storage.repos import milestones as milestones_repo
+
+    client_id, _ = _ticket_client(run_id)
+    return {"run_id": run_id, "pack_index": pack_index,
+            "tickets": milestones_repo.list_tickets_for_run(client_id, pack_index)}
+
+
+@app.post("/api/tickets/{run_id}/fields")
+def set_ticket_fields(run_id: int, req: TicketFieldsRequest) -> dict[str, Any]:
+    """Set a ticket's assignee / target_date (CH-08 async board)."""
+    from ..storage.repos import milestones as milestones_repo
+
+    client_id, _ = _ticket_client(run_id)
+    kwargs: dict[str, Any] = {}
+    if req.set_assignee:
+        kwargs["assignee"] = (req.assignee or None)
+    if req.set_target_date:
+        kwargs["target_date"] = (req.target_date or None)
+    ticket = milestones_repo.set_ticket_fields(client_id, req.task_key, **kwargs)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="no such ticket")
+    return {"ticket": ticket}
+
+
+@app.post("/api/tickets/{run_id}/close")
+def close_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
+    """Owner marks a ticket done (CH-15): → closed_pending_verify, then enqueue a
+    FORCED re-crawl of its page so the re-score can prove the lift (an unchanged page
+    would otherwise fingerprint-skip and never verify). The frontend polls the ticket
+    until it flips to verified_completed."""
+    from ..pipeline import worker
+    from ..storage.repos import milestones as milestones_repo
+
+    client_id, target = _ticket_client(run_id)
+    ticket = milestones_repo.close_ticket(client_id, req.task_key)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="no such open ticket")
+    page_url = ticket.get("page_url")
+    job_id = None
+    if page_url:
+        try:
+            job_id = worker.enqueue_batch(
+                [page_url], target.name, label=f"verify:ticket:{req.task_key}", force_recrawl=True
+            )
+        except Exception as exc:  # verification is best-effort; the recheck button retries
+            from ..logging import get_logger
+
+            get_logger(__name__).warning("ticket_recrawl_enqueue_failed", task_key=req.task_key, error=str(exc))
+    return {"ticket": ticket, "verify_job_id": job_id}
+
+
+@app.post("/api/tickets/{run_id}/reopen")
+def reopen_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
+    """Reopen a closed-pending-verify ticket (CH-08)."""
+    from ..storage.repos import milestones as milestones_repo
+
+    client_id, _ = _ticket_client(run_id)
+    ticket = milestones_repo.reopen_ticket(client_id, req.task_key)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="no such ticket to reopen")
+    return {"ticket": ticket}
+
+
+@app.post("/api/tickets/{run_id}/recheck")
+def recheck_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
+    """Re-run verification on a ticket the owner already closed (CH-15): re-enqueue the
+    FORCED re-crawl of its page without changing the ticket's status. Used by the "Recheck"
+    affordance when a first re-crawl didn't yet prove the lift (edit not live / regressed)."""
+    from ..pipeline import worker
+    from ..storage.repos import milestones as milestones_repo
+
+    client_id, target = _ticket_client(run_id)
+    ticket = milestones_repo.get_ticket(client_id, req.task_key)
+    if ticket is None or ticket["status"] != "closed_pending_verify":
+        raise HTTPException(status_code=409, detail="ticket is not awaiting verification")
+    job_id = None
+    if ticket.get("page_url"):
+        try:
+            job_id = worker.enqueue_batch(
+                [ticket["page_url"]], target.name,
+                label=f"verify:ticket:{req.task_key}", force_recrawl=True,
+            )
+        except Exception as exc:
+            from ..logging import get_logger
+
+            get_logger(__name__).warning("ticket_recheck_enqueue_failed", task_key=req.task_key, error=str(exc))
+    return {"ticket": ticket, "verify_job_id": job_id}
 
 
 @app.post("/api/audit")

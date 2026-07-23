@@ -221,6 +221,15 @@ class MilestonesCfg(BaseModel):
     # aborts the audit. Off → milestones still persist + track, but only the owner's
     # manual toggles advance them.
     verify_on_crawl: bool = True
+    # v5 CH-15 before/after: when a v5 skill TICKET is closed (closed_pending_verify), a
+    # forced re-crawl re-scores the page; this flips the ticket to verified_completed and
+    # pins current_score. Separate from verify_on_crawl (artifact presence) and the
+    # retention engine (criterion tiers) — its own table (milestone_tasks skill columns).
+    verify_tickets_on_crawl: bool = True
+    # Honest lift gate: only mark a closed ticket verified when the re-scored skill score
+    # is >= the pinned baseline (the fix demonstrably didn't regress it). False → flip on
+    # any re-score. Either way current_score is recorded so the UI can show the delta.
+    verify_require_lift: bool = True
 
 
 class IntakeCfg(BaseModel):
