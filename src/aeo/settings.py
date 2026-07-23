@@ -263,6 +263,13 @@ class ScoringCfg(BaseModel):
     # read-only context); the win is on the I/O-bound LLM-refined criteria.
     parallel: bool = False
     max_workers: int = 8
+    # v5 CH-04: compute + persist the five-skill derived layer on each scored page during
+    # the deep audit. When on (default), the net-new Messaging/Conversion skills are
+    # LLM-judged (2 extra model calls per page — set AEO__SCORING__SKILL_LLM=false on
+    # quota-tight free-tier hosts to keep them deterministic/provisional instead). The
+    # mapped skills (Discovery/Proof/Structure) are always free — derived from criteria.
+    skills_enabled: bool = True
+    skill_llm: bool = True
 
 
 class AgentsCfg(BaseModel):

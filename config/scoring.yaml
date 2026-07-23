@@ -113,3 +113,25 @@ criteria:
     min_chunks_for_credit: 3
     # Pages below this word count have no readable answer to assess → floor.
     min_word_count: 50
+
+# ── v5 (CH-04/CH-06): the five OUTCOME skills the product scores pages on. This is a
+# derived layer over the 10 criteria above (see aeo.scoring.skills) — NOT part of the
+# frozen rubric_scores_v2 contract. Weights bias the impact ranking + weighted overall
+# (the "credit-score model": high-weight failures dominate). House rules per the spec:
+# heuristics that may vary by segment — tuned here, never hard-coded. Messaging and
+# Conversion carry the most weight for the $5-30M sales-led target (the product thesis);
+# Structure & UX the least (necessary hygiene, rarely the deciding factor).
+skills:
+  weights:
+    messaging: 1.4
+    conversion: 1.4
+    discovery_visibility: 1.0
+    proof_trust: 1.0
+    structure_ux: 0.8
+  # How many impact-ranked fixes the "do these first" list surfaces (the "50 from 500"
+  # cut — a small, ranked set, never an unranked dump).
+  max_priorities: 8
+  # Blend weight for the LLM judgement on the net-new subjective skills (Messaging,
+  # Conversion). 0.6 = LLM-led with the deterministic heuristic as the floor; a hung/
+  # absent LLM falls back to the deterministic score alone (never blocks a run).
+  llm_blend: 0.6

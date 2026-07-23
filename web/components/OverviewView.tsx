@@ -280,6 +280,32 @@ export function OverviewView() {
                 </div>
               </section>
             )}
+
+            {data.skills && data.skills.priorities.length > 0 && (
+              <section aria-labelledby="priorities-h">
+                <h2 id="priorities-h" className="mb-1 text-[18px] font-semibold tracking-[-0.01em] text-ink">
+                  Fix these first
+                </h2>
+                <p className="mb-4 max-w-[64ch] text-[13.5px] leading-[1.6] text-ink-300">
+                  Ranked by impact — the highest-leverage fixes for the skills that matter most, first.
+                </p>
+                <ol className="m-0 flex list-none flex-col gap-2 p-0">
+                  {data.skills.priorities.slice(0, 6).map((p, i) => (
+                    <li key={`${p.skill}-${i}`} className="card flex items-start gap-3 p-4">
+                      <span className="font-display text-[15px] font-semibold text-accent">
+                        {String(i + 1).padStart(2, "0")}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="m-0 text-[14px] leading-[1.5] text-ink">{p.text}</p>
+                        <span className="label-mono !text-[10px] text-ink-300">
+                          {SKILL_META.find((s) => s.key === p.skill)?.label ?? p.skill}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
             {!data.skills && data.route !== "dead" && (
               <div className="card max-w-[640px] p-5 text-[14px] leading-[1.6] text-ink-500">
                 We mapped the site&apos;s structure, but the homepage itself couldn&apos;t be read

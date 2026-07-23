@@ -19,11 +19,43 @@ Pure functions; no network, no DB, no LLM.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any
 
+from ..logging import get_logger
+from ..nlp import load_prompt
+from ..nlp.llm import LLMClient
+from ..settings import load_yaml_file
 from ..storage.models import ExtractionBundle, PageScore
 
+log = get_logger(__name__)
+
 SKILLS_VERSION = "1.0"
+
+# Fallback per-skill weights when config/scoring.yaml has no `skills:` section.
+_DEFAULT_WEIGHTS: dict[str, float] = {
+    "messaging": 1.4,
+    "conversion": 1.4,
+    "discovery_visibility": 1.0,
+    "proof_trust": 1.0,
+    "structure_ux": 0.8,
+}
+_DEFAULT_MAX_PRIORITIES = 8
+_DEFAULT_LLM_BLEND = 0.6
+_LLM_CONTENT_CAP = 2500  # chars of body text handed to the messaging/conversion judge
+
+
+@lru_cache(maxsize=1)
+def _skills_cfg() -> dict[str, Any]:
+    """The `skills:` block from scoring.yaml (weights, max_priorities, llm_blend),
+    merged over defaults. Cached — config is static for a process lifetime."""
+    raw = (load_yaml_file("scoring.yaml") or {}).get("skills", {}) or {}
+    weights = {**_DEFAULT_WEIGHTS, **{k: float(v) for k, v in (raw.get("weights") or {}).items()}}
+    return {
+        "weights": weights,
+        "max_priorities": int(raw.get("max_priorities", _DEFAULT_MAX_PRIORITIES)),
+        "llm_blend": float(raw.get("llm_blend", _DEFAULT_LLM_BLEND)),
+    }
 
 SKILL_KEYS = (
     "messaging",
@@ -145,10 +177,58 @@ def _signal_skill(skill: str, signals: list[tuple[str, int, bool, str]]) -> dict
     }
 
 
-def _messaging_skill(bundle: ExtractionBundle) -> dict[str, Any]:
-    """P1 heuristic: is the page's self-description shaped like a clear pitch? Judges the
-    title tag, meta description, and H1 — the three places a visitor (or an answer
-    engine) learns what this is, who it's for, and why it matters."""
+def _chunk_text(bundle: ExtractionBundle) -> str:
+    chunker = bundle.get("chunker") or {}
+    chunks = chunker.get("chunks") or []
+    return " ".join(c.get("text", "") for c in chunks).strip()
+
+
+def _llm_judge(prompt_name: str, llm: LLMClient, replacements: dict[str, str]) -> dict[str, Any] | None:
+    """Run a net-new subjective skill (Messaging/Conversion) through the LLM. Returns
+    ``{score: 0-100, suggestions: [...]}`` or None on any failure — the caller then keeps
+    the deterministic score (the deterministic-first contract: an absent/hung model never
+    blocks or floors a skill)."""
+    try:
+        prompt = load_prompt(prompt_name)
+        for token, value in replacements.items():
+            prompt = prompt.replace(token, value)
+        out = llm.generate_json(prompt)
+    except Exception as exc:  # any LLM/parse failure degrades to deterministic
+        log.warning("skill_llm_failed", skill=prompt_name, error=str(exc))
+        return None
+    if not isinstance(out, dict) or not isinstance(out.get("score"), (int, float)):
+        return None
+    score = max(0, min(100, round(float(out["score"]))))
+    suggestions = [str(s).strip() for s in (out.get("suggestions") or []) if str(s).strip()][:3]
+    return {"score": score, "suggestions": suggestions}
+
+
+def _blend(det: dict[str, Any], skill: str, judgement: dict[str, Any] | None) -> dict[str, Any]:
+    """Combine the deterministic heuristic with the LLM judgement. LLM present →
+    ``hybrid``: score = llm_blend·llm + (1-llm_blend)·deterministic, with the LLM's
+    page-specific suggestions (falling back to the deterministic ones if it gave none).
+    LLM absent → the deterministic ``provisional`` result, unchanged."""
+    if judgement is None:
+        return det
+    blend = _skills_cfg()["llm_blend"]
+    score = round(blend * judgement["score"] + (1 - blend) * det["score"])
+    suggestions = [
+        {"id": f"sug:{skill}:llm{i}", "text": text, "criterion": None}
+        for i, text in enumerate(judgement["suggestions"])
+    ] or det["suggestions"]
+    return {
+        "score": max(0, min(100, score)),
+        "confidence": "hybrid",
+        "source_criteria": [],
+        "suggestions": suggestions[:3],
+        "evidence": {**det.get("evidence", {}), "llm_score": judgement["score"]},
+    }
+
+
+def _messaging_skill(bundle: ExtractionBundle, llm: LLMClient | None = None) -> dict[str, Any]:
+    """Messaging clarity — is it clear what this is, who it's for, and why it matters?
+    Deterministic heuristic over the title/meta/H1 (the ``provisional`` floor), refined by
+    an LLM judgement when one is available (``hybrid``, page-specific suggestions)."""
     meta = bundle.get("meta") or {}
     headings = bundle.get("headings") or {}
     title = (meta.get("title") or "").strip()
@@ -182,13 +262,27 @@ def _messaging_skill(bundle: ExtractionBundle) -> dict[str, Any]:
             "Rewrite the H1 as a plain-language statement of what you do (a phrase, not a slogan or a wall of text).",
         ),
     ]
-    return _signal_skill("messaging", signals)
+    det = _signal_skill("messaging", signals)
+    if llm is None or not llm.enabled:
+        return det
+    headings_flat = "; ".join((headings.get("by_level", {}).get("h2", []) or [])[:8])
+    judgement = _llm_judge(
+        "messaging_clarity", llm,
+        {
+            "<<TITLE>>": title[:200],
+            "<<META>>": desc[:300],
+            "<<H1>>": h1_text[:200],
+            "<<HEADINGS>>": headings_flat[:600],
+            "<<CONTENT>>": _chunk_text(bundle)[:_LLM_CONTENT_CAP],
+        },
+    )
+    return _blend(det, "messaging", judgement)
 
 
-def _conversion_skill(bundle: ExtractionBundle) -> dict[str, Any]:
-    """P1 heuristic: does the page offer a next step? Looks for a primary CTA path
-    (contact/demo/book), findable pricing, a mid-funnel path for undecided visitors,
-    and basic internal navigation."""
+def _conversion_skill(bundle: ExtractionBundle, llm: LLMClient | None = None) -> dict[str, Any]:
+    """Conversion path — is there an obvious next step, a mid-funnel path, handled
+    objections? Deterministic CTA/pricing/mid-funnel/nav heuristics (``provisional``
+    floor), refined by an LLM judgement when available (``hybrid``)."""
     links = bundle.get("links") or {}
     internal: list[str] = list(links.get("internal") or [])
     internal_count = int(links.get("internal_count") or len(internal))
@@ -223,18 +317,74 @@ def _conversion_skill(bundle: ExtractionBundle) -> dict[str, Any]:
             "Link your key pages from here so visitors (and engines) can reach the next step.",
         ),
     ]
-    return _signal_skill("conversion", signals)
+    det = _signal_skill("conversion", signals)
+    if llm is None or not llm.enabled:
+        return det
+    from urllib.parse import urlsplit
+
+    link_paths = "; ".join(dict.fromkeys(urlsplit(u).path for u in internal))[:600]
+    meta = bundle.get("meta") or {}
+    headings = bundle.get("headings") or {}
+    judgement = _llm_judge(
+        "conversion_path", llm,
+        {
+            "<<TITLE>>": (meta.get("title") or "")[:200],
+            "<<H1>>": (headings.get("h1_text") or "")[:200],
+            "<<LINKS>>": link_paths,
+            "<<CONTENT>>": _chunk_text(bundle)[:_LLM_CONTENT_CAP],
+        },
+    )
+    return _blend(det, "conversion", judgement)
 
 
-def build_skill_scores(page_score: PageScore, bundle: ExtractionBundle) -> dict[str, Any]:
-    """The locked CH-04 output for one page: five skills, each 0-100 with suggestions,
-    plus the equal-weight overall (per-skill weights arrive with CH-06)."""
+def _priorities(skills: dict[str, dict[str, Any]], weights: dict[str, float], limit: int) -> list[dict[str, Any]]:
+    """The impact-ranked "fix these first" list (CH-06): every skill's suggestions,
+    scored by ``weight × severity`` and sorted so the highest-weight failures surface
+    first — the "50 from 500" cut. Severity is the skill's score gap ((100-score)/100):
+    a skill already near 100 contributes low-severity, low-priority items.
+
+    (Predicted-lift is the third CH-06 factor; the deterministic simulator lives at the
+    rubric-criterion tier — wiring per-suggestion lift here is a follow-up. Until then the
+    ranking is weight × severity, which already surfaces high-weight failures first.)"""
+    items: list[dict[str, Any]] = []
+    for name, skill in skills.items():
+        weight = weights.get(name, 1.0)
+        severity = max(0.0, (100 - skill["score"]) / 100)
+        for sug in skill["suggestions"]:
+            items.append(
+                {
+                    "skill": name,
+                    "text": sug["text"],
+                    "criterion": sug.get("criterion"),
+                    "skill_score": skill["score"],
+                    "impact": round(weight * severity, 4),
+                }
+            )
+    items.sort(key=lambda it: (-it["impact"], it["skill"]))
+    return items[:limit]
+
+
+def build_skill_scores(
+    page_score: PageScore, bundle: ExtractionBundle, *, llm: LLMClient | None = None
+) -> dict[str, Any]:
+    """The CH-04 output for one page: five skills (each 0-100 with suggestions), the
+    WEIGHTED overall (CH-06), and an impact-ranked ``priorities`` list. Pass ``llm`` to
+    LLM-judge Messaging/Conversion (the deep audit); omit it for the deterministic-only
+    free tier (the cost boundary)."""
+    cfg = _skills_cfg()
+    weights = cfg["weights"]
     skills = {
-        "messaging": _messaging_skill(bundle),
-        "conversion": _conversion_skill(bundle),
+        "messaging": _messaging_skill(bundle, llm),
+        "conversion": _conversion_skill(bundle, llm),
         "discovery_visibility": _mapped_skill("discovery_visibility", page_score),
         "proof_trust": _mapped_skill("proof_trust", page_score),
         "structure_ux": _mapped_skill("structure_ux", page_score),
     }
-    overall = round(sum(s["score"] for s in skills.values()) / len(skills))
-    return {"skills_version": SKILLS_VERSION, "overall": overall, "skills": skills}
+    total_w = sum(weights.get(k, 1.0) for k in skills) or 1.0
+    overall = round(sum(s["score"] * weights.get(k, 1.0) for k, s in skills.items()) / total_w)
+    return {
+        "skills_version": SKILLS_VERSION,
+        "overall": overall,
+        "skills": skills,
+        "priorities": _priorities(skills, weights, cfg["max_priorities"]),
+    }

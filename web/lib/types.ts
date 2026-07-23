@@ -499,10 +499,21 @@ export interface SkillScore {
   evidence?: Record<string, unknown>;
 }
 
+// One impact-ranked fix in the "do these first" list (CH-06): ranked by weight × severity
+// across every skill, so high-weight failures surface above low-weight passes.
+export interface SkillPriority {
+  skill: SkillKey;
+  text: string;
+  criterion: string | null;
+  skill_score: number;
+  impact: number;
+}
+
 export interface SkillScores {
   skills_version: string;
-  overall: number; // 0-100, equal-weight until CH-06 lands per-skill weights
+  overall: number; // 0-100, weighted by per-skill weights (CH-06)
   skills: Record<SkillKey, SkillScore>;
+  priorities: SkillPriority[];
 }
 
 export interface PackPage {

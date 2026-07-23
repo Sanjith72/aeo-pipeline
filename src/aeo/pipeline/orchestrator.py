@@ -664,6 +664,27 @@ class Orchestrator:
         )
         return site_reports_repo.put(site)
 
+    def _persist_skill_scores(self, page_score: PageScore, bundle, run_id: int) -> None:
+        """v5 CH-04: derive + persist the five-skill layer for a freshly-scored page.
+        Best-effort and isolated — like completion detection, this is bookkeeping on top
+        of the scored crawl and must never abort it. ``skill_llm`` off (or a disabled LLM)
+        keeps Messaging/Conversion deterministic; the mapped skills are always free."""
+        settings = get_settings()
+        if not settings.scoring.skills_enabled:
+            return
+        try:
+            from ..scoring.skills import build_skill_scores
+            from ..storage.repos import skill_scores as skill_scores_repo
+
+            llm = self._llm if settings.scoring.skill_llm else None
+            payload = build_skill_scores(page_score, bundle, llm=llm)
+            skill_scores_repo.put(page_score.page_id, run_id, payload)
+        except Exception as exc:  # skill scoring is additive — never fatal to a run
+            log.warning(
+                "skill_scores_skipped",
+                page_id=getattr(page_score, "page_id", None), error=str(exc),
+            )
+
     def _detect_completions(self, page: FetchedPage, run_id: int, page_score: PageScore) -> None:
         """Retention Engine bookkeeping: reconcile this URL's pending recommendation
         outcomes against the freshly RE-SCORED page — an outcome flips to ``implemented``
@@ -728,6 +749,10 @@ class Orchestrator:
             page_score = self.score.run(bundle, run_id)
             self.persist.score(page_score, scored_by=_scored_by(page_score))
             summary.scored += 1
+            # v5 CH-04: the five-skill derived layer, persisted alongside the rubric score.
+            # Additive + isolated — a skills failure must never abort the crawl that carries
+            # it (mirrors _detect_completions).
+            self._persist_skill_scores(page_score, bundle, run_id)
             # Retention Engine (#11): verify recommendation completions AFTER re-scoring,
             # so the check is criterion-honest (did the targeted criterion's tier rise?)
             # rather than a self-grading hash-only signal. A changed page always re-scores

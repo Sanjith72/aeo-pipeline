@@ -31,16 +31,26 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 | **P6** | UI redesign + friction reductions | CH-10, CH-11c–g, CH-12 | Consolidate strategy/roadmap, journey-to-top, visual rankings, Prerender friction fixes. |
 | **P7** | AI-snapshot visibility metric | CH-14 | Marketable Discovery metric; reuses existing Perplexity check. |
 
-> **Status (2026-07-23): P0 + P1 implemented.** §9 decisions resolved (see §9); contracts
+> **Status (2026-07-23): P0 + P1 + P2 implemented.** §9 decisions resolved (see §9); contracts
 > locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0030` applied + Supabase baseline
-> regenerated. Shipped: `POST /api/overview` (free 5-skill homepage overview + pack preview,
-> per-domain 24h cache, per-IP daily cap `AEO__API__OVERVIEW_DAILY_LIMIT`, SSRF guard),
-> `/overview` page, hero URL field (CH-11a), server-side name derivation (CH-01 — URL is the
-> only required input anywhere), `scoring/skills.py`, `pipeline/packs.py`,
-> `pipeline/overview.py`. Messaging/Conversion are P1 deterministic heuristics labelled
-> `provisional`; their LLM-judged scorers are P2 (CH-04). Note: the codebase reality differs
-> from some "Current" notes below — the wizard is 4 steps (not 9), and the LLM router lives
-> at `src/aeo/nlp/providers.py` (not `src/aeo/llm/`).
+> regenerated.
+>
+> - **P0/P1** — `POST /api/overview` (free 5-skill homepage overview + pack preview,
+>   per-domain 24h cache, per-IP + global daily caps, SSRF-guarded crawl transport),
+>   `/overview` page, hero URL field (CH-11a), server-side name derivation (CH-01 — URL is
+>   the only required input anywhere), `scoring/skills.py`, `pipeline/packs.py`,
+>   `pipeline/overview.py`.
+> - **P2 (CH-04/CH-06/CH-16)** — Messaging & Conversion are now LLM-judged on the deep audit
+>   (`hybrid`) via `nlp/prompts/{messaging_clarity,conversion_path}.txt`, with the P1
+>   heuristics as the deterministic-`provisional` floor (free tier stays deterministic — the
+>   cost boundary). Per-skill weights + an impact-ranked `priorities` list (`config/scoring.yaml`
+>   → `skills:` block; "50 from 500" by weight × severity), a **weighted** overall.
+>   `skill_scores` persisted on each scored deep-audit page (`storage/repos/skill_scores.py`,
+>   pipeline hook, `AEO__SCORING__SKILL_LLM` toggle). CH-16's metadata-only boundary is the
+>   P1 overview (cheap homepage scan, deep crawl only on the "go deeper" action).
+>
+> Note: the codebase reality differs from some "Current" notes below — the wizard is 4 steps
+> (not 9), and the LLM router lives at `src/aeo/nlp/providers.py` (not `src/aeo/llm/`).
 
 ---
 
