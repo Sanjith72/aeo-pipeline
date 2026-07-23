@@ -8,6 +8,8 @@ capture path never auto-applies anything. All offline (the DB seams are faked).
 
 from __future__ import annotations
 
+import pytest
+
 from aeo.reference.feedback import propose_refinement_from_override
 
 
@@ -41,6 +43,7 @@ def test_rejected_recommendation_kind_is_carried():
 
 
 def test_api_override_records_event_and_proposes_refinement(monkeypatch):
+    pytest.importorskip("fastapi")  # app.py needs the optional [api] extra
     from fastapi.testclient import TestClient
 
     from aeo.api.app import app
@@ -79,6 +82,7 @@ def test_api_override_records_event_and_proposes_refinement(monkeypatch):
 
 
 def test_api_override_requires_session_and_field():
+    pytest.importorskip("fastapi")  # app.py needs the optional [api] extra
     from fastapi.testclient import TestClient
 
     from aeo.api.app import app
@@ -90,6 +94,7 @@ def test_api_override_requires_session_and_field():
 
 def test_api_override_survives_a_down_db(monkeypatch):
     # Both seams blow up → the handler still returns 200 with captured=False (best-effort).
+    pytest.importorskip("fastapi")  # app.py needs the optional [api] extra
     from fastapi.testclient import TestClient
 
     from aeo.api.app import app
