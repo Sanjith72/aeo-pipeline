@@ -13,9 +13,10 @@
 // static fallback — and it degrades gracefully if WebGL is missing.
 
 import dynamic from "next/dynamic";
-import { forwardRef, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { forwardRef, useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import { EASE_OUT, Magnetic, m } from "@/components/motion/primitives";
+import { EASE_OUT, m } from "@/components/motion/primitives";
 import { ArrowRight } from "@/components/ui/icons";
 import { LiquidButton } from "@/components/ui/liquid-glass";
 import type { CamTarget } from "@/components/ui/horizon-cosmos";
@@ -95,7 +96,14 @@ export function HorizonHero() {
         if (fade.in) o = Math.min(o, smoothstep((p - fade.in[0]) / (fade.in[1] - fade.in[0])));
         if (fade.out) o = Math.min(o, 1 - smoothstep((p - fade.out[0]) / (fade.out[1] - fade.out[0])));
         el.style.opacity = o.toFixed(3);
-        el.style.pointerEvents = o > 0.5 ? "auto" : "none";
+        const active = o > 0.5;
+        el.style.pointerEvents = active ? "auto" : "none";
+        // Mirror focusability to visibility: a faded-out beat now holds an editable URL
+        // input, so leaving it in the tab order (visibility:visible at opacity 0) would let
+        // a keyboard user land on an invisible field, type into it, and Enter-navigate — and
+        // focusing it scroll-jumps the viewport back up. visibility:hidden removes it as a
+        // tab stop while the panel stays mounted for the crossfade.
+        el.style.visibility = active ? "visible" : "hidden";
         el.style.transform = `translateY(${((CENTERS[k] - p) * 40).toFixed(1)}px)`;
       });
 
@@ -192,19 +200,7 @@ export function HorizonHero() {
                 make sure the answer is <Accent>you</Accent>.
               </>,
             ]}
-            ctas={
-              <>
-                <Magnetic>
-                  <LiquidButton href="/studio" variant="primary" className="group px-7 py-3.5 text-[15px]">
-                    Get my free plan
-                    <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" />
-                  </LiquidButton>
-                </Magnetic>
-                <LiquidButton href="#how" variant="secondary" className="px-[26px] py-3.5 text-[15px]">
-                  See how it works
-                </LiquidButton>
-              </>
-            }
+            ctas={<HeroUrlForm />}
           />
           <Beat
             ref={setBeatRef(1)}
@@ -292,6 +288,48 @@ export function HorizonHero() {
         </div>
       </div>
     </section>
+  );
+}
+
+// v5 CH-11a — the hero's primary (and only initial) action: one URL field + one CTA into
+// the free overview. Replaces the "Get my free plan" → wizard entry; the secondary
+// see-how-it-works link stays. Lives on beat 01, the only clickable beat.
+function HeroUrlForm() {
+  const router = useRouter();
+  const [value, setValue] = useState("");
+  return (
+    <div className="flex w-full max-w-[600px] flex-col items-center gap-3.5">
+      <form
+        className="flex w-full flex-col items-stretch gap-3 sm:flex-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const v = value.trim();
+          if (!v) return;
+          router.push(`/overview?domain=${encodeURIComponent(v)}`);
+        }}
+      >
+        <input
+          type="text"
+          inputMode="url"
+          autoComplete="url"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="yourwebsite.com"
+          aria-label="Your website address"
+          className="input flex-1 !bg-paper/60 px-5 py-3.5 text-[15px] backdrop-blur-md"
+        />
+        <button type="submit" className="btn-primary group shrink-0 !px-7 !py-3.5 text-[15px]">
+          Analyze my site
+          <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" />
+        </button>
+      </form>
+      <p className="m-0 flex flex-wrap items-center justify-center gap-x-3 text-[13px] text-ink-300">
+        Free — no signup. See your five scores in about a minute.
+        <LiquidButton href="#how" variant="secondary" className="inline-flex min-h-[40px] items-center !px-4 !py-2.5 text-[12.5px]">
+          See how it works
+        </LiquidButton>
+      </p>
+    </div>
   );
 }
 
@@ -402,6 +440,10 @@ const Beat = forwardRef<HTMLElement, BeatProps>(function Beat(
         padding: "0 clamp(28px, 8vw, 110px)",
         gap: "clamp(20px, 3.4vh, 40px)",
         opacity: initialOpacity,
+        // Keep the SSR/pre-hydration state in step with the scroll handler: beats that
+        // start faded out are non-focusable from the first paint, so the hidden hero form
+        // never becomes a keyboard trap before JS runs.
+        visibility: initialOpacity > 0.5 ? "visible" : "hidden",
         willChange: "opacity, transform",
       }}
     >

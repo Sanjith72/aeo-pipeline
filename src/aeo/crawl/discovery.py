@@ -140,14 +140,17 @@ def seed_url(domain: str) -> str:
 
 async def _default_fetch_text(url: str) -> str | None:
     cfg = get_settings().crawler
-    from .transport import async_transport
+    from .transport import guarded_async_transport
 
     try:
         async with httpx.AsyncClient(
             timeout=cfg.discovery.timeout_sec,
             follow_redirects=True,
             headers={"User-Agent": cfg.user_agent},
-            transport=async_transport(),  # force IPv4 on OCI Ampere when configured
+            # SSRF guard on every hop (incl. redirects) + force IPv4 when configured. A
+            # blocked target raises inside the transport → caught below → None (the site
+            # reads as unreachable), never internal content.
+            transport=guarded_async_transport(),
         ) as client:
             resp = await client.get(url)
             if resp.status_code == 200:
@@ -184,14 +187,17 @@ async def browser_fetch_text(url: str) -> str | None:
     fast intake prefill that reads third-party marketing pages a bot UA gets blocked from.
     Same IPv4 transport seam and timeout; returns the body on 200, else None."""
     cfg = get_settings().crawler
-    from .transport import async_transport
+    from .transport import guarded_async_transport
 
     try:
         async with httpx.AsyncClient(
             timeout=cfg.discovery.timeout_sec,
             follow_redirects=True,
             headers=_BROWSER_HEADERS,
-            transport=async_transport(),
+            # SSRF guard on every hop (incl. redirects) — this reads arbitrary third-party
+            # URLs for the anonymous intake/overview prefill, so a public host that 302s to
+            # internal infra must never be fetched. Force-IPv4 policy still composes.
+            transport=guarded_async_transport(),
         ) as client:
             resp = await client.get(url)
             if resp.status_code == 200:

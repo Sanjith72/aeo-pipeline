@@ -30,10 +30,10 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..intelligence.brief import plan_from_brief
-from ..reference.business_input import BusinessInput
+from ..reference.business_input import BusinessInput, derive_business_name
 from ..reference.competitor_patterns import CompetitorPatterns
 from ..reference.framework import Framework
 from ..reference.generator import generate_blueprint
@@ -64,26 +64,31 @@ _WIKIDATA_ENRICHMENT_ENABLED = True
 _WIKIDATA_WAIT_BUDGET_SEC = 8.0
 
 
-def _assert_crawlable_host(domain: str) -> None:
+def _assert_crawlable_host(domain: str, *, allow_unresolvable: bool = False) -> None:
     """SSRF guard: resolve the target host and reject private/loopback/link-local/
     reserved addresses so an attacker can't point a crawl at internal infrastructure
     (e.g. cloud metadata at 169.254.169.254). Best-effort at the entry point — a
-    deeper defense also revalidates each redirect hop in the crawler."""
+    deeper defense also revalidates each redirect hop in the crawler.
+
+    ``allow_unresolvable`` lets the intake paths (/api/profile, /api/overview) keep
+    their never-502 contract: an unresolvable host is no SSRF vector (nothing to
+    connect to), and their crawl resolves it to an honest ``route='dead'`` instead of
+    a 400 that would dead-end the URL-first flow."""
     raw = domain.strip()
     host = urlparse(raw if "://" in raw else f"//{raw}").hostname or raw
     host = host.split(":")[0].strip()
     if not host:
         raise HTTPException(status_code=400, detail="invalid domain")
+    from ..crawl.transport import ip_is_blocked
+
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError:
+        if allow_unresolvable:
+            return
         raise HTTPException(status_code=400, detail="domain does not resolve") from None
     for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if (
-            ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-        ):
+        if ip_is_blocked(info[4][0]):
             raise HTTPException(status_code=400, detail="domain resolves to a non-public address")
 
 
@@ -160,6 +165,11 @@ class _RateLimiter:
 
 
 _RATE = _RateLimiter()
+# The free-overview daily caps live in their OWN limiter: the middleware limiter runs a
+# 60s window and its overflow eviction drops any entry older than that window, which would
+# silently reset a 24h overview counter sharing the same map (a cost-ceiling bypass).
+_OVERVIEW_RATE = _RateLimiter()
+_DAY_SEC = 86400.0
 
 
 def _client_ip(request: Request) -> str:
@@ -214,7 +224,11 @@ _install_cors(app)
 
 
 class BriefRequest(BaseModel):
-    name: str
+    # v5 CH-01 (URL-first intake): the URL is the only required input anywhere. A blank
+    # name derives from the domain server-side (mirrors the web UI's deriveName), so
+    # URL-only callers pass every brief-shaped endpoint; name-only briefs (the
+    # no-website path) still work. Only both-blank is rejected.
+    name: str = ""
     domain: str | None = None
     category: str | None = None
     topic: str | None = None
@@ -223,6 +237,15 @@ class BriefRequest(BaseModel):
     competitors: list[str] = []
     goals: list[str] = []
     use_llm: bool = True
+
+    @model_validator(mode="after")
+    def _default_name_from_domain(self) -> "BriefRequest":
+        if not self.name.strip():
+            derived = derive_business_name(self.domain)
+            if not derived:
+                raise ValueError("name or domain is required")
+            self.name = derived
+        return self
 
 
 class DeliverablesRequest(BriefRequest):
@@ -251,6 +274,15 @@ class ProfileRequest(BaseModel):
     use_llm: bool = True
 
 
+class OverviewRequest(BaseModel):
+    """The v5 free-tier entry (CH-09): a URL and nothing else."""
+
+    domain: str
+    # Bounded on the anonymous endpoint: a client-supplied max can't be used to force a
+    # multi-hundred-MB inventory gather + sort on the event loop.
+    max_urls: int | None = Field(default=None, ge=1, le=200)
+
+
 class AuditRequest(BaseModel):
     domain: str
     name: str | None = None
@@ -267,7 +299,7 @@ _SUGGEST_BUDGET_SEC = 90.0
 
 
 class CompetitorSuggestRequest(BaseModel):
-    name: str
+    name: str = ""  # blank derives from domain (v5 CH-01 URL-only intake)
     domain: str | None = None
     category: str | None = None
     location: str | None = None
@@ -622,6 +654,10 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     from ..pipeline import Orchestrator
     from ..settings import get_settings
 
+    # SSRF guard (private/loopback only): unresolvable hosts continue to route='dead'.
+    # getaddrinfo is blocking → off the event loop so a slow/blackholed NS can't freeze
+    # every other request on this async handler.
+    await asyncio.to_thread(_assert_crawlable_host, req.domain, allow_unresolvable=True)
     cache = _cache_age(req.domain)
     # Crawl the homepage + key pages for Location / what-you-offer / on-site competitors,
     # concurrently with the structural dry-run profile AND the Wikidata enrichment lookup
@@ -728,6 +764,49 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     }
 
 
+@app.post("/api/overview")
+async def overview(req: OverviewRequest, request: Request) -> dict[str, Any]:
+    """The v5 free overview (CH-09/CH-16 slice 1): paste a URL, get the structural
+    profile + five homepage skill scores + an impact-ordered pack preview + on-site
+    competitor names — no signup, no persisted run. Composition lives in
+    ``pipeline.overview.build_overview``; this handler only adds the free-tier
+    protections (§9.4): per-domain daily cache (hits are free and uncounted), the SSRF
+    guard, and a per-IP daily cap on fresh builds (AEO__API__OVERVIEW_DAILY_LIMIT;
+    0 = off for dev)."""
+    from ..pipeline.overview import build_overview, cached_overview
+    from ..settings import get_settings
+
+    domain = req.domain.strip()
+    if not domain:
+        raise HTTPException(status_code=422, detail="domain is required")
+    cached = cached_overview(domain)
+    if cached is not None:
+        return cached  # cache hits are free — never counted against either cap
+    # SSRF guard (private/loopback only), off the event loop; unresolvable → route='dead'.
+    await asyncio.to_thread(_assert_crawlable_host, domain, allow_unresolvable=True)
+    cfg = get_settings().api
+    # Per-IP daily cap (best-effort; spoofable via X-Forwarded-For) AND a global daily
+    # ceiling that no single-IP trick can bypass — the infra-independent backstop for the
+    # §9.4 free-tier cost ceiling. Both bound FRESH (crawling) builds only.
+    if cfg.overview_daily_limit > 0 and _OVERVIEW_RATE.over_limit(
+        f"overview:{_client_ip(request)}", cfg.overview_daily_limit, _DAY_SEC
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="free analysis limit reached for today — come back tomorrow",
+            headers={"Retry-After": "86400"},
+        )
+    if cfg.overview_global_daily_limit > 0 and _OVERVIEW_RATE.over_limit(
+        "overview:__global__", cfg.overview_global_daily_limit, _DAY_SEC
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="free analysis is busy right now — please try again later",
+            headers={"Retry-After": "3600"},
+        )
+    return await build_overview(domain, max_urls=req.max_urls)
+
+
 @app.post("/api/competitors/suggest")
 async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     """Likely competitors for a business brief (name + category + location), so the UI
@@ -745,9 +824,10 @@ async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     from ..nlp.llm import get_interactive_client
     from ..reference.competitor_discovery import discover_competitors
 
-    name = req.name.strip()
+    # URL-only intake (v5 CH-01): a blank name derives from the domain, like BriefRequest.
+    name = req.name.strip() or derive_business_name(req.domain)
     if not name:
-        raise HTTPException(status_code=422, detail="name is required")
+        raise HTTPException(status_code=422, detail="name or domain is required")
     domain = (req.domain or "").strip()
 
     async def onsite() -> dict[str, Any] | None:

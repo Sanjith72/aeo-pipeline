@@ -311,6 +311,15 @@ class ApiCfg(BaseModel):
     # any public deployment. Client IP = left-most X-Forwarded-For (behind a proxy) or the peer.
     rate_limit: int = 0
     rate_window_sec: int = 60
+    # v5 §9.4 free-tier cap: fresh (non-cached) POST /api/overview builds per IP per day.
+    # 0 = disabled for local dev; set AEO__API__OVERVIEW_DAILY_LIMIT (≈3) in any public
+    # deployment. Cached hits never count — same-domain re-pastes stay free. The per-IP
+    # key is spoofable via X-Forwarded-For, so pair it with the global ceiling below.
+    overview_daily_limit: int = 0
+    # Global daily ceiling on fresh overview builds across ALL callers — the backstop no
+    # single-IP spoofing trick can bypass. 0 = disabled; set it comfortably above expected
+    # honest daily volume in any public deployment.
+    overview_global_daily_limit: int = 0
 
 
 class ReferenceArchitectureCfg(BaseModel):

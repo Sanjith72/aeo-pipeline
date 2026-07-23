@@ -16,6 +16,7 @@ import type {
   MilestoneDashboard,
   MilestoneStatus,
   MilestoneVerifyResult,
+  OverviewResponse,
   PlanStateResponse,
   ProfileResponse,
   RecheckStatusResponse,
@@ -127,6 +128,12 @@ export const api = {
   // bundle (minutes of LLM work) for bytes the browser already has.
   profile(req: { domain: string; use_llm?: boolean; max_urls?: number }): Promise<ProfileResponse> {
     return postJson<ProfileResponse>("/api/profile", req);
+  },
+  /** The v5 free overview (CH-09): fast site scan + five homepage skill scores + a pack
+   *  preview + on-site competitor names. No auth; the server caches per domain for a day
+   *  (response carries `cached: true` on a hit). */
+  overview(req: { domain: string }): Promise<OverviewResponse> {
+    return postJson<OverviewResponse>("/api/overview", req);
   },
   suggestCompetitors(req: {
     name: string;

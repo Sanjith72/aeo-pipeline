@@ -20,6 +20,20 @@ from .domain_config import normalize_domain
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
+def derive_business_name(domain: str | None) -> str:
+    """A friendly default business name from a domain ("harbor-dental.com" → "Harbor
+    Dental") — the server-side mirror of the web UI's ``deriveName``, so URL-only intake
+    (v5 CH-01) never fails a brief-shaped endpoint over the missing name. Empty when no
+    usable host can be derived."""
+    if not domain or not domain.strip():
+        return ""
+    host = normalize_domain(domain) or domain.strip().lower()
+    host = host.removeprefix("www.").split("/")[0]
+    root = host.split(".")[0] or host
+    words = [w for w in re.split(r"[-_]+", root) if w]
+    return " ".join(w[:1].upper() + w[1:] for w in words)
+
+
 @dataclass(slots=True)
 class BusinessInput:
     """A business brief for the no-website blueprint path.

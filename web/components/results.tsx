@@ -342,7 +342,14 @@ export function ResultsView({
       cmsType={cmsType}
       profileActions={profile?.actions ?? []}
       error={delivError}
-      storageKey={resume ? `aeo-plan:resumed:${resume.planStateId}` : `aeo-plan:${businessName.toLowerCase()}`}
+      // Salt the local key with the domain so two plans that share a (possibly derived)
+      // business name — e.g. a consultant's back-to-back no-site briefs — never load each
+      // other's task checkoffs from one shared "aeo-plan:" key.
+      storageKey={
+        resume
+          ? `aeo-plan:resumed:${resume.planStateId}`
+          : `aeo-plan:${(domain?.trim() || businessName || "default").toLowerCase()}`
+      }
       resume={resume}
       onGenerate={onGenerateDeliverables}
       onDownloadZip={onDownloadZip}

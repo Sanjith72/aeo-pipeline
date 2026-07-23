@@ -606,9 +606,10 @@ export function StudioApp() {
     }
   }
 
+  // v5 CH-01: the URL is the only input that can ever block — a blank name derives from
+  // the domain (briefFromForm here, BriefRequest server-side), so step 1 never gates.
   const nextBlocker: string | null = (() => {
     if (step === 0 && hasSite && !domain.trim()) return "Add your website address, or pick “I don't have a site yet”";
-    if (step === 1 && !name.trim()) return "Add your business name to continue";
     return null;
   })();
 
@@ -693,7 +694,9 @@ export function StudioApp() {
             </div>
           )}
           <ResultsView
-            businessName={name.trim()}
+            // Derive the display name the same way briefFromForm / the server do, so an
+            // empty name never collapses distinct plans onto one shared localStorage key.
+            businessName={name.trim() || deriveName(domain) || "My business"}
             domain={hasSite ? domain.trim() || undefined : undefined}
             profile={profile}
             plan={plan}

@@ -758,9 +758,20 @@ def _select_key_pages(homepage_url: str, homepage_html: str, *, limit: int) -> l
 async def gather_site_facts(
     domain: str, *, fetch: FetchText | None = None, max_pages: int = _MAX_PAGES
 ) -> SiteFacts:
-    """Fetch the homepage + a few key pages and derive :class:`SiteFacts`. Best-effort:
-    an unreachable homepage (or any error) yields empty facts rather than raising, so the
-    wizard prefill never blocks the flow.
+    """Fetch the homepage + a few key pages and derive :class:`SiteFacts`. See
+    :func:`gather_site_facts_with_docs` — this keeps the original facts-only contract."""
+    facts, _docs = await gather_site_facts_with_docs(domain, fetch=fetch, max_pages=max_pages)
+    return facts
+
+
+async def gather_site_facts_with_docs(
+    domain: str, *, fetch: FetchText | None = None, max_pages: int = _MAX_PAGES
+) -> tuple[SiteFacts, list[FetchedDoc]]:
+    """Fetch the homepage + a few key pages and derive :class:`SiteFacts`, also returning
+    the fetched documents (homepage first) so callers that need the raw HTML — the v5 free
+    overview scores the homepage in memory — don't refetch what this already paid for.
+    Best-effort: an unreachable homepage (or any error) yields empty facts + no docs
+    rather than raising, so the wizard prefill never blocks the flow.
 
     Defaults to a browser-headers fetch (``browser_fetch_text``): this path reads arbitrary
     third-party marketing sites for the wizard prefill, and many of those serve a 403 / JS
@@ -792,7 +803,7 @@ async def gather_site_facts(
             home_html = rendered
     # Classifying/offer-extracting from a "Client Challenge" stub yields garbage, so abstain.
     if is_challenge_page(home_html):
-        return SiteFacts()
+        return SiteFacts(), []
 
     docs = [FetchedDoc(url=home, html=home_html)]
     for url in _select_key_pages(home, home_html, limit=max(0, max_pages - 1)):
@@ -804,7 +815,7 @@ async def gather_site_facts(
             docs.append(FetchedDoc(url=url, html=html))
 
     try:
-        return extract_facts(docs, domain=domain)
+        return extract_facts(docs, domain=domain), docs
     except Exception as exc:  # extraction must never break intake
         log.warning("site_facts_extract_failed", domain=domain, error=str(exc))
-        return SiteFacts()
+        return SiteFacts(), docs

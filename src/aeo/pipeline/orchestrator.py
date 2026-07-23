@@ -589,6 +589,12 @@ class Orchestrator:
             "source": discovery.source,
             "discovered": len(scored),
             "selected": len(selected),
+            # v5: the top of the prioritized ranking, so callers (the free overview's
+            # pack builder) can group pages without re-running discovery. Bounded; the
+            # full ranking only ever persists on real runs (persist_ranking). The homepage
+            # is force-included even when it ranks past the slice — the pack builder's
+            # "homepage always in Pack 1" rule needs the entry to be present to apply.
+            "ranking": _ranking_slice(scored, limit=60),
             "topic": topic,
             "engine_target": engine_target,
             "profile": profile.to_dict() if profile else None,
@@ -744,6 +750,27 @@ class Orchestrator:
 
         pairs = await asyncio.gather(*[_one(u) for u in urls])
         return {key: data for key, data in pairs if data is not None}
+
+
+def _ranking_slice(scored: list, limit: int = 60) -> list[dict[str, Any]]:
+    """The top-``limit`` of the prioritized ranking as plain dicts, with the homepage
+    always present (appended if it ranked past the cut) so downstream pack construction
+    can honor the 'homepage in Pack 1' rule (v5 CH-03)."""
+    top = list(scored[:limit])
+    if not any(s.page_type == "homepage" for s in top):
+        home = next((s for s in scored if s.page_type == "homepage"), None)
+        if home is not None:
+            top.append(home)
+    return [
+        {
+            "url": s.url,
+            "page_type": s.page_type,
+            "final_score": s.final_score,
+            "rank": s.rank,
+            "selected": s.selected,
+        }
+        for s in top
+    ]
 
 
 def _owner_ids(target: Target) -> tuple[int | None, int | None]:
