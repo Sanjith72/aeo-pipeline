@@ -15,6 +15,7 @@ import type { OverviewResponse, SkillKey, SkillScore } from "@/lib/types";
 import { SheetTag } from "@/components/chrome";
 import { Reveal } from "@/components/motion/primitives";
 import { ArrowRight } from "@/components/ui/icons";
+import { PackCard } from "@/components/PackCard";
 
 const SKILL_META: { key: SkillKey; label: string; blurb: string }[] = [
   { key: "messaging", label: "Messaging", blurb: "Is it clear what you do, for whom, and why it matters?" },
@@ -42,15 +43,6 @@ const LOADING_STAGES = [
   "Grouping pages into packs",
   "Checking what's missing",
 ] as const;
-
-function pathOf(url: string): string {
-  try {
-    const u = new URL(url);
-    return u.pathname === "/" ? u.hostname : u.pathname;
-  } catch {
-    return url;
-  }
-}
 
 /** Length-encoded 0-100 meter in house monochrome (track white/10, fill accent). */
 function Meter({ value }: { value: number }) {
@@ -324,27 +316,7 @@ export function OverviewView() {
                 </p>
                 <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-4">
                   {data.packs.map((pack) => (
-                    <div key={pack.pack_index} className={`card flex h-full flex-col gap-3 p-5 ${pack.locked ? "opacity-70" : ""}`}>
-                      <div className="flex items-baseline justify-between gap-3">
-                        <h3 className="text-[15px] font-semibold text-ink">
-                          <span className="label-mono mr-2 !text-[10px] text-ink-300">
-                            Pack {String(pack.pack_index).padStart(2, "0")}
-                          </span>
-                          {pack.title}
-                        </h3>
-                        {pack.locked && <span className="label-mono !text-[10px] text-ink-300">Locked</span>}
-                      </div>
-                      <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
-                        {pack.pages.map((p) => (
-                          <li key={p.url} className="truncate font-mono text-[12px] text-ink-500" title={p.url}>
-                            {pathOf(p.url)}
-                          </li>
-                        ))}
-                      </ul>
-                      {pack.locked && (
-                        <p className="m-0 mt-auto text-[12.5px] text-ink-300">Unlocks after your homepage pack.</p>
-                      )}
-                    </div>
+                    <PackCard key={pack.pack_index} pack={pack} />
                   ))}
                 </div>
               </section>

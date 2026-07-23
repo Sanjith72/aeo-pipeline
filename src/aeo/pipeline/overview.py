@@ -182,12 +182,12 @@ async def build_overview(domain: str, *, max_urls: int | None = None) -> dict[st
             "homepage_unreachable" if not docs else "homepage_scoring_failed"
         )
 
-    packs = []
-    for pack in build_packs(result.get("ranking") or []):
-        d = pack.to_dict()
-        d["locked"] = pack.pack_index > 1  # visual preview; server-side gating lands in P4
-        d["status"] = "preview"
-        packs.append(d)
+    # Anonymous free tier: no grants → decorate_pack unlocks only Pack 1, locks the rest.
+    # Routing through the shared resolver (not an inline pack_index>1) keeps the overview
+    # and the authenticated pack API from ever drifting on the lock rule.
+    from ..entitlements.logic import decorate_pack
+
+    packs = [decorate_pack(pack.to_dict(), grants=[]) for pack in build_packs(result.get("ranking") or [])]
 
     cov = result.get("coverage") or {}
     coverage = {

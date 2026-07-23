@@ -31,9 +31,9 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 | **P6** | UI redesign + friction reductions | CH-10, CH-11c–g, CH-12 | Consolidate strategy/roadmap, journey-to-top, visual rankings, Prerender friction fixes. |
 | **P7** | AI-snapshot visibility metric | CH-14 | Marketable Discovery metric; reuses existing Perplexity check. |
 
-> **Status (2026-07-23): P0 + P1 + P2 implemented.** §9 decisions resolved (see §9); contracts
-> locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0030` applied + Supabase baseline
-> regenerated.
+> **Status (2026-07-23): P0 + P1 + P2 + P3 implemented.** §9 decisions resolved (see §9);
+> contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0030` applied + Supabase
+> baseline regenerated.
 >
 > - **P0/P1** — `POST /api/overview` (free 5-skill homepage overview + pack preview,
 >   per-domain 24h cache, per-IP + global daily caps, SSRF-guarded crawl transport),
@@ -48,6 +48,17 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 >   `skill_scores` persisted on each scored deep-audit page (`storage/repos/skill_scores.py`,
 >   pipeline hook, `AEO__SCORING__SKILL_LLM` toggle). CH-16's metadata-only boundary is the
 >   P1 overview (cheap homepage scan, deep crawl only on the "go deeper" action).
+> - **P3 (CH-03/CH-02b)** — packs persisted on each deep-audit run (`storage/repos/packs.py`
+>   `put_for_run`/`by_run`/`by_domain`; headers in `packs`, membership on
+>   `page_priorities.pack_index`; `run_site` seam after `persist_ranking`, best-effort). New
+>   `GET /api/packs/{run_id}` + a shared `PackCard` rendering both the overview preview and the
+>   persisted list. Entitlements model (`storage/repos/entitlements.py` + the pure
+>   `entitlements/logic.py` resolver): unlock = OR, entitlements authoritative — Pack 1 free,
+>   `all_packs` override, `pack` grant unlocks that index, else progressive (see
+>   `docs/V5_CONTRACTS.md §d`). `POST /api/entitlements/grant` (X-API-Key-gated manual/promo,
+>   payments stubbed). Anonymous tier = Pack 1 unlocked, deeper locked. **Deferred to P4:**
+>   binding grants to an authenticated `user_id` (`get_current_user`) + rejecting
+>   unauthorized pack-detail requests; `completed_pack_indices` stays empty until P5 tickets.
 >
 > Note: the codebase reality differs from some "Current" notes below — the wizard is 4 steps
 > (not 9), and the LLM router lives at `src/aeo/nlp/providers.py` (not `src/aeo/llm/`).

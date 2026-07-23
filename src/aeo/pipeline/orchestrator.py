@@ -176,6 +176,18 @@ class Orchestrator:
 
         run = runs_repo.start(label=label or (dc.label if dc else None) or f"site:{domain}")
         persist_ranking(run.id, scored)
+        # v5 CH-03: group the ranking into bounded, impact-ordered packs and persist them
+        # (headers + page_priorities.pack_index back-fill). MUST run after persist_ranking
+        # (the back-fill UPDATEs the rows it just committed) and before the early return
+        # below, so even a homepage-only run persists its Pack 1. Additive + isolated — a
+        # pack-persist failure logs and is skipped, never aborts the audit.
+        try:
+            from ..storage.repos import packs as packs_repo
+            from .packs import build_packs
+
+            packs_repo.put_for_run(run.id, build_packs(scored))
+        except Exception as exc:
+            log.warning("packs_persist_skipped", run_key=run.run_key, error=str(exc))
         selected = [s.url for s in scored if s.selected]
         log.info(
             "site_discovered", run_key=run.run_key, domain=domain,

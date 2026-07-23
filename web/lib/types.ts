@@ -529,8 +529,15 @@ export interface PackPreview {
   impact_score: number;
   page_count: number;
   pages: PackPage[];
-  locked: boolean; // preview flag in P1; server-enforced entitlement from P4
+  locked: boolean; // entitlement-derived; anonymous = Pack 1 unlocked, rest locked
   status: "preview" | "unlocked" | "crawled" | "scored" | string;
+}
+
+// GET /api/packs/{run_id} — the packs persisted for a deep-audit run (CH-03). Same
+// PackPreview shape as the overview's live preview, so one card renders both.
+export interface PacksResponse {
+  run_id: number;
+  packs: PackPreview[];
 }
 
 // POST /api/overview — the free URL-first entry (CH-09). No auth, cached per domain.

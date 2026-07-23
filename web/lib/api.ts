@@ -17,6 +17,7 @@ import type {
   MilestoneStatus,
   MilestoneVerifyResult,
   OverviewResponse,
+  PacksResponse,
   PlanStateResponse,
   ProfileResponse,
   RecheckStatusResponse,
@@ -168,6 +169,13 @@ export const api = {
     const res = await fetch(`${BASE}/api/site-report/${runId}`, { headers: headers() });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as SiteReportResponse;
+  },
+  /** The impact-ordered packs persisted for a deep-audit run (CH-03). Empty `packs` for
+   *  older/dry-run-only runs — callers fall back to the live overview preview. */
+  async getPacks(runId: number): Promise<PacksResponse> {
+    const res = await fetch(`${BASE}/api/packs/${runId}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as PacksResponse;
   },
 
   // ── implementation milestones (persisted + auto-verified plan) ────────────

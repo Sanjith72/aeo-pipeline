@@ -146,9 +146,23 @@ closes the Supabase Data API).
 }
 ```
 
-Pack 1 is free after login (granted `scope='pack', pack_index=1` at signup, or treated as
-implicit); `all_packs` is the agency/advanced override from CH-02. `source` starts as
+Pack 1 is free after login (implicit in the resolver — `pack_index == 1` is always
+unlocked, so anonymous users with zero entitlement rows still see Pack 1; no signup row
+needed); `all_packs` is the agency/advanced override from CH-02. `source` starts as
 `manual`/`promo` (payments stubbed); a Stripe integration later only adds writers.
+
+**Resolved unlock rule (P3) — the two gates combine as OR, entitlements authoritative**
+(spec CH-02 states progressive unlock unconditionally, so the reconciliation is recorded
+here). A pack is **unlocked** when any of: it is Pack 1; the viewer holds `all_packs`
+(bypasses progression — the override exists to skip the earn-forward work); the viewer
+holds a `pack` grant for that `pack_index` (you paid, you're in — regardless of
+completion); or (free path) the previous pack is completed. The pure resolver is
+`aeo.entitlements.logic.is_pack_locked` / `decorate_pack`; the free overview and the pack
+API both route through it so their lock derivation can't drift. **"Pack completed" is
+empty in P3** (`completed_pack_indices=frozenset()` — progression is inert until the P5
+ticket-verified signal exists); the anonymous overview therefore shows Pack 1 unlocked and
+every deeper pack locked. P4 swaps `grants=[]` for the logged-in user's real grants and
+adds request-rejection; the resolver never changes.
 
 ## Migration rules (repo conventions — enforced)
 

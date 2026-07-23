@@ -15,6 +15,7 @@ import type {
   CompetitorPick,
   DeliverablesJob,
   DeliverablesResponse,
+  PackPreview,
   ProfileResponse,
   SiteProfile,
 } from "@/lib/types";
@@ -23,6 +24,7 @@ import { aeoScore } from "@/lib/score";
 import { DisplayH2, SheetTag } from "@/components/chrome";
 import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
+import { PackCard } from "@/components/PackCard";
 import { GamificationStrip } from "@/components/GamificationStrip";
 import { Combobox } from "@/components/ui/Combobox";
 import { LiquidButton } from "@/components/ui/liquid-glass";
@@ -147,6 +149,9 @@ export function StudioApp() {
   const [personalizeJob, setPersonalizeJob] = useState<DeliverablesJob | null>(null);
   const [auditJob, setAuditJob] = useState<AuditJob | null>(null);
   const [deepProfile, setDeepProfile] = useState<SiteProfile | null>(null);
+  // v5 CH-03: the impact-ordered packs the deep audit persisted (fetched beside the site
+  // report). Best-effort — a run without persisted packs just shows nothing here.
+  const [packs, setPacks] = useState<PackPreview[]>([]);
   // R2-2 re-crawl: when the homepage was crawled recently, default to reusing that data
   // (fast) and let the user opt into a fresh re-crawl that bypasses the skip gate.
   const [forceRecrawl, setForceRecrawl] = useState(false);
@@ -344,6 +349,7 @@ export function StudioApp() {
     setDelivError(null);
     setAuditJob(null);
     setDeepProfile(null);
+    setPacks([]); // clear a prior run's packs so they never leak into this build (incl. no-site)
     setLoading(true);
     try {
       if (noSite) {
@@ -417,6 +423,13 @@ export function StudioApp() {
       } catch {
         /* the site-report fetch is best-effort — the audit summary still shows */
       }
+      // v5 CH-03: pull the packs the audit persisted (impact-ordered, homepage = Pack 1).
+      try {
+        const p = await api.getPacks(runId);
+        setPacks(p.packs);
+      } catch {
+        /* best-effort — a run without persisted packs just renders no pack section */
+      }
     }
     return true;
   }
@@ -435,6 +448,7 @@ export function StudioApp() {
     setDelivError(null); // same clean slate as createPlan — see the note there
     setAuditJob(null);
     setDeepProfile(null);
+    setPacks([]); // clear a prior run's packs before the unattended build
 
     setPrefilling(true);
     setPrefillDone(false);
@@ -692,6 +706,21 @@ export function StudioApp() {
                 Open shareable link →
               </a>
             </div>
+          )}
+          {packs.length > 0 && (
+            <section className="mb-10" aria-labelledby="studio-packs-h">
+              <h3 id="studio-packs-h" className="mb-1 text-[18px] font-semibold tracking-[-0.01em] text-ink">
+                Your work, grouped into packs
+              </h3>
+              <p className="mb-4 max-w-[64ch] text-[13.5px] leading-[1.6] text-ink-300">
+                Ordered by expected impact — your homepage pack comes first.
+              </p>
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-4">
+                {packs.map((pack) => (
+                  <PackCard key={pack.pack_index} pack={pack} />
+                ))}
+              </div>
+            </section>
           )}
           <ResultsView
             // Derive the display name the same way briefFromForm / the server do, so an

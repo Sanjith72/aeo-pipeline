@@ -23,9 +23,10 @@ import json
 import socket
 import time
 from contextlib import asynccontextmanager
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -342,6 +343,20 @@ class EventRequest(BaseModel):
     client_id: int | None = None
     url: str | None = None
     metadata: dict[str, Any] = {}
+
+
+class GrantRequest(BaseModel):
+    """Manual/promo entitlement grant (v5 CH-02b; payments stubbed). ``user_id`` is
+    supplied explicitly — there is no logged-in user until P4. Admin-only in effect: it
+    inherits the global X-API-Key guard. ``user_id``/``expires_at`` are typed so malformed
+    values 422 at validation instead of 500-ing on the DB cast (UUID / TIMESTAMPTZ columns)."""
+
+    user_id: UUID
+    domain: str
+    scope: Literal["free_overview", "pack", "all_packs", "tickets"]
+    pack_index: int | None = None
+    source: str = "manual"
+    expires_at: datetime | None = None
 
 
 class OverrideRequest(BaseModel):
@@ -918,6 +933,20 @@ def site_report(run_id: int) -> dict[str, Any]:
     return dict(row)
 
 
+@app.get("/api/packs/{run_id}")
+def get_packs(run_id: int) -> dict[str, Any]:
+    """The impact-ordered packs persisted for a run (v5 CH-03), each with its
+    entitlement-derived ``locked`` flag. Empty ``packs`` (200, not 404) for older or
+    dry-run-only runs that never persisted packs — the UI falls back to the live overview
+    preview. In P3 the viewer is anonymous (``grants=[]`` → Pack 1 unlocked, deeper packs
+    locked); P4 swaps in the logged-in user's real grants."""
+    from ..entitlements.logic import decorate_pack
+    from ..storage.repos import packs as packs_repo
+
+    rows = packs_repo.by_run(run_id)
+    return {"run_id": run_id, "packs": [decorate_pack(r, grants=[]) for r in rows]}
+
+
 @app.post("/api/audit")
 def start_audit(req: AuditRequest) -> dict[str, Any]:
     """Start a deep audit (full crawl → score → analyze → site report) on a dedicated
@@ -1338,6 +1367,40 @@ def shared_plan(token: str) -> dict[str, Any]:
     dash = milestones_repo.get_dashboard(client["id"])
     attach_dev_briefs(dash, origin=client["domain"], cms_type=client.get("cms_type"))
     return {"business_name": client["name"], "domain": client["domain"], **dash}
+
+
+@app.post("/api/entitlements/grant")
+def grant_entitlement(req: GrantRequest) -> dict[str, Any]:
+    """Manually grant a pack entitlement (v5 CH-02b stub — no payment provider yet).
+    Upserts the app_users row the FK requires, then the entitlement. X-API-Key gated
+    (admin-only in effect). ``scope='pack'`` requires ``pack_index``."""
+    from ..reference.domain_config import normalize_domain
+    from ..storage.repos import entitlements as entitlements_repo
+
+    if req.scope == "pack" and req.pack_index is None:
+        raise HTTPException(status_code=422, detail="scope='pack' requires pack_index")
+    # Canonicalize the domain the SAME way the overview does (its `canon`), so grant-time
+    # and future check-time (P4) key agree.
+    domain = normalize_domain(req.domain) or req.domain.strip().lower()
+    try:
+        row = entitlements_repo.grant(
+            str(req.user_id), domain, scope=req.scope,
+            pack_index=req.pack_index, source=req.source, expires_at=req.expires_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"granted": True, "entitlement": row}
+
+
+@app.get("/api/entitlements")
+def list_entitlements(user_id: UUID, domain: str) -> dict[str, Any]:
+    """A user's currently-valid entitlements for a domain (debug/admin). X-API-Key gated.
+    ``domain`` is canonicalized to match how grants are stored."""
+    from ..reference.domain_config import normalize_domain
+    from ..storage.repos import entitlements as entitlements_repo
+
+    canon = normalize_domain(domain) or domain.strip().lower()
+    return {"entitlements": entitlements_repo.list_for_user_domain(str(user_id), canon)}
 
 
 @app.get("/api/metrics")
