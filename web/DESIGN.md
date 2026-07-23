@@ -32,15 +32,21 @@ cards/actions/buttons, a pulse on the running audit. All CSS-only; fully disable
 `prefers-reduced-motion`.
 
 ## Components (utility classes in `globals.css`)
-`.card`, `.input`, `.field-label`, `.label-mono`, `.btn` + `.btn-primary` (ink) / `.btn-accent`
-(cobalt) / `.btn-ghost` (hairline), `.blueprint-grid` (+ `-fade` mask). No inline `<style>` blocks,
-no dead styles.
+`.card`, `.input`, `.field-label`, `.label-mono`, `.chip`, `.btn` + `.btn-primary` (ink) /
+`.btn-accent` (white signal CTA — carries dark text) / `.btn-ghost` (hairline), `.blueprint-grid`
+(+ `-fade` mask), `.grain`, `.glass`, `.word-accent`, `.step-in`/`.panel-in`, `.skeleton`. Section
+headers use the `SheetTag no="0N"` kicker + `DisplayH2` (rising-word display headline) from
+`components/chrome.tsx`; motion via the `components/motion/primitives` set (`Reveal`/`Stagger`/`Item`;
+import `m`, never raw `motion`). No inline `<style>` blocks, no dead styles.
 
 ## Layout
-Sticky translucent top bar → **hero** (blueprint grid, balanced headline, value prop, stat strip) →
-**workspace** (9-step wizard: sticky stepper rail that becomes a horizontal scroller on mobile +
-refined step cards) → **trust band** (three honest credibility cards — deterministic / standards /
-private; no fabricated logos or testimonials) → footer.
+Route split: **`/`** = marketing (server component that owns the SoftwareApplication + FAQPage
+JSON-LD) → sticky translucent top bar → **hero** (WebGL flythrough + single URL field, one CTA) →
+**report preview** (static sample result) → **what you get** (the 5 skills) → **how it works**
+(4 concrete steps) → **who it's for** (three audience-framed credibility cards; no fabricated logos
+or testimonials) → **FAQ** → footer. **`/overview`** = the free URL-first 5-skill overview.
+**`/studio`** = the product: a 4-step wizard → tabbed results (Overview + one consolidated "Your
+plan" section with the journey/progress visual at the top). **`/plan/<id>`** = a resumable saved plan.
 
 ## Accessibility
 High-contrast ink-on-paper; one consistent `:focus-visible` ring; semantic `h1→h3` order;

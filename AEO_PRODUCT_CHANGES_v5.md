@@ -31,9 +31,9 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 | **P6** | UI redesign + friction reductions | CH-10, CH-11c–g, CH-12 | Consolidate strategy/roadmap, journey-to-top, visual rankings, Prerender friction fixes. |
 | **P7** | AI-snapshot visibility metric | CH-14 | Marketable Discovery metric; reuses existing Perplexity check. |
 
-> **Status (2026-07-23): P0 + P1 + P2 + P3 + P4 + P5 implemented.** §9 decisions resolved
-> (see §9); contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0032` applied +
-> Supabase baseline regenerated.
+> **Status: P0 + P1 + P2 + P3 + P4 + P5 + P6 implemented.** §9 decisions resolved (see §9);
+> contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0032` applied + Supabase
+> baseline regenerated. Only **P7** (CH-14 AI-snapshot metric) remains.
 >
 > - **P0/P1** — `POST /api/overview` (free 5-skill homepage overview + pack preview,
 >   per-domain 24h cache, per-IP + global daily caps, SSRF-guarded crawl transport),
@@ -85,6 +85,19 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 >   `closed_pending_verify` status value didn't fit `VARCHAR(20)`). Deferred to a later slice:
 >   per-user `owner_user_id` enforcement (stamped only) and scoping v5 clients out of agency
 >   views.
+> - **P6 (CH-10/CH-11c–g/CH-12)** — landing friction fixes (all additive in
+>   `web/components/chrome.tsx` + `web/app/page.tsx`): a static **report preview** near the
+>   hero (CH-11c), the **"what you get" 5-skills strip** (CH-11d), the **4-step how-it-works**
+>   (CH-11e, replacing the generic 3 cards), the **audience-framed trust band** (CH-11g —
+>   founders of $5–30M B2B / in-house marketers / agencies), gamification verified absent
+>   from the landing (CH-11f). Results consolidation (CH-10, `web/components/results.tsx`):
+>   the journey/progress visual **hoisted to the top** (`JourneyStrip`), Roadmap+Strategy
+>   collapsed into **one "Your plan" tab** (`planFacet` fixed to strategy; the always-mounted
+>   `PlanPanel`/single tracker untouched), and a **section-by-section exists/needs-work/missing
+>   + ranked fix** rubric (`SectionRubric`). `DESIGN.md` corrected (white accent, 4-step
+>   wizard, route split). Verified: `next build` + 52 lib tests, browser screenshot pass of
+>   the landing (all sections render, no console errors, JSON-LD intact), and a focused review
+>   confirming the fragile plan-panel/tracker machinery is unbroken.
 >
 > Note: the codebase reality differs from some "Current" notes below — the wizard is 4 steps
 > (not 9), and the LLM router lives at `src/aeo/nlp/providers.py` (not `src/aeo/llm/`).

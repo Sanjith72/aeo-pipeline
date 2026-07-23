@@ -196,22 +196,141 @@ function AccountSlot() {
   );
 }
 
+// The canonical five outcome skills, shared by the landing preview + "what you get" strip
+// (mirrors OverviewView.SKILL_META so the marketing copy and the real product agree).
+const SKILLS: { label: string; blurb: string }[] = [
+  { label: "Messaging", blurb: "Is it instantly clear what you do, who it’s for, and why it matters?" },
+  { label: "Conversion", blurb: "Is there an obvious next step for a ready buyer — and a path for the undecided?" },
+  { label: "Discovery & Visibility", blurb: "Can people — and AI answer engines — find and read this page?" },
+  { label: "Proof & Trust", blurb: "Do you show evidence a stranger would actually believe?" },
+  { label: "Structure & UX", blurb: "Does the page read in clean, scannable chunks?" },
+];
+
+// A static sample "report" for the landing preview (CH-11c). Deliberately hardcoded — the
+// hero must never call the API. Scores/fixes are plausible illustrations, not a real audit.
+const SAMPLE = {
+  overall: 62,
+  scores: [78, 54, 44, 40, 71], // one per SKILLS entry, in order
+  fixes: [
+    "Rewrite the H1 to say what you do and who it’s for, in plain words.",
+    "Add one clear primary call-to-action a ready buyer can act on.",
+    "Add a short FAQ: 3–5 real customer questions, each answered in 2–3 sentences.",
+  ],
+};
+
+/** Length-encoded 0–100 meter in house monochrome (track white/10, fill accent) — the same
+ *  mark the real overview uses; carries role/aria so state is never color-only. */
+function Meter({ value, label }: { value: number; label: string }) {
+  return (
+    <div
+      className="h-1.5 w-full overflow-hidden rounded-full bg-white/10"
+      role="img"
+      aria-label={`${label}: ${value} out of 100`}
+    >
+      <div className="h-full rounded-full bg-accent" style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
+    </div>
+  );
+}
+
+// CH-11c — a real result PREVIEW near the hero, so a first-time visitor sees the deliverable
+// (a scored report + ranked fixes) before committing. Static; no API call, no image.
+export function ReportPreview() {
+  return (
+    <section className="relative" style={{ padding: "clamp(70px, 10vh, 120px) 0 clamp(40px, 6vh, 70px)" }}>
+      <div className="mx-auto max-w-[1240px]" style={{ padding: "0 clamp(24px, 5vw, 64px)" }}>
+        <Reveal>
+          <SheetTag no="02">Your report</SheetTag>
+        </Reveal>
+        <DisplayH2 lead="A real plan, not a" accent="pitch" trail="." className="mb-[clamp(30px,5vh,48px)] mt-[26px]" />
+        <Reveal>
+          <div className="card mx-auto max-w-[720px] p-6 sm:p-8">
+            <div className="mb-6 flex items-baseline justify-between gap-4">
+              <div>
+                <span className="label-mono !text-[10px] text-ink-300">Overall</span>
+                <div className="font-display text-[44px] font-semibold leading-none text-accent">{SAMPLE.overall}</div>
+              </div>
+              <span className="label-mono !text-[10px] text-ink-300">sample report · yoursite.com</span>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {SKILLS.map((s, i) => (
+                <div key={s.label} className="flex flex-col gap-1.5">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-[13px] font-medium text-ink">{s.label}</span>
+                    <span className="font-mono text-[12px] text-ink-500">{SAMPLE.scores[i]}</span>
+                  </div>
+                  <Meter value={SAMPLE.scores[i]} label={s.label} />
+                </div>
+              ))}
+            </div>
+            <h3 className="mb-2 mt-6 text-[13px] font-semibold text-ink">Fix these first</h3>
+            <ol className="m-0 flex list-none flex-col gap-2 p-0">
+              {SAMPLE.fixes.map((fix, i) => (
+                <li key={i} className="flex items-start gap-3">
+                  <span className="font-display text-[14px] font-semibold text-accent">{String(i + 1).padStart(2, "0")}</span>
+                  <span className="text-[13.5px] leading-[1.5] text-ink-500">{fix}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        </Reveal>
+        <div className="mt-7 text-center">
+          <Link href="/studio" className="btn-primary group inline-flex">
+            Get your real report
+            <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" width={13} height={13} />
+          </Link>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// CH-11d — the concrete "what you get": the five skills we score, each with a one-line
+// plain-English promise. Sits between the preview and how-it-works.
+export function WhatYouGet() {
+  return (
+    <section className="relative" style={{ padding: "clamp(60px, 8vh, 100px) 0 clamp(40px, 6vh, 70px)" }}>
+      <div className="mx-auto max-w-[1240px]" style={{ padding: "0 clamp(24px, 5vw, 64px)" }}>
+        <Reveal className="mb-[clamp(30px,5vh,48px)]">
+          <SheetTag no="03">What you get</SheetTag>
+        </Reveal>
+        <Stagger className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))] gap-[18px]" stagger={0.1}>
+          {SKILLS.map((s) => (
+            <Item key={s.label} className="h-full">
+              <div className="h-full rounded-[18px] border border-white/[0.09] bg-white/[0.022] px-6 pb-7 pt-6">
+                <h3 className="mb-2 text-[16px] font-semibold tracking-[-0.01em] text-accent">{s.label}</h3>
+                <p className="m-0 text-[14px] leading-[1.6] text-ink-500">{s.blurb}</p>
+              </div>
+            </Item>
+          ))}
+        </Stagger>
+      </div>
+    </section>
+  );
+}
+
 export function HowItWorks() {
+  // CH-11e — the concrete four steps of the actual product (paste URL → overview → pack
+  // → fix & re-verify), replacing the old generic "five questions" framing.
   const steps: [string, string, string][] = [
     [
       "01",
-      "Tell us about your business",
-      "Five quick questions — your name, your goals, your competitors. We even suggest the competitors for you.",
+      "Enter your website",
+      "One field, no signup. Paste your address and we get to work — nothing else to fill in.",
     ],
     [
       "02",
-      "We do the analysis",
-      "We look at how AI assistants see your business today and where customers are slipping away to competitors.",
+      "We see your site the way AI does",
+      "How answer engines like ChatGPT and Perplexity read and rank your business today.",
     ],
     [
       "03",
-      "You get a plan that works",
-      "A prioritized to-do list in plain English, plus ready-made files your web person can use the same day.",
+      "Get your scorecard + ranked fixes",
+      "Five skills scored 0–100, with the highest-impact fixes surfaced first — not a 500-item dump.",
+    ],
+    [
+      "04",
+      "Hand it off and ship",
+      "A plain-English checklist plus ready-made files your web person can use the same day — then re-check to prove the lift.",
     ],
   ];
   return (
@@ -224,10 +343,10 @@ export function HowItWorks() {
       />
       <div className="relative mx-auto max-w-[1240px]" style={{ padding: "0 clamp(24px, 5vw, 64px)" }}>
         <Reveal>
-          <SheetTag no="02">How it works</SheetTag>
+          <SheetTag no="04">How it works</SheetTag>
         </Reveal>
         <DisplayH2
-          lead="Three steps between you and being AI’s"
+          lead="Four steps between you and being AI’s"
           accent="recommendation"
           className="mb-[clamp(44px,7vh,72px)] mt-[26px]"
         />
@@ -260,28 +379,30 @@ export function HowItWorks() {
 }
 
 export function TrustBand() {
+  // CH-11g — the band names WHO it's for (founders of $5–30M sales-led B2B, in-house
+  // marketers, agencies) instead of abstract properties. Honesty kept: no fabricated logos.
   const items = [
     {
       Icon: ChartUp,
-      title: "Real analysis, not guesswork",
-      body: "Your plan is built from how AI assistants actually choose what to recommend — every step is there for a reason.",
-    },
-    {
-      Icon: ShieldCheck,
-      title: "Your information stays yours",
-      body: "Your business details are used only to build your plan — never shared, sold, or sent anywhere else.",
+      title: "Founders of $5–30M B2B",
+      body: "You don’t have time to decode AI search. Get the plan and the ranked fixes, not the theory — and proof each one moved the needle.",
     },
     {
       Icon: DocLines,
-      title: "Results you can act on today",
-      body: "No reports that sit in a drawer. You get a checklist, page outlines, and files your team can use immediately.",
+      title: "In-house marketers",
+      body: "A prioritized, defensible backlog you can take straight to your team — with a before/after score behind every item.",
+    },
+    {
+      Icon: ShieldCheck,
+      title: "Agencies",
+      body: "Client-ready page outlines and files you can white-label and ship. Your clients’ details stay theirs — never shared or sold.",
     },
   ];
   return (
     <section className="relative" style={{ padding: "clamp(80px, 11vh, 130px) 0 clamp(50px, 7vh, 90px)" }}>
       <div className="mx-auto max-w-[1240px]" style={{ padding: "0 clamp(24px, 5vw, 64px)" }}>
         <Reveal className="mb-[clamp(34px,5vh,50px)]">
-          <SheetTag no="04">Why AEO Studio</SheetTag>
+          <SheetTag no="05">Who it’s for</SheetTag>
         </Reveal>
         <Stagger className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-[18px]" stagger={0.13}>
           {items.map(({ Icon, title, body }) => (
@@ -316,7 +437,7 @@ export function Faq() {
         style={{ padding: "0 clamp(24px, 5vw, 64px)" }}
       >
         <Reveal className="md:sticky md:top-28 md:self-start">
-          <SheetTag no="05">Common questions</SheetTag>
+          <SheetTag no="06">Common questions</SheetTag>
           <h2
             className="mt-[26px] font-semibold text-ink"
             style={{ fontSize: "clamp(2rem, 3.8vw, 3.2rem)", lineHeight: 1.08, letterSpacing: "-0.035em" }}
