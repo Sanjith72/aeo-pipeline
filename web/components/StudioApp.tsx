@@ -15,6 +15,7 @@ import type {
   CompetitorPick,
   DeliverablesJob,
   DeliverablesResponse,
+  PackPreview,
   ProfileResponse,
   SiteProfile,
 } from "@/lib/types";
@@ -23,6 +24,10 @@ import { aeoScore } from "@/lib/score";
 import { DisplayH2, SheetTag } from "@/components/chrome";
 import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
+import { PackCard } from "@/components/PackCard";
+import { TicketBoard } from "@/components/TicketBoard";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { UnlockModal } from "@/components/auth/UnlockModal";
 import { GamificationStrip } from "@/components/GamificationStrip";
 import { Combobox } from "@/components/ui/Combobox";
 import { LiquidButton } from "@/components/ui/liquid-glass";
@@ -147,6 +152,13 @@ export function StudioApp() {
   const [personalizeJob, setPersonalizeJob] = useState<DeliverablesJob | null>(null);
   const [auditJob, setAuditJob] = useState<AuditJob | null>(null);
   const [deepProfile, setDeepProfile] = useState<SiteProfile | null>(null);
+  // v5 CH-03: the impact-ordered packs the deep audit persisted (fetched beside the site
+  // report). Best-effort — a run without persisted packs just shows nothing here.
+  const [packs, setPacks] = useState<PackPreview[]>([]);
+  const [runId, setRunId] = useState<number | null>(null);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const [openPack, setOpenPack] = useState<number | null>(null);
+  const { authEnabled, user, openAuth } = useAuth();
   // R2-2 re-crawl: when the homepage was crawled recently, default to reusing that data
   // (fast) and let the user opt into a fresh re-crawl that bypasses the skip gate.
   const [forceRecrawl, setForceRecrawl] = useState(false);
@@ -216,6 +228,16 @@ export function StudioApp() {
   useEffect(() => {
     api.trackVisit();
   }, []);
+
+  // v5 CH-02a: when the user signs in (or out), re-fetch the current run's packs so the
+  // per-user `locked` flags recompute — an entitled user's deeper packs unlock without a
+  // page reload. Runs only once packs exist for a run.
+  useEffect(() => {
+    if (runId == null) return;
+    void refreshPacks();
+    // refreshPacks is a stable closure over runId; re-run when the signed-in user changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   // moving between steps always shows the top of the new step
   useEffect(() => {
@@ -344,6 +366,9 @@ export function StudioApp() {
     setDelivError(null);
     setAuditJob(null);
     setDeepProfile(null);
+    setPacks([]); // clear a prior run's packs so they never leak into this build (incl. no-site)
+    setRunId(null);
+    setOpenPack(null);
     setLoading(true);
     try {
       if (noSite) {
@@ -417,8 +442,35 @@ export function StudioApp() {
       } catch {
         /* the site-report fetch is best-effort — the audit summary still shows */
       }
+      // v5 CH-03: pull the packs the audit persisted (impact-ordered, homepage = Pack 1).
+      try {
+        const p = await api.getPacks(runId);
+        setPacks(p.packs);
+        setRunId(runId);
+      } catch {
+        /* best-effort — a run without persisted packs just renders no pack section */
+      }
     }
     return true;
+  }
+
+  // v5 CH-02a/b: clicking "Unlock" on a locked pack. Anonymous → sign in first; a logged-in
+  // user gets the promo-code dialog. On unlock we re-fetch packs so the locks recompute.
+  function handleUnlock() {
+    if (!user) {
+      openAuth("unlock-pack");
+      return;
+    }
+    setUnlockOpen(true);
+  }
+  async function refreshPacks() {
+    if (runId == null) return;
+    try {
+      const p = await api.getPacks(runId);
+      setPacks(p.packs);
+    } catch {
+      /* best-effort */
+    }
   }
 
   // One-click build from a saved plan's "Build a plan for your site" link. Mirrors the manual
@@ -435,6 +487,9 @@ export function StudioApp() {
     setDelivError(null); // same clean slate as createPlan — see the note there
     setAuditJob(null);
     setDeepProfile(null);
+    setPacks([]); // clear a prior run's packs before the unattended build
+    setRunId(null);
+    setOpenPack(null);
 
     setPrefilling(true);
     setPrefillDone(false);
@@ -606,9 +661,10 @@ export function StudioApp() {
     }
   }
 
+  // v5 CH-01: the URL is the only input that can ever block — a blank name derives from
+  // the domain (briefFromForm here, BriefRequest server-side), so step 1 never gates.
   const nextBlocker: string | null = (() => {
     if (step === 0 && hasSite && !domain.trim()) return "Add your website address, or pick “I don't have a site yet”";
-    if (step === 1 && !name.trim()) return "Add your business name to continue";
     return null;
   })();
 
@@ -692,8 +748,51 @@ export function StudioApp() {
               </a>
             </div>
           )}
+          {packs.length > 0 && (
+            <section className="mb-10" aria-labelledby="studio-packs-h">
+              <h3 id="studio-packs-h" className="mb-1 text-[18px] font-semibold tracking-[-0.01em] text-ink">
+                Your work, grouped into packs
+              </h3>
+              <p className="mb-4 max-w-[64ch] text-[13.5px] leading-[1.6] text-ink-300">
+                Ordered by expected impact — your homepage pack comes first.
+              </p>
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,280px),1fr))] gap-4">
+                {packs.map((pack) => (
+                  <PackCard
+                    key={pack.pack_index}
+                    pack={pack}
+                    ctaMode={authEnabled ? "gated" : "preview"}
+                    onUnlock={handleUnlock}
+                    onOpen={pack.locked ? undefined : () => setOpenPack((cur) => (cur === pack.pack_index ? null : pack.pack_index))}
+                    opened={openPack === pack.pack_index}
+                  />
+                ))}
+              </div>
+              {/* v5 CH-08/CH-15: the ticket board for the opened (unlocked) pack. */}
+              {runId != null && openPack != null && packs.some((p) => p.pack_index === openPack && !p.locked) && (
+                <div className="mt-5 rounded-[18px] border border-white/[0.09] p-5">
+                  <h4 className="mb-3 text-[15px] font-semibold text-ink">
+                    Pack {String(openPack).padStart(2, "0")} — your fixes
+                  </h4>
+                  <TicketBoard runId={runId} packIndex={openPack} />
+                </div>
+              )}
+            </section>
+          )}
+          {unlockOpen && domain.trim() && (
+            <UnlockModal
+              domain={domain.trim()}
+              onUnlocked={() => {
+                setUnlockOpen(false);
+                void refreshPacks();
+              }}
+              onClose={() => setUnlockOpen(false)}
+            />
+          )}
           <ResultsView
-            businessName={name.trim()}
+            // Derive the display name the same way briefFromForm / the server do, so an
+            // empty name never collapses distinct plans onto one shared localStorage key.
+            businessName={name.trim() || deriveName(domain) || "My business"}
             domain={hasSite ? domain.trim() || undefined : undefined}
             profile={profile}
             plan={plan}

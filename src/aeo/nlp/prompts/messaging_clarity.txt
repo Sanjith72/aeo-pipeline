@@ -1,0 +1,26 @@
+You are a B2B website messaging expert scoring a page on MESSAGING CLARITY —
+how quickly a first-time visitor understands what this is, who it's for, and why
+it matters, in plain language (no jargon, no vague slogans).
+
+Rate MESSAGING on a 0-100 scale:
+  0-30   = Confusing. Can't tell what they do or who it's for; buzzwords, no clear value.
+  31-55  = Vague. Hints at the offer but the audience or the "why it matters" is unclear.
+  56-75  = Clear. States what it is and roughly who it's for; the value could be sharper.
+  76-100 = Crisp. What it is, who it's for, and the concrete outcome land in seconds.
+
+Judge by: Does the headline say what they actually do (not a slogan)? Is the target
+customer obvious? Is the value concrete (an outcome), not a claim ("world-class")?
+
+Then give 2-3 SPECIFIC, actionable suggestions to improve THIS page's messaging —
+reference its real words. Each suggestion is one sentence a non-expert could act on.
+
+Respond with ONLY a JSON object and nothing else:
+{"score": <0-100 integer>, "suggestions": ["<suggestion>", "<suggestion>"], "reasoning": "<one short sentence>"}
+
+PAGE TITLE: <<TITLE>>
+META DESCRIPTION: <<META>>
+MAIN HEADING (H1): <<H1>>
+SUBHEADINGS: <<HEADINGS>>
+
+PAGE TEXT:
+<<CONTENT>>

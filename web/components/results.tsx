@@ -296,13 +296,13 @@ export function ResultsView({
   const tabs: { id: TabId; label: string }[] = [
     ...(profile ? [{ id: "overview" as const, label: "Overview" }] : []),
     ...(plan ? [{ id: "blueprint" as const, label: "Your website plan" }] : []),
-    // Roadmap = the gamified quest map, and nothing else. It's the play surface for the
-    // site-backed tracker, so it needs a domain to verify against.
-    ...(profile && domain ? [{ id: "actions" as const, label: "Roadmap" }] : []),
-    // Strategy = the single actionable list (the old Roadmap + Strategy tabs merged):
-    // tracked steps in phase order, automatic site-check, and the developer handoff.
-    ...(profile ? [{ id: "strategy" as const, label: "Strategy" }] : []),
-    // A bare-plan fallback (no profile → no Overview/Strategy tabs) keeps the plan reachable.
+    // v5 CH-10: Roadmap + Strategy are now ONE strategy-driven section ("Your plan") —
+    // the merged, priority-ordered actionable list (tracked steps, automatic site-check,
+    // developer handoff). The old separate gamified-quest "Roadmap" tab is retired here so
+    // the plan reads as one section, not two views of it (the quest map stays in the code
+    // for a later retention slice; leading with the actionable list also honors CH-11f).
+    ...(profile ? [{ id: "strategy" as const, label: "Your plan" }] : []),
+    // Bare-plan fallback (no profile → no Overview/Strategy tabs) keeps the plan reachable.
     ...(profile ? [] : [{ id: "kit" as const, label: "Your plan" }]),
   ];
   // Land on the first available tab: Overview when there's a profile, otherwise the first
@@ -328,8 +328,9 @@ export function ResultsView({
   // (plus the no-profile "Your plan" fallback). Mounted once so the plan keeps auto-building
   // on load even while another tab is open, and `visible` lets the subtree defer
   // celebrations and "viewed" analytics until the user can actually see it.
-  const planVisible = tab === "actions" || tab === "strategy" || tab === "kit";
-  const planFacet: TrackerFacet = tab === "actions" ? "map" : "strategy";
+  const planVisible = tab === "strategy" || tab === "kit";
+  // v5 CH-10: one consolidated plan section — always the strategy-driven actionable list.
+  const planFacet: TrackerFacet = "strategy";
   const planPanel = (
     <PlanPanel
       visible={planVisible}
@@ -342,7 +343,14 @@ export function ResultsView({
       cmsType={cmsType}
       profileActions={profile?.actions ?? []}
       error={delivError}
-      storageKey={resume ? `aeo-plan:resumed:${resume.planStateId}` : `aeo-plan:${businessName.toLowerCase()}`}
+      // Salt the local key with the domain so two plans that share a (possibly derived)
+      // business name — e.g. a consultant's back-to-back no-site briefs — never load each
+      // other's task checkoffs from one shared "aeo-plan:" key.
+      storageKey={
+        resume
+          ? `aeo-plan:resumed:${resume.planStateId}`
+          : `aeo-plan:${(domain?.trim() || businessName || "default").toLowerCase()}`
+      }
       resume={resume}
       onGenerate={onGenerateDeliverables}
       onDownloadZip={onDownloadZip}
@@ -380,6 +388,10 @@ export function ResultsView({
         </button>
       </div>
 
+      {/* v5 CH-10: the buyer-journey / progress visual sits at the TOP of the whole results
+          view (above the tabs), so the first thing the user sees is where they stand. */}
+      {profile && <JourneyStrip profile={profile} className="mb-6" />}
+
       <div role="tablist" aria-label="Plan sections" className="sticky top-0 z-20 mb-6 flex gap-1 overflow-x-auto border-b border-ink/[0.08] bg-paper/90 pb-px backdrop-blur supports-[backdrop-filter]:bg-paper/75">
         {tabs.map((t) => (
           <button
@@ -414,7 +426,7 @@ export function ResultsView({
             <>
               <ScoreRing profile={profile} className="mb-6" />
               <FixImpact data={recheck} />
-              <PlanTabsPointer hasRoadmap={!!domain} onOpen={setTab} />
+              <OpenPlanPointer onOpen={() => setTab("strategy")} />
               <OverviewPanel profile={profile} auditJob={auditJob} />
             </>
           )}
@@ -427,29 +439,104 @@ export function ResultsView({
   );
 }
 
-// The Overview's pointer to where the plan now lives: the gamified Roadmap (journey view)
-// and the Strategy checklist (actionable list) — the tracker itself no longer renders here.
-function PlanTabsPointer({ hasRoadmap, onOpen }: { hasRoadmap: boolean; onOpen: (t: TabId) => void }) {
+// v5 CH-10: the Overview's pointer to the single consolidated plan section (Roadmap +
+// Strategy are now one "Your plan" tab).
+function OpenPlanPointer({ onOpen }: { onOpen: () => void }) {
   return (
     <div className="card mb-6 flex flex-wrap items-center justify-between gap-3 p-5">
       <div className="min-w-0">
         <h3 className="text-base font-semibold">Your step-by-step plan</h3>
         <p className="mt-0.5 text-sm text-ink-500">
-          {hasRoadmap
-            ? "Play it as a quest on the Roadmap, or run down the full checklist on Strategy — same plan, two views."
-            : "Run down the full checklist on the Strategy tab."}
+          The prioritized checklist, an automatic site-check, and files to hand off — all in one place.
         </p>
       </div>
-      <div className="flex shrink-0 flex-wrap gap-2">
-        {hasRoadmap && (
-          <button type="button" onClick={() => onOpen("actions")} className="btn-primary !py-2 text-[13px]">
-            Open Roadmap
-          </button>
-        )}
-        <button type="button" onClick={() => onOpen("strategy")} className="btn-ghost !py-2 text-[13px]">
-          Open Strategy
-        </button>
+      <button type="button" onClick={onOpen} className="btn-primary shrink-0 !py-2 text-[13px]">
+        Open your plan
+      </button>
+    </div>
+  );
+}
+
+// v5 CH-10: the buyer-journey / progress strip — hoisted to the TOP of the results view.
+// Presentational only (no hooks that write to the DB); safe on the resume/no-domain path.
+function JourneyStrip({ profile, className = "" }: { profile: SiteProfile; className?: string }) {
+  const stages = profile.journey?.stages ?? [];
+  if (stages.length === 0) return null;
+  const covered = stages.filter((s) => s.covered).length;
+  const pct = Math.round((covered / stages.length) * 100);
+  return (
+    <div className={`card p-5 ${className}`}>
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <span className="label-mono">How customers find &amp; choose you</span>
+        <span className="text-[13px] text-ink-500">
+          {covered} of {stages.length} stages covered · {pct}%
+        </span>
       </div>
+      <div className="flex flex-wrap gap-2">
+        {stages.map((s) => (
+          <span
+            key={s.stage}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] capitalize ${
+              s.covered
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                : "border-ink/10 bg-paper-200/70 text-ink-300"
+            }`}
+          >
+            {s.covered ? <Check width={12} height={12} /> : <span className="h-1.5 w-1.5 rounded-full bg-ink/20" />}
+            {humanizeToken(s.stage)}
+            <span className="sr-only">{s.covered ? " — covered" : " — missing"}</span>
+          </span>
+        ))}
+      </div>
+      <p className="mt-2 text-xs text-ink-300">
+        Green stages are covered by your site today; grey ones are where customers lose track of you.
+      </p>
+    </div>
+  );
+}
+
+// v5 CH-10: section-level exists / needs-work / missing per buyer-journey stage, each with
+// its priority-ranked fix (from profile.actions, whose priority is ASCENDING = most
+// important first). Presentational; renders nothing when there are no stages.
+function SectionRubric({ profile }: { profile: SiteProfile }) {
+  const stages = profile.journey?.stages ?? [];
+  if (stages.length === 0) return null;
+  const actions = [...(profile.actions ?? [])].sort((a, b) => a.priority - b.priority);
+
+  function statusFor(s: { covered: boolean; present_count: number }): {
+    key: string; label: string; cls: string;
+  } {
+    if (s.covered) return { key: "exists", label: "In place", cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" };
+    if (s.present_count > 0) return { key: "wrong", label: "Needs work", cls: "border-rose-500/30 bg-rose-500/10 text-rose-300" };
+    return { key: "missing", label: "Missing", cls: "border-ink/10 bg-paper-200/70 text-ink-300" };
+  }
+  // A stage's fix = the highest-priority action that references it (by category / related slugs).
+  function fixFor(stage: string): string | null {
+    const tok = stage.toLowerCase();
+    const hit = actions.find(
+      (a) =>
+        a.category?.toLowerCase().includes(tok) ||
+        (a.related_slugs ?? []).some((sl) => sl.toLowerCase().includes(tok)) ||
+        a.title.toLowerCase().includes(tok),
+    );
+    return hit ? hit.title : null;
+  }
+  return (
+    <div className="mt-7">
+      <span className="label-mono">Section-by-section</span>
+      <ul className="m-0 mt-3 flex list-none flex-col gap-2 p-0">
+        {stages.map((s) => {
+          const st = statusFor(s);
+          const fix = st.key === "exists" ? null : fixFor(s.stage);
+          return (
+            <li key={s.stage} className="flex flex-wrap items-center gap-3 border-t border-ink/[0.06] pt-2">
+              <span className="min-w-[120px] text-[13.5px] font-medium capitalize text-ink">{humanizeToken(s.stage)}</span>
+              <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] ${st.cls}`}>{st.label}</span>
+              {fix && <span className="flex-1 text-[13px] text-ink-500">{fix}</span>}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -794,31 +881,10 @@ function OverviewPanel({ profile, auditJob }: { profile: SiteProfile; auditJob: 
         />
       </div>
 
-      {profile.journey.stages.length > 0 && (
-        <div className="mt-7">
-          <span className="label-mono">How customers find &amp; choose you</span>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {profile.journey.stages.map((s, i) => (
-              <span
-                key={s.stage}
-                className={`step-in inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px] capitalize ${
-                  s.covered
-                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                    : "border-ink/10 bg-paper-200/70 text-ink-300"
-                }`}
-                style={{ animationDelay: `${i * 60}ms` }}
-              >
-                {s.covered ? <Check width={12} height={12} /> : <span className="h-1.5 w-1.5 rounded-full bg-ink/20" />}
-                {humanizeToken(s.stage)}
-                <span className="sr-only">{s.covered ? " — covered" : " — missing"}</span>
-              </span>
-            ))}
-          </div>
-          <p className="mt-2 text-xs text-ink-300">
-            Green stages are covered by your site today; grey ones are where customers lose track of you.
-          </p>
-        </div>
-      )}
+      {/* The journey chips now live in the hoisted JourneyStrip at the top of the results
+          view (CH-10); here we surface the section-by-section exists/needs-work/missing +
+          the ranked fix per section. */}
+      <SectionRubric profile={profile} />
 
       {auditJob?.status === "succeeded" && auditJob.result?.run?.run_id != null && (
         <p className="mt-6 border-t border-ink/[0.06] pt-4 text-xs text-ink-300">

@@ -1,0 +1,26 @@
+You are a B2B conversion expert scoring a page on its CONVERSION PATH — whether a
+visitor has an obvious next step matched to their stage, a mid-funnel path for the
+undecided, handled objections, and a logical flow toward action.
+
+Rate CONVERSION on a 0-100 scale:
+  0-30   = Dead end. No clear call-to-action, or nothing but "buy now" with no trust built.
+  31-55  = Weak. A CTA exists but the path is unclear or there's no help for undecided buyers.
+  56-75  = Working. Clear primary action plus some mid-funnel support (proof, examples, pricing).
+  76-100 = Strong. One obvious primary CTA, a path for the not-yet-ready, objections addressed.
+
+Judge by: Is there ONE clear primary call-to-action for a ready buyer? Is there a
+softer next step for someone still deciding (case studies, examples, pricing help)?
+Are obvious objections (cost, risk, effort) answered on the page?
+
+Then give 2-3 SPECIFIC, actionable suggestions to improve THIS page's conversion path —
+reference its real content. Each suggestion is one sentence a non-expert could act on.
+
+Respond with ONLY a JSON object and nothing else:
+{"score": <0-100 integer>, "suggestions": ["<suggestion>", "<suggestion>"], "reasoning": "<one short sentence>"}
+
+PAGE TITLE: <<TITLE>>
+MAIN HEADING (H1): <<H1>>
+LINKS ON PAGE (paths): <<LINKS>>
+
+PAGE TEXT:
+<<CONTENT>>

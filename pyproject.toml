@@ -41,6 +41,7 @@ pdf = ["reportlab>=4.0.0"]
 api = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "pyjwt>=2.8",  # v5 CH-07: Supabase-JWT verification (HS256; pure-Python, no crypto extra)
 ]
 dev = [
     "pytest>=8.0.0",
@@ -73,6 +74,11 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 # typer's API uses function calls (typer.Argument/Option) as parameter defaults
 # by design, so B008 (function-call-in-default) is a false positive here.
 "src/aeo/cli.py" = ["B008"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection markers are function calls used as parameter defaults
+# by design (Depends(get_current_user), etc.) — the required idiom, not a B008 bug.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Header"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

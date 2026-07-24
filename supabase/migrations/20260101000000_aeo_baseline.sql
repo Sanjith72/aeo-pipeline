@@ -1,7 +1,7 @@
 -- AEO pipeline — Supabase baseline (GENERATED — do not edit by hand).
 -- Source of truth: src/aeo/storage/migrations/*.sql
 -- Regenerate with: python scripts/export_supabase_baseline.py
--- Includes migrations 0001..0026.
+-- Includes migrations 0001..0032.
 
 -- schema_versions bootstrap (mirrors src/aeo/storage/migrate.py) so the app's own
 -- migration runner recognises everything below as already applied.
@@ -1123,3 +1123,160 @@ BEGIN
     END IF;
 END $$;
 INSERT INTO schema_versions (version, name) VALUES ('0026', 'rls_hardening') ON CONFLICT (version) DO NOTHING;
+
+-- ═══ 0027_skill_scores ══════════════════════════════════════════════
+-- v5 CH-04/CH-13 — the 5-skill derived scoring layer (contract: docs/V5_CONTRACTS.md §a).
+-- Strictly additive: rubric_scores_v2, its 10 tier columns, and RUBRIC_VERSION are
+-- untouched. Skill rows are a derived, separately-versioned view over criterion tiers +
+-- evidence (recomputable), keyed to the same page/run pair. The six score columns are the
+-- queryable summary; `detail` holds the full per-skill payload (suggestions + evidence).
+
+CREATE TABLE IF NOT EXISTS skill_scores (
+    id             BIGSERIAL   PRIMARY KEY,
+    page_id        BIGINT      NOT NULL REFERENCES crawled_pages(id) ON DELETE CASCADE,
+    run_id         INTEGER     NOT NULL REFERENCES crawl_runs(id)    ON DELETE CASCADE,
+    skills_version VARCHAR(10) NOT NULL DEFAULT '1.0',
+
+    messaging_score            SMALLINT NOT NULL CHECK (messaging_score            BETWEEN 0 AND 100),
+    conversion_score           SMALLINT NOT NULL CHECK (conversion_score           BETWEEN 0 AND 100),
+    discovery_visibility_score SMALLINT NOT NULL CHECK (discovery_visibility_score BETWEEN 0 AND 100),
+    proof_trust_score          SMALLINT NOT NULL CHECK (proof_trust_score          BETWEEN 0 AND 100),
+    structure_ux_score         SMALLINT NOT NULL CHECK (structure_ux_score         BETWEEN 0 AND 100),
+    overall_score              SMALLINT NOT NULL CHECK (overall_score              BETWEEN 0 AND 100),
+
+    detail         JSONB       NOT NULL DEFAULT '{}',
+    scored_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE (page_id, run_id, skills_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_scores_run ON skill_scores (run_id);
+
+-- 0026 convention: new tables self-enable RLS (owner bypasses; closes the Data API).
+ALTER TABLE skill_scores ENABLE ROW LEVEL SECURITY;
+INSERT INTO schema_versions (version, name) VALUES ('0027', 'skill_scores') ON CONFLICT (version) DO NOTHING;
+
+-- ═══ 0028_packs ══════════════════════════════════════════════
+-- v5 CH-03/CH-13 — packs: bounded, impact-ordered page groups (contract:
+-- docs/V5_CONTRACTS.md §b). Pack 1 always contains the homepage (rule in
+-- pipeline/packs.py, not emergent from weights); no pack exceeds MAX_PACK_PAGES (=5,
+-- resolved §9.1). Membership rides the existing per-run ranking table
+-- (page_priorities, keyed run_id+url) via pack_index — `selected` semantics unchanged.
+
+CREATE TABLE IF NOT EXISTS packs (
+    id           BIGSERIAL        PRIMARY KEY,
+    run_id       INTEGER          NOT NULL REFERENCES crawl_runs(id) ON DELETE CASCADE,
+    pack_index   INTEGER          NOT NULL,   -- 1 = homepage pack; then descending impact
+    title        VARCHAR(120)     NOT NULL,
+    impact_score DOUBLE PRECISION,
+    page_count   INTEGER          NOT NULL DEFAULT 0,
+    status       VARCHAR(20)      NOT NULL DEFAULT 'preview'
+                     CHECK (status IN ('preview','unlocked','crawled','scored')),
+    created_at   TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    UNIQUE (run_id, pack_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_packs_run ON packs (run_id);
+
+ALTER TABLE page_priorities ADD COLUMN IF NOT EXISTS pack_index INTEGER;
+
+ALTER TABLE packs ENABLE ROW LEVEL SECURITY;
+INSERT INTO schema_versions (version, name) VALUES ('0028', 'packs') ON CONFLICT (version) DO NOTHING;
+
+-- ═══ 0029_ticket_fields ══════════════════════════════════════════════
+-- v5 CH-08/CH-13 — turn milestone_tasks into full tickets (contract:
+-- docs/V5_CONTRACTS.md §c): assignee + target date + the page/skill the ticket targets +
+-- the before/after skill scores (0-100, from skill_scores) the close-triggered re-crawl
+-- proves. Additive, 0024-pattern. The status vocabulary gains 'closed_pending_verify'
+-- (owner says done → verification re-crawl pending); the DROP+ADD pair below is the
+-- idempotent way to widen an inline CHECK.
+
+ALTER TABLE milestone_tasks
+    ADD COLUMN IF NOT EXISTS assignee       VARCHAR(120),
+    ADD COLUMN IF NOT EXISTS target_date    DATE,
+    ADD COLUMN IF NOT EXISTS page_url       TEXT,
+    ADD COLUMN IF NOT EXISTS skill          VARCHAR(24)
+        CHECK (skill IS NULL OR skill IN
+               ('messaging','conversion','discovery_visibility','proof_trust','structure_ux')),
+    ADD COLUMN IF NOT EXISTS baseline_score SMALLINT
+        CHECK (baseline_score IS NULL OR baseline_score BETWEEN 0 AND 100),
+    ADD COLUMN IF NOT EXISTS current_score  SMALLINT
+        CHECK (current_score IS NULL OR current_score BETWEEN 0 AND 100),
+    ADD COLUMN IF NOT EXISTS closed_at      TIMESTAMPTZ;
+
+ALTER TABLE milestone_tasks DROP CONSTRAINT IF EXISTS milestone_tasks_status_check;
+ALTER TABLE milestone_tasks ADD CONSTRAINT milestone_tasks_status_check
+    CHECK (status IN ('pending','in_progress','closed_pending_verify','verified_completed'));
+
+-- The async board's "my open tickets" lookup.
+CREATE INDEX IF NOT EXISTS idx_milestone_tasks_assignee
+    ON milestone_tasks (assignee) WHERE assignee IS NOT NULL;
+INSERT INTO schema_versions (version, name) VALUES ('0029', 'ticket_fields') ON CONFLICT (version) DO NOTHING;
+
+-- ═══ 0030_users_entitlements ══════════════════════════════════════════════
+-- v5 CH-02b/CH-07/CH-13 — the identity spine + entitlements (contract:
+-- docs/V5_CONTRACTS.md §d and "Identity spine"). app_users.id is the Supabase JWT `sub`
+-- claim (UUID); session_id bridges the pre-auth aeo_sid cookie so anonymous work
+-- (plan_states, events, gamification) can be claimed at signup. Entitlement enforcement
+-- is application-level SQL in authenticated routes — the backend connects as table owner
+-- and owners bypass non-FORCE RLS (0026); RLS here only closes the Supabase Data API.
+-- Payments are stubbed by decision (§9.2): grants arrive via source='manual'/'promo'.
+
+CREATE TABLE IF NOT EXISTS app_users (
+    id         UUID        PRIMARY KEY,
+    email      TEXT,
+    session_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_users_session ON app_users (session_id)
+    WHERE session_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS entitlements (
+    id         BIGSERIAL   PRIMARY KEY,
+    user_id    UUID        NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    domain     TEXT        NOT NULL,
+    scope      VARCHAR(24) NOT NULL
+                   CHECK (scope IN ('free_overview','pack','all_packs','tickets')),
+    pack_index INTEGER,    -- NULL unless scope='pack'
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+    source     VARCHAR(24) NOT NULL DEFAULT 'manual',
+
+    -- Idempotent grants: re-granting the same unlock is a no-op upsert target.
+    -- NULLS NOT DISTINCT so two scope='all_packs' rows (pack_index NULL) collide.
+    UNIQUE NULLS NOT DISTINCT (user_id, domain, scope, pack_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entitlements_user_domain ON entitlements (user_id, domain);
+
+ALTER TABLE app_users    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entitlements ENABLE ROW LEVEL SECURITY;
+INSERT INTO schema_versions (version, name) VALUES ('0030', 'users_entitlements') ON CONFLICT (version) DO NOTHING;
+
+-- ═══ 0031_milestones_owner ══════════════════════════════════════════════
+-- v5 P4 identity bridge (CH-07): stamp milestone ownership so P5 can flip per-user
+-- enforcement on without another migration + backfill. Additive ONLY — GET /api/milestones
+-- stays domain-keyed/anonymous in P4 (gating it now would break the shipped dashboard).
+-- implementation_milestones already self-enabled RLS at 0026, so no new ENABLE line here;
+-- the backend connects as table owner and owners bypass non-FORCE RLS (app-level checks).
+
+ALTER TABLE implementation_milestones
+    ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES app_users(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_milestones_owner_user
+    ON implementation_milestones (owner_user_id) WHERE owner_user_id IS NOT NULL;
+INSERT INTO schema_versions (version, name) VALUES ('0031', 'milestones_owner') ON CONFLICT (version) DO NOTHING;
+
+-- ═══ 0032_ticket_status_width ══════════════════════════════════════════════
+-- v5 P5 fix: migration 0029 added the 4th status value 'closed_pending_verify' to the
+-- milestone_tasks status CHECK, but the column was still VARCHAR(20) from 0015 — and that
+-- value is 21 chars, so it could never actually be stored (a latent bug that only P5's
+-- ticket close→verify flow exercises). Widen the column so the value fits. Additive; the
+-- 0029 CHECK is unchanged. implementation_milestones.status stays VARCHAR(20)/3-state — it
+-- is never assigned the 4th value (_recompute_statuses only emits pending/in_progress/
+-- verified_completed, all ≤20 chars).
+
+ALTER TABLE milestone_tasks ALTER COLUMN status TYPE VARCHAR(30);
+INSERT INTO schema_versions (version, name) VALUES ('0032', 'ticket_status_width') ON CONFLICT (version) DO NOTHING;

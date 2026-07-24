@@ -138,11 +138,17 @@ class Orchestrator:
         target: Target,
         label: str | None = None,
         do_score: bool = True,
+        force_recrawl: bool = False,
     ) -> RunSummary:
         """Crawl + extract (+ score) an explicit URL list. ``do_score=False`` stops
-        after extraction so scoring can run later as a separate phase (``aeo score``)."""
+        after extraction so scoring can run later as a separate phase (``aeo score``).
+        ``force_recrawl`` bypasses the fingerprint skip gate so an unchanged page is
+        re-read + re-scored — required for the v5 CH-15 close→verify re-crawl, where the
+        edit may not be live yet (default False keeps the CLI/batch path unchanged)."""
         run = runs_repo.start(label=label)
-        return await self._run_pages(list(urls), run=run, target=target, do_score=do_score)
+        return await self._run_pages(
+            list(urls), run=run, target=target, do_score=do_score, force_recrawl=force_recrawl
+        )
 
     async def run_site(
         self,
@@ -176,6 +182,18 @@ class Orchestrator:
 
         run = runs_repo.start(label=label or (dc.label if dc else None) or f"site:{domain}")
         persist_ranking(run.id, scored)
+        # v5 CH-03: group the ranking into bounded, impact-ordered packs and persist them
+        # (headers + page_priorities.pack_index back-fill). MUST run after persist_ranking
+        # (the back-fill UPDATEs the rows it just committed) and before the early return
+        # below, so even a homepage-only run persists its Pack 1. Additive + isolated — a
+        # pack-persist failure logs and is skipped, never aborts the audit.
+        try:
+            from ..storage.repos import packs as packs_repo
+            from .packs import build_packs
+
+            packs_repo.put_for_run(run.id, build_packs(scored))
+        except Exception as exc:
+            log.warning("packs_persist_skipped", run_key=run.run_key, error=str(exc))
         selected = [s.url for s in scored if s.selected]
         log.info(
             "site_discovered", run_key=run.run_key, domain=domain,
@@ -427,6 +445,7 @@ class Orchestrator:
         )
         analysis = self.analyze_run(run_summary.run_id, progress=progress)
         site_report_id = self._build_and_persist_site_report(run_summary.run_id, target, domain=domain)
+        self._generate_tickets(run_summary.run_id, domain=domain)
         milestones = await self._verify_milestones(run_summary.run_id, target, domain=domain)
         log.info(
             "audit_cycle_complete", run_id=run_summary.run_id, domain=domain,
@@ -439,6 +458,19 @@ class Orchestrator:
             "site_report_id": site_report_id,
             "milestones": milestones,
         }
+
+    def _generate_tickets(self, run_id: int, *, domain: str) -> None:
+        """v5 CH-08: turn the run's per-page skill findings into tickets (one milestone per
+        pack, one ticket per page×skill). Best-effort + isolated — a failure never aborts
+        the audit. owner_user_id is left unstamped here (no user in the worker context); a
+        logged-in user viewing the tickets stamps it lazily (the ticket read path)."""
+        try:
+            from ..storage.repos import milestones as milestones_repo
+
+            result = milestones_repo.generate_tickets_from_run(run_id)
+            log.info("tickets_generated", run_id=run_id, domain=domain, **result)
+        except Exception as exc:  # ticket generation is additive — never fatal to the audit
+            log.warning("ticket_generation_skipped", run_id=run_id, domain=domain, error=str(exc))
 
     async def _verify_milestones(self, run_id: int, target: Target, *, domain: str) -> dict:
         """Auto-verify the client's implementation milestones against the freshly-crawled
@@ -589,6 +621,12 @@ class Orchestrator:
             "source": discovery.source,
             "discovered": len(scored),
             "selected": len(selected),
+            # v5: the top of the prioritized ranking, so callers (the free overview's
+            # pack builder) can group pages without re-running discovery. Bounded; the
+            # full ranking only ever persists on real runs (persist_ranking). The homepage
+            # is force-included even when it ranks past the slice — the pack builder's
+            # "homepage always in Pack 1" rule needs the entry to be present to apply.
+            "ranking": _ranking_slice(scored, limit=60),
             "topic": topic,
             "engine_target": engine_target,
             "profile": profile.to_dict() if profile else None,
@@ -658,6 +696,45 @@ class Orchestrator:
         )
         return site_reports_repo.put(site)
 
+    def _persist_skill_scores(self, page_score: PageScore, bundle, run_id: int) -> None:
+        """v5 CH-04: derive + persist the five-skill layer for a freshly-scored page.
+        Best-effort and isolated — like completion detection, this is bookkeeping on top
+        of the scored crawl and must never abort it. ``skill_llm`` off (or a disabled LLM)
+        keeps Messaging/Conversion deterministic; the mapped skills are always free."""
+        settings = get_settings()
+        if not settings.scoring.skills_enabled:
+            return None
+        try:
+            from ..scoring.skills import build_skill_scores
+            from ..storage.repos import skill_scores as skill_scores_repo
+
+            llm = self._llm if settings.scoring.skill_llm else None
+            payload = build_skill_scores(page_score, bundle, llm=llm)
+            skill_scores_repo.put(page_score.page_id, run_id, payload)
+            return payload  # v5 CH-15: the ticket-verify hook reads current skill scores here
+        except Exception as exc:  # skill scoring is additive — never fatal to a run
+            log.warning(
+                "skill_scores_skipped",
+                page_id=getattr(page_score, "page_id", None), error=str(exc),
+            )
+            return None
+
+    def _verify_tickets(self, page: FetchedPage, run_id: int, payload: dict | None) -> None:
+        """v5 CH-15 before/after: after a page is re-scored, flip any ticket the owner
+        closed (``closed_pending_verify``) for this page's skill to ``verified_completed``
+        and pin its ``current_score`` — proving the lift. Best-effort + isolated (mirrors
+        _detect_completions): a hiccup here never aborts the crawl. Reads the fresh per-skill
+        scores from the just-persisted payload, so no second DB round-trip / no race."""
+        if payload is None or not get_settings().milestones.verify_tickets_on_crawl:
+            return
+        try:
+            from ..storage.repos import milestones as milestones_repo
+
+            skills = {n: int((v or {}).get("score", 0)) for n, v in (payload.get("skills") or {}).items()}
+            milestones_repo.verify_tickets_by_recrawl(page.url_normalized, run_id, skills)
+        except Exception as exc:  # ticket verification is bookkeeping — never fatal
+            log.warning("ticket_verify_skipped", url=page.url, error=str(exc))
+
     def _detect_completions(self, page: FetchedPage, run_id: int, page_score: PageScore) -> None:
         """Retention Engine bookkeeping: reconcile this URL's pending recommendation
         outcomes against the freshly RE-SCORED page — an outcome flips to ``implemented``
@@ -722,6 +799,12 @@ class Orchestrator:
             page_score = self.score.run(bundle, run_id)
             self.persist.score(page_score, scored_by=_scored_by(page_score))
             summary.scored += 1
+            # v5 CH-04: the five-skill derived layer, persisted alongside the rubric score.
+            # Additive + isolated — a skills failure must never abort the crawl that carries
+            # it (mirrors _detect_completions).
+            skills_payload = self._persist_skill_scores(page_score, bundle, run_id)
+            # v5 CH-15: prove closed tickets' lift from the fresh skill scores (own table).
+            self._verify_tickets(page, run_id, skills_payload)
             # Retention Engine (#11): verify recommendation completions AFTER re-scoring,
             # so the check is criterion-honest (did the targeted criterion's tier rise?)
             # rather than a self-grading hash-only signal. A changed page always re-scores
@@ -744,6 +827,27 @@ class Orchestrator:
 
         pairs = await asyncio.gather(*[_one(u) for u in urls])
         return {key: data for key, data in pairs if data is not None}
+
+
+def _ranking_slice(scored: list, limit: int = 60) -> list[dict[str, Any]]:
+    """The top-``limit`` of the prioritized ranking as plain dicts, with the homepage
+    always present (appended if it ranked past the cut) so downstream pack construction
+    can honor the 'homepage in Pack 1' rule (v5 CH-03)."""
+    top = list(scored[:limit])
+    if not any(s.page_type == "homepage" for s in top):
+        home = next((s for s in scored if s.page_type == "homepage"), None)
+        if home is not None:
+            top.append(home)
+    return [
+        {
+            "url": s.url,
+            "page_type": s.page_type,
+            "final_score": s.final_score,
+            "rank": s.rank,
+            "selected": s.selected,
+        }
+        for s in top
+    ]
 
 
 def _owner_ids(target: Target) -> tuple[int | None, int | None]:

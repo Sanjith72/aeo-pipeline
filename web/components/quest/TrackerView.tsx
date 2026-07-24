@@ -70,8 +70,7 @@ export function TrackerView({
           <p className="text-sm text-ink-500">
             Every step to take, in the order that pays off fastest — Quick Wins first. Check
             things off yourself, or publish the change and let the automatic site check verify
-            it for you. Prefer the journey view? That&apos;s the{" "}
-            <span className="font-medium text-ink">Roadmap</span> tab.
+            it for you.
           </p>
           <MilestoneDashboard tracker={tracker} />
           {extraActions.length > 0 && <StrategyExtras actions={extraActions} />}

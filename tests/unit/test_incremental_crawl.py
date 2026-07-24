@@ -14,6 +14,8 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from aeo.api.jobs import JobRegistry
 from aeo.crawl.discovery import DiscoveredUrl, DiscoveryResult
 from aeo.crawl.prioritize import PrioritizationCfg
@@ -194,6 +196,7 @@ def test_registry_request_cancel_sets_flag():
 
 
 def test_cache_age_helper(monkeypatch):
+    pytest.importorskip("fastapi")  # app.py needs the optional [api] extra
     from aeo.api.app import _cache_age
 
     three_h_ago = datetime.now(UTC) - timedelta(hours=3)
@@ -205,6 +208,7 @@ def test_cache_age_helper(monkeypatch):
 
 
 def test_cache_age_none_when_never_crawled(monkeypatch):
+    pytest.importorskip("fastapi")  # app.py needs the optional [api] extra
     from aeo.api.app import _cache_age
 
     monkeypatch.setattr("aeo.storage.repos.pages.last_crawled_at", lambda _u: None)
@@ -213,6 +217,7 @@ def test_cache_age_none_when_never_crawled(monkeypatch):
 
 
 def test_cache_age_survives_a_down_db(monkeypatch):
+    pytest.importorskip("fastapi")  # app.py needs the optional [api] extra
     from aeo.api.app import _cache_age
 
     def boom(_u):

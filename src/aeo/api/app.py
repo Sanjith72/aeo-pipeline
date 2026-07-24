@@ -19,26 +19,27 @@ require a matching ``X-API-Key`` header (see :func:`require_api_key`). Unset = o
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import socket
 import time
 from contextlib import asynccontextmanager
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..intelligence.brief import plan_from_brief
-from ..reference.business_input import BusinessInput
+from ..reference.business_input import BusinessInput, derive_business_name
 from ..reference.competitor_patterns import CompetitorPatterns
 from ..reference.framework import Framework
 from ..reference.generator import generate_blueprint
 from ..report.packager import build_asset_bundle, checklist_for, plan_for
 from . import jobs as jobs_mod
+from .auth import User, get_current_user, get_optional_user
 from .jobs import JOBS
 
 # Bounds for the persisted-plan payloads (B1) — keep a stored plan/profile blob and its
@@ -64,26 +65,31 @@ _WIKIDATA_ENRICHMENT_ENABLED = True
 _WIKIDATA_WAIT_BUDGET_SEC = 8.0
 
 
-def _assert_crawlable_host(domain: str) -> None:
+def _assert_crawlable_host(domain: str, *, allow_unresolvable: bool = False) -> None:
     """SSRF guard: resolve the target host and reject private/loopback/link-local/
     reserved addresses so an attacker can't point a crawl at internal infrastructure
     (e.g. cloud metadata at 169.254.169.254). Best-effort at the entry point — a
-    deeper defense also revalidates each redirect hop in the crawler."""
+    deeper defense also revalidates each redirect hop in the crawler.
+
+    ``allow_unresolvable`` lets the intake paths (/api/profile, /api/overview) keep
+    their never-502 contract: an unresolvable host is no SSRF vector (nothing to
+    connect to), and their crawl resolves it to an honest ``route='dead'`` instead of
+    a 400 that would dead-end the URL-first flow."""
     raw = domain.strip()
     host = urlparse(raw if "://" in raw else f"//{raw}").hostname or raw
     host = host.split(":")[0].strip()
     if not host:
         raise HTTPException(status_code=400, detail="invalid domain")
+    from ..crawl.transport import ip_is_blocked
+
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError:
+        if allow_unresolvable:
+            return
         raise HTTPException(status_code=400, detail="domain does not resolve") from None
     for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if (
-            ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-        ):
+        if ip_is_blocked(info[4][0]):
             raise HTTPException(status_code=400, detail="domain resolves to a non-public address")
 
 
@@ -160,6 +166,11 @@ class _RateLimiter:
 
 
 _RATE = _RateLimiter()
+# The free-overview daily caps live in their OWN limiter: the middleware limiter runs a
+# 60s window and its overflow eviction drops any entry older than that window, which would
+# silently reset a 24h overview counter sharing the same map (a cost-ceiling bypass).
+_OVERVIEW_RATE = _RateLimiter()
+_DAY_SEC = 86400.0
 
 
 def _client_ip(request: Request) -> str:
@@ -203,7 +214,9 @@ def _install_cors(application: FastAPI) -> None:
             CORSMiddleware,
             allow_origins=origins,
             allow_methods=["GET", "POST"],
-            allow_headers=["Content-Type", "X-API-Key"],
+            # Authorization added for defense-in-depth: browser→proxy is same-origin (no CORS),
+            # but this prevents a confusing failure if a browser is pointed straight at the API.
+            allow_headers=["Content-Type", "X-API-Key", "Authorization"],
         )
 
 
@@ -214,7 +227,11 @@ _install_cors(app)
 
 
 class BriefRequest(BaseModel):
-    name: str
+    # v5 CH-01 (URL-first intake): the URL is the only required input anywhere. A blank
+    # name derives from the domain server-side (mirrors the web UI's deriveName), so
+    # URL-only callers pass every brief-shaped endpoint; name-only briefs (the
+    # no-website path) still work. Only both-blank is rejected.
+    name: str = ""
     domain: str | None = None
     category: str | None = None
     topic: str | None = None
@@ -223,6 +240,15 @@ class BriefRequest(BaseModel):
     competitors: list[str] = []
     goals: list[str] = []
     use_llm: bool = True
+
+    @model_validator(mode="after")
+    def _default_name_from_domain(self) -> BriefRequest:
+        if not self.name.strip():
+            derived = derive_business_name(self.domain)
+            if not derived:
+                raise ValueError("name or domain is required")
+            self.name = derived
+        return self
 
 
 class DeliverablesRequest(BriefRequest):
@@ -251,6 +277,15 @@ class ProfileRequest(BaseModel):
     use_llm: bool = True
 
 
+class OverviewRequest(BaseModel):
+    """The v5 free-tier entry (CH-09): a URL and nothing else."""
+
+    domain: str
+    # Bounded on the anonymous endpoint: a client-supplied max can't be used to force a
+    # multi-hundred-MB inventory gather + sort on the event loop.
+    max_urls: int | None = Field(default=None, ge=1, le=200)
+
+
 class AuditRequest(BaseModel):
     domain: str
     name: str | None = None
@@ -267,7 +302,7 @@ _SUGGEST_BUDGET_SEC = 90.0
 
 
 class CompetitorSuggestRequest(BaseModel):
-    name: str
+    name: str = ""  # blank derives from domain (v5 CH-01 URL-only intake)
     domain: str | None = None
     category: str | None = None
     location: str | None = None
@@ -311,6 +346,46 @@ class EventRequest(BaseModel):
     client_id: int | None = None
     url: str | None = None
     metadata: dict[str, Any] = {}
+
+
+class GrantRequest(BaseModel):
+    """Manual/promo entitlement grant (v5 CH-02b; payments stubbed). ``user_id`` is
+    supplied explicitly — there is no logged-in user until P4. Admin-only in effect: it
+    inherits the global X-API-Key guard. ``user_id``/``expires_at`` are typed so malformed
+    values 422 at validation instead of 500-ing on the DB cast (UUID / TIMESTAMPTZ columns)."""
+
+    user_id: UUID
+    domain: str
+    scope: Literal["free_overview", "pack", "all_packs", "tickets"]
+    pack_index: int | None = None
+    source: str = "manual"
+    expires_at: datetime | None = None
+
+
+class RedeemRequest(BaseModel):
+    """Redeem a promo code to unlock a domain's packs (v5 monetization stub — payments
+    deferred; a valid code grants an ``all_packs`` entitlement, source='promo'). The user
+    comes from the verified JWT, never the body."""
+
+    domain: str
+    code: str
+
+
+class TicketKeyRequest(BaseModel):
+    """A v5 ticket action keyed by its stable task_key (CH-08/CH-15)."""
+
+    task_key: str
+
+
+class TicketFieldsRequest(BaseModel):
+    """Set a v5 ticket's async board fields (CH-08). Omitted fields are left alone;
+    ``assignee``/``target_date`` of null clears. ``target_date`` is ISO ``YYYY-MM-DD``."""
+
+    task_key: str
+    assignee: str | None = None
+    target_date: str | None = None
+    set_assignee: bool = False   # explicit flags so null means "clear", omission means "leave"
+    set_target_date: bool = False
 
 
 class OverrideRequest(BaseModel):
@@ -622,6 +697,10 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     from ..pipeline import Orchestrator
     from ..settings import get_settings
 
+    # SSRF guard (private/loopback only): unresolvable hosts continue to route='dead'.
+    # getaddrinfo is blocking → off the event loop so a slow/blackholed NS can't freeze
+    # every other request on this async handler.
+    await asyncio.to_thread(_assert_crawlable_host, req.domain, allow_unresolvable=True)
     cache = _cache_age(req.domain)
     # Crawl the homepage + key pages for Location / what-you-offer / on-site competitors,
     # concurrently with the structural dry-run profile AND the Wikidata enrichment lookup
@@ -728,6 +807,49 @@ async def profile(req: ProfileRequest) -> dict[str, Any]:
     }
 
 
+@app.post("/api/overview")
+async def overview(req: OverviewRequest, request: Request) -> dict[str, Any]:
+    """The v5 free overview (CH-09/CH-16 slice 1): paste a URL, get the structural
+    profile + five homepage skill scores + an impact-ordered pack preview + on-site
+    competitor names — no signup, no persisted run. Composition lives in
+    ``pipeline.overview.build_overview``; this handler only adds the free-tier
+    protections (§9.4): per-domain daily cache (hits are free and uncounted), the SSRF
+    guard, and a per-IP daily cap on fresh builds (AEO__API__OVERVIEW_DAILY_LIMIT;
+    0 = off for dev)."""
+    from ..pipeline.overview import build_overview, cached_overview
+    from ..settings import get_settings
+
+    domain = req.domain.strip()
+    if not domain:
+        raise HTTPException(status_code=422, detail="domain is required")
+    cached = cached_overview(domain)
+    if cached is not None:
+        return cached  # cache hits are free — never counted against either cap
+    # SSRF guard (private/loopback only), off the event loop; unresolvable → route='dead'.
+    await asyncio.to_thread(_assert_crawlable_host, domain, allow_unresolvable=True)
+    cfg = get_settings().api
+    # Per-IP daily cap (best-effort; spoofable via X-Forwarded-For) AND a global daily
+    # ceiling that no single-IP trick can bypass — the infra-independent backstop for the
+    # §9.4 free-tier cost ceiling. Both bound FRESH (crawling) builds only.
+    if cfg.overview_daily_limit > 0 and _OVERVIEW_RATE.over_limit(
+        f"overview:{_client_ip(request)}", cfg.overview_daily_limit, _DAY_SEC
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="free analysis limit reached for today — come back tomorrow",
+            headers={"Retry-After": "86400"},
+        )
+    if cfg.overview_global_daily_limit > 0 and _OVERVIEW_RATE.over_limit(
+        "overview:__global__", cfg.overview_global_daily_limit, _DAY_SEC
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="free analysis is busy right now — please try again later",
+            headers={"Retry-After": "3600"},
+        )
+    return await build_overview(domain, max_urls=req.max_urls)
+
+
 @app.post("/api/competitors/suggest")
 async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     """Likely competitors for a business brief (name + category + location), so the UI
@@ -745,9 +867,10 @@ async def competitors_suggest(req: CompetitorSuggestRequest) -> dict[str, Any]:
     from ..nlp.llm import get_interactive_client
     from ..reference.competitor_discovery import discover_competitors
 
-    name = req.name.strip()
+    # URL-only intake (v5 CH-01): a blank name derives from the domain, like BriefRequest.
+    name = req.name.strip() or derive_business_name(req.domain)
     if not name:
-        raise HTTPException(status_code=422, detail="name is required")
+        raise HTTPException(status_code=422, detail="name or domain is required")
     domain = (req.domain or "").strip()
 
     async def onsite() -> dict[str, Any] | None:
@@ -837,6 +960,192 @@ def site_report(run_id: int) -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail=f"no site report for run {run_id}")
     return dict(row)
+
+
+def _grants_for(user: User | None, run_id: int) -> list[dict[str, Any]]:
+    """The viewer's currently-valid entitlement rows for the run's domain — the input to
+    the lock resolver. Anonymous (no user) or a run with no resolvable domain → ``[]`` (the
+    P3 anonymous path: Pack 1 unlocked, deeper locked). ``user_id`` comes ONLY from the
+    verified JWT, never the request, so no one can unlock another user's domain."""
+    if user is None:
+        return []
+    from ..storage.repos import entitlements as entitlements_repo
+    from ..storage.repos import runs as runs_repo
+
+    domain = runs_repo.domain_for_run(run_id)
+    return entitlements_repo.list_for_user_domain(user.id, domain) if domain else []
+
+
+@app.get("/api/packs/{run_id}")
+def get_packs(run_id: int, user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
+    """The impact-ordered packs persisted for a run (v5 CH-03), each with its
+    entitlement-derived ``locked`` flag. Empty ``packs`` (200, not 404) for older or
+    dry-run-only runs that never persisted packs — the UI falls back to the live overview
+    preview. Auth-aware (v5 CH-02a): anonymous callers get Pack 1 unlocked + deeper locked;
+    a logged-in user gets their REAL grants. Login alone never unlocks — only an entitlement
+    row does (``completed_pack_indices`` is empty until P5)."""
+    from ..entitlements.logic import decorate_pack
+    from ..storage.repos import packs as packs_repo
+
+    rows = packs_repo.by_run(run_id)
+    grants = _grants_for(user, run_id)
+    completed = packs_repo.completed_pack_indices(run_id)  # v5 CH-15: earned-forward unlock
+    return {"run_id": run_id, "packs": [decorate_pack(r, grants=grants, completed=completed) for r in rows]}
+
+
+@app.get("/api/packs/{run_id}/{pack_index}")
+def get_pack_detail(
+    run_id: int, pack_index: int, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
+    """The gated deep value (v5 CH-02a): a pack's per-page five-skill detail (scores +
+    suggestions + priorities). Enforced SERVER-SIDE — a locked pack returns 403 regardless
+    of what the client renders (we never ship locked detail with a flag the browser can
+    ignore). Pack 1 is unlocked for everyone (overview stays public); deeper packs require
+    both a logged-in user AND a real entitlement (anonymous → no grants → locked → 403)."""
+    from ..entitlements.logic import decorate_pack
+    from ..storage.repos import packs as packs_repo
+    from ..storage.repos import skill_scores as skill_scores_repo
+
+    header = next((r for r in packs_repo.by_run(run_id) if r["pack_index"] == pack_index), None)
+    if header is None:
+        raise HTTPException(status_code=404, detail="no such pack")
+    completed = packs_repo.completed_pack_indices(run_id)
+    if decorate_pack(header, grants=_grants_for(user, run_id), completed=completed)["locked"]:
+        raise HTTPException(status_code=403, detail="unlock this pack to view its detail")
+    return {
+        "run_id": run_id, "pack_index": pack_index, "title": header["title"],
+        "pages": skill_scores_repo.detail_for_pack(run_id, pack_index),
+    }
+
+
+# ── v5 tickets (CH-08 board + CH-15 before/after verify) ────────────────────────
+
+
+def _ticket_client(run_id: int) -> tuple[int, Any]:
+    """(client_id, target) for a run's domain, or 404 when the run has no resolvable
+    domain / persisted work. Tickets are domain-keyed, reusing the milestone chain."""
+    from ..storage.repos import runs as runs_repo
+    from ..storage.repos import targets as targets_repo
+
+    domain = runs_repo.domain_for_run(run_id)
+    target = targets_repo.by_domain(domain) if domain else None
+    if target is None:
+        raise HTTPException(status_code=404, detail="no tickets for this run yet")
+    return target.id, target
+
+
+@app.get("/api/tickets/{run_id}")
+def get_tickets(run_id: int, user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
+    """The v5 tickets for a run's packs (CH-08): one per (page, skill), with status /
+    assignee / target_date / baseline→current score. Lazily GENERATES them on first view
+    (stamping owner_user_id when a logged-in user views) so tickets exist even for audits
+    that predate this path. Empty list (200) when the run produced no packs."""
+    from ..storage.repos import milestones as milestones_repo
+    from ..storage.repos import runs as runs_repo
+    from ..storage.repos import targets as targets_repo
+
+    domain = runs_repo.domain_for_run(run_id)
+    if not domain:
+        return {"run_id": run_id, "tickets": []}
+    target = targets_repo.by_domain(domain)
+    tickets = milestones_repo.list_tickets_for_run(target.id) if target else []
+    if not tickets:
+        milestones_repo.generate_tickets_from_run(run_id, owner_user_id=(user.id if user else None))
+        target = targets_repo.by_domain(domain)
+        tickets = milestones_repo.list_tickets_for_run(target.id) if target else []
+    return {"run_id": run_id, "tickets": tickets}
+
+
+@app.get("/api/tickets/{run_id}/{pack_index}")
+def get_pack_tickets(run_id: int, pack_index: int) -> dict[str, Any]:
+    """The v5 tickets for one pack of a run."""
+    from ..storage.repos import milestones as milestones_repo
+
+    client_id, _ = _ticket_client(run_id)
+    return {"run_id": run_id, "pack_index": pack_index,
+            "tickets": milestones_repo.list_tickets_for_run(client_id, pack_index)}
+
+
+@app.post("/api/tickets/{run_id}/fields")
+def set_ticket_fields(run_id: int, req: TicketFieldsRequest) -> dict[str, Any]:
+    """Set a ticket's assignee / target_date (CH-08 async board)."""
+    from ..storage.repos import milestones as milestones_repo
+
+    client_id, _ = _ticket_client(run_id)
+    kwargs: dict[str, Any] = {}
+    if req.set_assignee:
+        kwargs["assignee"] = (req.assignee or None)
+    if req.set_target_date:
+        kwargs["target_date"] = (req.target_date or None)
+    ticket = milestones_repo.set_ticket_fields(client_id, req.task_key, **kwargs)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="no such ticket")
+    return {"ticket": ticket}
+
+
+@app.post("/api/tickets/{run_id}/close")
+def close_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
+    """Owner marks a ticket done (CH-15): → closed_pending_verify, then enqueue a
+    FORCED re-crawl of its page so the re-score can prove the lift (an unchanged page
+    would otherwise fingerprint-skip and never verify). The frontend polls the ticket
+    until it flips to verified_completed."""
+    from ..pipeline import worker
+    from ..storage.repos import milestones as milestones_repo
+
+    client_id, target = _ticket_client(run_id)
+    ticket = milestones_repo.close_ticket(client_id, req.task_key)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="no such open ticket")
+    page_url = ticket.get("page_url")
+    job_id = None
+    if page_url:
+        try:
+            job_id = worker.enqueue_batch(
+                [page_url], target.name, label=f"verify:ticket:{req.task_key}", force_recrawl=True
+            )
+        except Exception as exc:  # verification is best-effort; the recheck button retries
+            from ..logging import get_logger
+
+            get_logger(__name__).warning("ticket_recrawl_enqueue_failed", task_key=req.task_key, error=str(exc))
+    return {"ticket": ticket, "verify_job_id": job_id}
+
+
+@app.post("/api/tickets/{run_id}/reopen")
+def reopen_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
+    """Reopen a closed-pending-verify ticket (CH-08)."""
+    from ..storage.repos import milestones as milestones_repo
+
+    client_id, _ = _ticket_client(run_id)
+    ticket = milestones_repo.reopen_ticket(client_id, req.task_key)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="no such ticket to reopen")
+    return {"ticket": ticket}
+
+
+@app.post("/api/tickets/{run_id}/recheck")
+def recheck_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
+    """Re-run verification on a ticket the owner already closed (CH-15): re-enqueue the
+    FORCED re-crawl of its page without changing the ticket's status. Used by the "Recheck"
+    affordance when a first re-crawl didn't yet prove the lift (edit not live / regressed)."""
+    from ..pipeline import worker
+    from ..storage.repos import milestones as milestones_repo
+
+    client_id, target = _ticket_client(run_id)
+    ticket = milestones_repo.get_ticket(client_id, req.task_key)
+    if ticket is None or ticket["status"] != "closed_pending_verify":
+        raise HTTPException(status_code=409, detail="ticket is not awaiting verification")
+    job_id = None
+    if ticket.get("page_url"):
+        try:
+            job_id = worker.enqueue_batch(
+                [ticket["page_url"]], target.name,
+                label=f"verify:ticket:{req.task_key}", force_recrawl=True,
+            )
+        except Exception as exc:
+            from ..logging import get_logger
+
+            get_logger(__name__).warning("ticket_recheck_enqueue_failed", task_key=req.task_key, error=str(exc))
+    return {"ticket": ticket, "verify_job_id": job_id}
 
 
 @app.post("/api/audit")
@@ -1259,6 +1568,68 @@ def shared_plan(token: str) -> dict[str, Any]:
     dash = milestones_repo.get_dashboard(client["id"])
     attach_dev_briefs(dash, origin=client["domain"], cms_type=client.get("cms_type"))
     return {"business_name": client["name"], "domain": client["domain"], **dash}
+
+
+@app.post("/api/entitlements/grant")
+def grant_entitlement(req: GrantRequest) -> dict[str, Any]:
+    """Manually grant a pack entitlement (v5 CH-02b stub — no payment provider yet).
+    Upserts the app_users row the FK requires, then the entitlement. X-API-Key gated
+    (admin-only in effect). ``scope='pack'`` requires ``pack_index``."""
+    from ..reference.domain_config import normalize_domain
+    from ..storage.repos import entitlements as entitlements_repo
+
+    if req.scope == "pack" and req.pack_index is None:
+        raise HTTPException(status_code=422, detail="scope='pack' requires pack_index")
+    # Canonicalize the domain the SAME way the overview does (its `canon`), so grant-time
+    # and future check-time (P4) key agree.
+    domain = normalize_domain(req.domain) or req.domain.strip().lower()
+    try:
+        row = entitlements_repo.grant(
+            str(req.user_id), domain, scope=req.scope,
+            pack_index=req.pack_index, source=req.source, expires_at=req.expires_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"granted": True, "entitlement": row}
+
+
+@app.get("/api/entitlements")
+def list_entitlements(user_id: UUID, domain: str) -> dict[str, Any]:
+    """A user's currently-valid entitlements for a domain (debug/admin). X-API-Key gated.
+    ``domain`` is canonicalized to match how grants are stored."""
+    from ..reference.domain_config import normalize_domain
+    from ..storage.repos import entitlements as entitlements_repo
+
+    canon = normalize_domain(domain) or domain.strip().lower()
+    return {"entitlements": entitlements_repo.list_for_user_domain(str(user_id), canon)}
+
+
+@app.get("/api/auth/me")
+def auth_me(user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """The authenticated user (v5 CH-07). Requires a valid Supabase JWT; 401 otherwise.
+    Also the frontend's post-login call that provisions app_users + claims the aeo_sid
+    session (cookie-sourced, in get_current_user)."""
+    return {"id": user.id, "email": user.email}
+
+
+@app.post("/api/entitlements/redeem")
+def redeem_promo(req: RedeemRequest, user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Redeem a promo code to unlock a domain's packs (v5 CH-02b monetization stub). The
+    user is taken ONLY from the verified JWT — never the body — so no one can unlock for
+    another account. A valid code grants ``all_packs`` (source='promo'); an unknown code is
+    a 422. Redemption is disabled (all codes invalid) when no promo codes are configured."""
+    from ..reference.domain_config import normalize_domain
+    from ..settings import get_settings
+    from ..storage.repos import entitlements as entitlements_repo
+
+    code = req.code.strip()
+    if not code or code not in get_settings().auth.promo_code_set:
+        raise HTTPException(status_code=422, detail="invalid or expired promo code")
+    domain = normalize_domain(req.domain) or req.domain.strip().lower()
+    if not domain:
+        raise HTTPException(status_code=422, detail="a domain is required")
+    row = entitlements_repo.grant(user.id, domain, scope="all_packs", source="promo")
+    return {"unlocked": True, "domain": domain, "entitlement": row}
 
 
 @app.get("/api/metrics")

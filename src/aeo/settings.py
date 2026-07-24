@@ -221,6 +221,15 @@ class MilestonesCfg(BaseModel):
     # aborts the audit. Off → milestones still persist + track, but only the owner's
     # manual toggles advance them.
     verify_on_crawl: bool = True
+    # v5 CH-15 before/after: when a v5 skill TICKET is closed (closed_pending_verify), a
+    # forced re-crawl re-scores the page; this flips the ticket to verified_completed and
+    # pins current_score. Separate from verify_on_crawl (artifact presence) and the
+    # retention engine (criterion tiers) — its own table (milestone_tasks skill columns).
+    verify_tickets_on_crawl: bool = True
+    # Honest lift gate: only mark a closed ticket verified when the re-scored skill score
+    # is >= the pinned baseline (the fix demonstrably didn't regress it). False → flip on
+    # any re-score. Either way current_score is recorded so the UI can show the delta.
+    verify_require_lift: bool = True
 
 
 class IntakeCfg(BaseModel):
@@ -263,6 +272,13 @@ class ScoringCfg(BaseModel):
     # read-only context); the win is on the I/O-bound LLM-refined criteria.
     parallel: bool = False
     max_workers: int = 8
+    # v5 CH-04: compute + persist the five-skill derived layer on each scored page during
+    # the deep audit. When on (default), the net-new Messaging/Conversion skills are
+    # LLM-judged (2 extra model calls per page — set AEO__SCORING__SKILL_LLM=false on
+    # quota-tight free-tier hosts to keep them deterministic/provisional instead). The
+    # mapped skills (Discovery/Proof/Structure) are always free — derived from criteria.
+    skills_enabled: bool = True
+    skill_llm: bool = True
 
 
 class AgentsCfg(BaseModel):
@@ -311,6 +327,46 @@ class ApiCfg(BaseModel):
     # any public deployment. Client IP = left-most X-Forwarded-For (behind a proxy) or the peer.
     rate_limit: int = 0
     rate_window_sec: int = 60
+    # v5 §9.4 free-tier cap: fresh (non-cached) POST /api/overview builds per IP per day.
+    # 0 = disabled for local dev; set AEO__API__OVERVIEW_DAILY_LIMIT (≈3) in any public
+    # deployment. Cached hits never count — same-domain re-pastes stay free. The per-IP
+    # key is spoofable via X-Forwarded-For, so pair it with the global ceiling below.
+    overview_daily_limit: int = 0
+    # Global daily ceiling on fresh overview builds across ALL callers — the backstop no
+    # single-IP spoofing trick can bypass. 0 = disabled; set it comfortably above expected
+    # honest daily volume in any public deployment.
+    overview_global_daily_limit: int = 0
+
+
+class AuthCfg(BaseModel):
+    # v5 CH-07 Supabase-JWT user auth — a SEPARATE credential/boundary from ApiCfg.auth_key
+    # (which is the service proxy→backend key). This gates per-USER deep value (pack detail,
+    # per-user unlocks). Stateless HS256 verification against the Supabase project JWT secret
+    # (AEO__AUTH__JWT_SECRET) — the backend never calls Supabase, so it works with a Neon DB.
+    # Degrades to disabled/open when the secret is unset, exactly like auth_key.
+    enabled: bool = True
+    # The Supabase project JWT secret (Settings → API → JWT Secret). HS256 sign==verify key:
+    # treat as a SIGNING key — env-only, never logged. Unset → auth inactive (dev/open).
+    jwt_secret: str | None = None
+    # Supabase access tokens carry aud="authenticated"; the anon/service_role keys (also JWTs
+    # signed with the SAME secret) do NOT — this + the role check is what blocks them.
+    jwt_aud: str = "authenticated"
+    # Pinned explicitly so alg=none / RS256→HS256 confusion is impossible. HS256 only unless
+    # a project migrates to asymmetric signing (JWKS path is out of scope for P4).
+    jwt_algorithms: list[str] = Field(default_factory=lambda: ["HS256"])
+    # Optional issuer pin (https://<ref>.supabase.co/auth/v1) — defends against a token minted
+    # for a different project with the same secret. Off unless configured.
+    jwt_issuer: str | None = None
+    leeway_sec: int = 10
+    # Comma-separated promo codes that redeem to an all_packs grant (v5 monetization stub —
+    # payments deferred; grants arrive via source='promo'). Empty → redemption disabled.
+    promo_codes: str = ""
+    # Disabled-mode stand-in so pack-detail routes stay reachable in local dev with no secret.
+    dev_user_id: str = "00000000-0000-0000-0000-000000000000"
+
+    @property
+    def promo_code_set(self) -> frozenset[str]:
+        return frozenset(c.strip() for c in self.promo_codes.split(",") if c.strip())
 
 
 class ReferenceArchitectureCfg(BaseModel):
@@ -366,6 +422,7 @@ class Settings(BaseSettings):
     reference_architecture: ReferenceArchitectureCfg = ReferenceArchitectureCfg()
     obs: ObsCfg = ObsCfg()
     api: ApiCfg = ApiCfg()
+    auth: AuthCfg = AuthCfg()
 
     log_level: str = "INFO"
     log_format: str = "console"

@@ -2,7 +2,7 @@
 // components/chrome.tsx; the product itself lives on /studio (components/StudioApp.tsx).
 // A server component: every stateful piece here is a client leaf inside chrome.tsx.
 
-import { Faq, Footer, Hero, HowItWorks, TopBar, TrustBand } from "@/components/chrome";
+import { Faq, Footer, Hero, HowItWorks, ReportPreview, TopBar, TrustBand, WhatYouGet } from "@/components/chrome";
 import { FAQ_ITEMS } from "@/lib/faq";
 
 // Structured data: the product (SoftwareApplication) and the FAQ — generated from
@@ -49,6 +49,8 @@ export default function Page() {
           animating WebGL canvas. overflow-x-CLIP (never hidden — that would create a scroll
           container and kill the sticky FAQ rail) fences the 120%-wide section glow. */}
       <div className="grain relative overflow-x-clip">
+        <ReportPreview />
+        <WhatYouGet />
         <HowItWorks />
         <TrustBand />
         <Faq />

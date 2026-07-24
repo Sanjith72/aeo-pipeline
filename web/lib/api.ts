@@ -1,6 +1,7 @@
 // Typed client for the AEO HTTP API (SP-4a). Every call maps to one endpoint;
 // no business logic lives here. Calls are same-origin to the server proxy (app/api/[...path]).
 
+import { getAccessToken } from "./supabase";
 import type {
   AgentRunDetail,
   AgentRunSummary,
@@ -16,8 +17,13 @@ import type {
   MilestoneDashboard,
   MilestoneStatus,
   MilestoneVerifyResult,
+  OverviewResponse,
+  PackDetailResponse,
+  PacksResponse,
   PlanStateResponse,
   ProfileResponse,
+  Ticket,
+  TicketsResponse,
   RecheckStatusResponse,
   ResumeResponse,
   SharedPlanResponse,
@@ -33,9 +39,14 @@ import type {
 const BASE = "";
 
 function headers(extra?: Record<string, string>): Record<string, string> {
-  // No client-side API key — the server proxy adds X-API-Key. (Auth headers added here would
-  // be pointless and would only re-expose the secret in the bundle.)
-  return { ...extra };
+  // The server proxy adds the SERVICE X-API-Key. Here we attach the USER's Supabase JWT
+  // (v5 CH-07) so the backend can bind entitlements to the logged-in user — the proxy
+  // forwards Authorization untouched. Anonymous (no session) → no header, so overview /
+  // profile stay tokenless-OK and the free tier is unchanged. The token is NOT a security
+  // boundary: the backend verifies its signature/aud/role and derives the user only from
+  // the verified claim.
+  const token = getAccessToken();
+  return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra };
 }
 
 // ── instrumentation (Block F) ──────────────────────────────────────────────
@@ -87,7 +98,11 @@ async function postJson<T>(path: string, body: unknown, init?: RequestInit): Pro
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`API ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`);
+    // Attach the HTTP status so callers can branch on it (e.g. a 422 invalid promo code vs
+    // a transient failure) — mirrors the status-carrying errors from me()/getPackDetail().
+    throw Object.assign(new Error(`API ${res.status} ${res.statusText}${text ? `: ${text}` : ""}`), {
+      status: res.status,
+    });
   }
   return (await res.json()) as T;
 }
@@ -128,6 +143,12 @@ export const api = {
   profile(req: { domain: string; use_llm?: boolean; max_urls?: number }): Promise<ProfileResponse> {
     return postJson<ProfileResponse>("/api/profile", req);
   },
+  /** The v5 free overview (CH-09): fast site scan + five homepage skill scores + a pack
+   *  preview + on-site competitor names. No auth; the server caches per domain for a day
+   *  (response carries `cached: true` on a hit). */
+  overview(req: { domain: string }): Promise<OverviewResponse> {
+    return postJson<OverviewResponse>("/api/overview", req);
+  },
   suggestCompetitors(req: {
     name: string;
     domain?: string;
@@ -161,6 +182,79 @@ export const api = {
     const res = await fetch(`${BASE}/api/site-report/${runId}`, { headers: headers() });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as SiteReportResponse;
+  },
+  /** The impact-ordered packs persisted for a deep-audit run (CH-03). Empty `packs` for
+   *  older/dry-run-only runs — callers fall back to the live overview preview. Auth-aware:
+   *  a logged-in user's `locked` flags reflect their real entitlements. */
+  async getPacks(runId: number): Promise<PacksResponse> {
+    const res = await fetch(`${BASE}/api/packs/${runId}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as PacksResponse;
+  },
+  /** A pack's gated per-page skill detail (CH-02a). 403 when the pack is locked for the
+   *  caller (enforced server-side — Pack 1 is free even anonymous). */
+  async getPackDetail(runId: number, packIndex: number): Promise<PackDetailResponse> {
+    const res = await fetch(`${BASE}/api/packs/${runId}/${packIndex}`, { headers: headers() });
+    if (res.status === 403) throw Object.assign(new Error("locked"), { status: 403 });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as PackDetailResponse;
+  },
+
+  // ── tickets (v5 CH-08 board + CH-15 before/after) ──────────────────────────
+  /** The tickets for a run's packs (lazily generated on first view). */
+  async getTickets(runId: number): Promise<TicketsResponse> {
+    const res = await fetch(`${BASE}/api/tickets/${runId}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as TicketsResponse;
+  },
+  /** The tickets for one pack of a run. */
+  async getPackTickets(runId: number, packIndex: number): Promise<TicketsResponse> {
+    const res = await fetch(`${BASE}/api/tickets/${runId}/${packIndex}`, { headers: headers() });
+    if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
+    return (await res.json()) as TicketsResponse;
+  },
+  /** Set a ticket's assignee / target_date (CH-08). Only the flagged fields change. */
+  setTicketFields(
+    runId: number,
+    body: { task_key: string; assignee?: string | null; target_date?: string | null },
+  ): Promise<{ ticket: Ticket }> {
+    const payload: Record<string, unknown> = { task_key: body.task_key };
+    if ("assignee" in body) {
+      payload.set_assignee = true;
+      payload.assignee = body.assignee ?? null;
+    }
+    if ("target_date" in body) {
+      payload.set_target_date = true;
+      payload.target_date = body.target_date ?? null;
+    }
+    return postJson<{ ticket: Ticket }>(`/api/tickets/${runId}/fields`, payload);
+  },
+  /** Mark a ticket done (CH-15) → closed_pending_verify + a forced re-crawl to prove the
+   *  lift. Poll getPackTickets until the ticket flips to verified_completed. */
+  closeTicket(runId: number, taskKey: string): Promise<{ ticket: Ticket; verify_job_id: number | null }> {
+    return postJson(`/api/tickets/${runId}/close`, { task_key: taskKey });
+  },
+  reopenTicket(runId: number, taskKey: string): Promise<{ ticket: Ticket }> {
+    return postJson(`/api/tickets/${runId}/reopen`, { task_key: taskKey });
+  },
+  /** Re-run verification on an already-closed ticket (re-enqueues the forced re-crawl)
+   *  without changing its status — the "Recheck" affordance. */
+  recheckTicket(runId: number, taskKey: string): Promise<{ ticket: Ticket; verify_job_id: number | null }> {
+    return postJson(`/api/tickets/${runId}/recheck`, { task_key: taskKey });
+  },
+
+  // ── auth (v5 CH-07) ────────────────────────────────────────────────────────
+  /** Confirm the session + provision the user server-side (also claims the aeo_sid session,
+   *  cookie-sourced). Requires a valid Supabase JWT; throws on 401. */
+  async me(): Promise<{ id: string; email: string | null }> {
+    const res = await fetch(`${BASE}/api/auth/me`, { headers: headers() });
+    if (!res.ok) throw Object.assign(new Error(`API ${res.status}`), { status: res.status });
+    return (await res.json()) as { id: string; email: string | null };
+  },
+  /** Redeem a promo code to unlock a domain's packs (monetization stub — payments deferred).
+   *  Requires login; the backend binds the grant to the verified user, not anything sent. */
+  async redeemPromo(domain: string, code: string): Promise<{ unlocked: boolean; domain: string }> {
+    return postJson<{ unlocked: boolean; domain: string }>("/api/entitlements/redeem", { domain, code });
   },
 
   // ── implementation milestones (persisted + auto-verified plan) ────────────

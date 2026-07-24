@@ -470,3 +470,181 @@ export interface GamificationView {
   state: GamificationState | null;
   awards: GamificationAward[];
 }
+
+// ── v5 contracts (docs/V5_CONTRACTS.md) — 5-skill scoring, packs, free overview,
+// tickets, entitlements. The frontend half of the CH-13 lock.
+
+export type SkillKey =
+  | "messaging"
+  | "conversion"
+  | "discovery_visibility"
+  | "proof_trust"
+  | "structure_ux";
+
+export interface SkillSuggestion {
+  id: string;
+  text: string;
+  // The rubric criterion behind the suggestion; null for the P1 heuristic
+  // Messaging/Conversion signals (their LLM criteria land in P2).
+  criterion: string | null;
+}
+
+export interface SkillScore {
+  score: number; // 0-100
+  // "hybrid" = an LLM refined a source criterion; "provisional" = P1 heuristic
+  // (Messaging/Conversion); "neutral" = honestly couldn't judge — never a fake 0.
+  confidence: "deterministic" | "hybrid" | "provisional" | "neutral" | string;
+  source_criteria: string[];
+  suggestions: SkillSuggestion[];
+  evidence?: Record<string, unknown>;
+}
+
+// One impact-ranked fix in the "do these first" list (CH-06): ranked by weight × severity
+// across every skill, so high-weight failures surface above low-weight passes.
+export interface SkillPriority {
+  skill: SkillKey;
+  text: string;
+  criterion: string | null;
+  skill_score: number;
+  impact: number;
+}
+
+export interface SkillScores {
+  skills_version: string;
+  overall: number; // 0-100, weighted by per-skill weights (CH-06)
+  skills: Record<SkillKey, SkillScore>;
+  priorities: SkillPriority[];
+}
+
+export interface PackPage {
+  url: string;
+  page_type: string;
+  final_score: number;
+  rank: number;
+}
+
+export interface PackPreview {
+  pack_index: number; // 1 = homepage pack, always
+  title: string;
+  impact_score: number;
+  page_count: number;
+  pages: PackPage[];
+  locked: boolean; // entitlement-derived; anonymous = Pack 1 unlocked, rest locked
+  status: "preview" | "unlocked" | "crawled" | "scored" | string;
+}
+
+// GET /api/packs/{run_id} — the packs persisted for a deep-audit run (CH-03). Same
+// PackPreview shape as the overview's live preview, so one card renders both.
+export interface PacksResponse {
+  run_id: number;
+  packs: PackPreview[];
+}
+
+// GET /api/packs/{run_id}/{pack_index} — the gated deep value (CH-02a): per-page five-skill
+// detail. 403 when the pack is locked for the caller (enforced server-side).
+export interface PackPageDetail {
+  url: string;
+  page_type: string;
+  overall: number | null;
+  detail: { skills: Record<SkillKey, SkillScore>; priorities: SkillPriority[] } | null;
+}
+
+export interface PackDetailResponse {
+  run_id: number;
+  pack_index: number;
+  title: string;
+  pages: PackPageDetail[];
+}
+
+// v5 CH-14 — the AI-snapshot: does the page get cited by AI answer engines (Perplexity)?
+// "unavailable" = the check didn't run (engine unconfigured / no question / timed out) —
+// never conflated with "not_cited". `via` says whether a match was a structured citation
+// (hard) or an answer-text mention (softer).
+export interface AiVisibility {
+  status: "cited" | "not_cited" | "unavailable" | string;
+  engine: string;
+  question?: string | null;
+  reason?: string | null; // only on status="unavailable"
+  via?: "citations" | "answer_text" | null;
+  matched?: string[];
+  cached?: boolean;
+}
+
+// POST /api/overview — the free URL-first entry (CH-09). No auth, cached per domain.
+export interface OverviewResponse {
+  domain: string;
+  route: "rich" | "thin" | "dead" | string;
+  cached: boolean;
+  generated_at: string;
+  site: {
+    industry: string | null;
+    industry_source: string | null;
+    location: string | null;
+    services: string[];
+    about: string | null;
+    cms_type: string | null;
+    discovered: number;
+    source: string | null;
+  };
+  coverage: {
+    pct: number | null;
+    matched: number | null;
+    total_nodes: number | null;
+    missing: number | null;
+    top_missing: { slug: string | null; title?: string | null; priority?: number | null }[];
+  } | null;
+  homepage: { url: string; aeo_total: number; aeo_max: number; priority_tier: string } | null;
+  skills: SkillScores | null;
+  skills_unavailable_reason?: string | null;
+  ai_visibility?: AiVisibility | null;
+  packs: PackPreview[];
+  competitors: { names: string[]; reason: string | null };
+  next: { deeper: string };
+}
+
+// Ticket contract (CH-08) — P0 lock; the board UI + close-triggered verification land in
+// P5. MilestoneStatus stays 3-state until then (StatusControl/STATUS_META/useQuestTracker
+// hardcode it and are migrated together).
+export type TicketStatus = "pending" | "in_progress" | "closed_pending_verify" | "verified_completed";
+
+export interface TicketFields {
+  assignee: string | null;
+  target_date: string | null; // ISO date
+  page_url: string | null;
+  skill: SkillKey | null;
+  baseline_score: number | null; // 0-100 skill score pinned at ticket open
+  current_score: number | null; // refreshed by the verification re-crawl
+  closed_at: string | null;
+}
+
+// A v5 ticket (CH-08/CH-15) — one per (page, skill), grouped one milestone per pack.
+// Distinct from the agency MilestoneTask; carries the 4-state TicketStatus + before/after.
+export interface Ticket extends TicketFields {
+  id: number;
+  task_key: string;
+  label: string;
+  action_required: string | null;
+  how_to: string | null;
+  status: TicketStatus;
+  status_source: "manual" | "crawl";
+  detected_at: string | null;
+  pack_index: number;
+}
+
+export interface TicketsResponse {
+  run_id: number;
+  pack_index?: number;
+  tickets: Ticket[];
+}
+
+// Entitlements (CH-02b) — P0 lock; enforcement arrives with auth in P4. Payments are
+// stubbed by decision (§9.2): grants come from source "manual" | "promo" until a
+// provider is chosen.
+export interface Entitlement {
+  user_id: string;
+  domain: string;
+  scope: "free_overview" | "pack" | "all_packs" | "tickets";
+  pack_index: number | null; // null unless scope === "pack"
+  expires_at: string | null;
+  source: "manual" | "stripe" | "promo" | string;
+}

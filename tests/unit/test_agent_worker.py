@@ -58,8 +58,9 @@ def test_reap_fails_the_run_behind_a_dead_agent_job(monkeypatch) -> None:
     ])
     monkeypatch.setattr(
         agent_runs_repo, "set_status",
-        lambda rid, status, **kw: (failed.update({rid: status}), only_from.update({rid: kw.get("only_from")}))
-        and True or True,
+        lambda rid, status, **kw: ((failed.update({rid: status}), only_from.update({rid: kw.get("only_from")}))
+        and True)
+        or True,
     )
     worker_mod.Worker()._reap_stale()
     assert failed == {"r-dead": "failed"}
