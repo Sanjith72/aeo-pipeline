@@ -3,7 +3,7 @@
 // The v5 free overview (CH-09) — the no-signup deliverable behind the hero's URL field.
 // Renders POST /api/overview: five homepage skill scores, an impact-ordered pack preview
 // (Pack 1 open, deeper packs locked), what's missing, and on-site competitor names, with
-// one CTA into the full audit (/studio autobuild). Design system per CH-12: existing
+// one CTA into the full audit (/studio one-page review). Design system per CH-12: existing
 // tokens only (.card/.btn/.input, ink/accent, label-mono); scores are length-encoded
 // monochrome meters — no new palette, identity carried by text labels.
 
