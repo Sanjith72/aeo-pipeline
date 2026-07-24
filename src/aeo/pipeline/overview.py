@@ -252,7 +252,10 @@ async def build_overview(domain: str, *, max_urls: int | None = None) -> dict[st
             "names": competitor_names,
             "reason": None if competitor_names else "none_detected",
         },
-        "next": {"deeper": f"/studio?domain={quote(canon)}&autobuild=1"},
+        # review=1 lands the studio on the one-page review — every intake section
+        # prefilled on a single page, deep audit behind its "Build my plan" CTA.
+        # (autobuild=1 stays the unattended path used by saved-plan deep links.)
+        "next": {"deeper": f"/studio?domain={quote(canon)}&review=1"},
     }
     _store(domain, payload)
     return payload

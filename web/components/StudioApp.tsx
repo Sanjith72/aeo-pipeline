@@ -116,6 +116,10 @@ const STEPS = [
 export function StudioApp() {
   const [step, setStep] = useState(0);
   const [view, setView] = useState<"wizard" | "results">("wizard");
+  // The overview's "Go deeper" handoff (?review=1): every intake section — website, about
+  // you, competitors, goals — prefilled and stacked on ONE page instead of the four-step
+  // wizard. "Edit" from results returns to whichever layout the user came through.
+  const [onePage, setOnePage] = useState(false);
 
   // the brief — the website is the only required first input (#1)
   const [domain, setDomain] = useState("");
@@ -176,21 +180,25 @@ export function StudioApp() {
       })
       .catch(() => {});
   }, []);
-  // Deep-link auto-build: a saved plan's "Build a plan for your site" link arrives as
-  // /studio?domain=…&name=…&autobuild=1. Read it once, strip the params (so a refresh doesn't
-  // re-run the build), and kick off the full crawl→audit unattended.
+  // Deep-link entries, read once then stripped (so a refresh doesn't re-run them):
+  //   • autobuild=1 — a saved plan's "Build a plan for your site" link; runs the full
+  //     crawl→audit unattended (contract: docs/prompts/route-split-studio.md).
+  //   • review=1 — the overview's "Go deeper" CTA; prefills from the fast crawl, then
+  //     shows the one-page review so the user sees everything before the audit runs.
   const autoBuildStarted = useRef(false);
   useEffect(() => {
     if (autoBuildStarted.current || typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
-    if (params.get("autobuild") !== "1") return;
+    const mode =
+      params.get("review") === "1" ? "review" : params.get("autobuild") === "1" ? "autobuild" : null;
     const target = params.get("domain")?.trim();
-    if (!target) return;
+    if (!mode || !target) return;
     autoBuildStarted.current = true;
     const nameVal = params.get("name")?.trim() || "";
     window.history.replaceState(null, "", window.location.pathname + window.location.hash);
-    void autoBuild(target, nameVal);
-    // autoBuild is a stable closure over component state setters; run once on mount.
+    if (mode === "review") void startReview(target);
+    else void autoBuild(target, nameVal);
+    // Both entry functions are stable closures over component state setters; run once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -223,6 +231,10 @@ export function StudioApp() {
   const noSite = !hasSite || profileResult?.route === "dead";
   const profile: SiteProfile | null = deepProfile ?? profileResult?.profile ?? plan?.profile ?? null;
   const analyzed = profile !== null || plan !== null || auditJob?.status === "succeeded";
+  // Stricter than `analyzed` for the one-pager's CTA: the fast prefill crawl alone sets a
+  // profile (so `analyzed` is true the moment the review page lands), but nothing has been
+  // BUILT yet — "Rebuild"/"View my results" must wait for a real plan or deep audit.
+  const hasRunResults = plan !== null || deepProfile !== null || auditJob?.status === "succeeded";
 
   // fire session_start / return_visit once on load (Block F instrumentation)
   useEffect(() => {
@@ -572,6 +584,53 @@ export function StudioApp() {
     }
   }
 
+  // The overview's "Go deeper" entry (?review=1), and the one-pager's own re-scan button:
+  // run the same fast prefill crawl the wizard does on leaving step 0, seed the recommended
+  // goals immediately (the one-pager shows the goals section right away, so it can't wait
+  // for the wizard's "reached step 3" effect), then land on the one-page review. The deep
+  // audit still only starts on "Build my plan".
+  async function startReview(target: string) {
+    setOnePage(true);
+    setView("wizard");
+    setHasSite(true);
+    setDomain(target);
+    // A different site than the last crawl → drop its prefills so nothing leaks over.
+    if (lastProfiledDomainRef.current !== null && lastProfiledDomainRef.current !== target) {
+      resetPrefilled();
+    }
+    lastProfiledDomainRef.current = target;
+    setError(null);
+    setPrefilling(true);
+    setPrefillDone(false);
+    try {
+      const res = await api.profile({ domain: target, use_llm: useLlm });
+      setProfileResult(res);
+      if (res.industry) setCategory(res.industry);
+      if (res.location) setLocation(res.location);
+      if (res.services && res.services.length > 0) setServicesText(res.services.join(", "));
+      if (res.competitors && res.competitors.length > 0) {
+        setCompetitors(
+          res.competitors.map((c) => ({ name: c.name, domain: c.domain || undefined, source: "suggested" as const })),
+        );
+      }
+      // Functional updates: resetPrefilled()'s clears are still queued in this batch, so
+      // reading the closure's `name`/`goals` here would see the pre-reset values.
+      setName((n) => (n.trim() ? n : deriveName(target)));
+      goalsSeeded.current = true;
+      setGoals((prev) =>
+        prev.length > 0 ? prev : [...recommendedGoals(res.profile ?? null, !!(res.location ?? "").trim())],
+      );
+      setPrefillDone(true);
+      await new Promise((resolve) => setTimeout(resolve, 450));
+    } catch (err) {
+      // network failure only — the one-pager still renders for manual entry
+      setError(err instanceof Error ? err.message : String(err));
+      setName((n) => (n.trim() ? n : deriveName(target)));
+    } finally {
+      setPrefilling(false);
+    }
+  }
+
   async function generateDeliverables() {
     setDelivLoading(true);
     setDelivError(null);
@@ -674,6 +733,301 @@ export function StudioApp() {
   const recommended = recommendedGoals(profile, !!location.trim());
   const customGoals = goals.filter((g) => !GOAL_OPTIONS.some((o) => o.label === g));
 
+  // ── intake section bodies — shared verbatim between the four-step wizard and the
+  // one-page review (?review=1), so the two layouts can never drift apart ─────────────
+
+  const siteFields = (
+    <div className="space-y-6">
+      <div>
+        <span className="field-label">Do you have a website?</span>
+        <div className="inline-flex rounded-xl border border-white/[0.13] bg-white/[0.04] p-1">
+          {[
+            { v: true, label: "Yes" },
+            { v: false, label: "Not yet" },
+          ].map(({ v, label }) => (
+            <button
+              key={label}
+              type="button"
+              aria-pressed={hasSite === v}
+              onClick={() => setHasSite(v)}
+              className={`rounded-lg px-5 py-2 text-sm transition-all duration-200 ${
+                hasSite === v ? "bg-white/10 font-medium text-ink" : "text-ink-300 hover:text-ink-700"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <Field
+        label={hasSite ? "Your website address" : "Got a domain name picked out?"}
+        hint={hasSite ? undefined : "optional"}
+        required={hasSite}
+      >
+        {/* NO autoFocus here: React focuses on hydration, and the browser scrolls
+            a focused element into view — the page would open scrolled to this
+            input instead of at the top. */}
+        <input
+          className="input"
+          value={domain}
+          onChange={(e) => setDomain(e.target.value)}
+          placeholder="yourbusiness.com"
+          inputMode="url"
+          aria-label="Website address"
+        />
+      </Field>
+
+      {/* One-pager only: the domain was edited away from the site we scanned — offer a
+          re-scan that refills every section (the wizard gets this via "Continue"). */}
+      {onePage && hasSite && domain.trim() !== "" && lastProfiledDomainRef.current !== domain.trim() && !prefilling && (
+        <LiquidButton
+          variant="secondary"
+          className="px-5 py-2.5"
+          onClick={() => void startReview(domain.trim())}
+        >
+          Scan this address & refill the page
+        </LiquidButton>
+      )}
+
+      <p className="text-[13px] leading-[1.55] text-[#6f6f77]">
+        {hasSite
+          ? "We take a quick look and show your AI visibility score in seconds — then pre-fill the next steps for you."
+          : "No website yet? No problem — we'll plan your ideal one from scratch."}
+      </p>
+
+      {/* The seconds-long prefill crawl: a per-section progress card so the
+          wait reads as motion toward a filled-in "About you", not a spinner. */}
+      {prefilling && hasSite && <PrefillProgress done={prefillDone} />}
+    </div>
+  );
+
+  // Score ring + crawl outcome notes + the re-crawl opt-in. The wizard shows these at the
+  // top of "About you"; the one-pager lifts them into its page-level summary.
+  const aboutStatus = (
+    <>
+      {/* Critical #1: the score lands the instant the fast crawl finishes — a
+          credit-score moment on step 1, not gated behind the 5–15 min audit. */}
+      {profileResult?.profile && !noSite && (
+        <ScoreRing profile={profileResult.profile} provisional className="step-in" />
+      )}
+      {profileResult && profileResult.route !== "dead" && (
+        <p className="step-in rounded-lg border border-emerald-500/25 bg-emerald-500/[0.08] px-3.5 py-2.5 text-sm text-emerald-300">
+          <Check className="mr-1.5 inline" width={13} height={13} />
+          We looked at <span className="font-mono">{domain.trim()}</span> and filled in what we
+          could. Edit anything below.
+        </p>
+      )}
+      {noSite && hasSite && (
+        <p className="step-in rounded-lg border border-amber-500/25 bg-amber-500/[0.08] px-3.5 py-2.5 text-sm text-amber-200">
+          We couldn't read much from that address, so we'll plan from your answers. Fill in
+          the basics below.
+        </p>
+      )}
+      {!noSite && profileResult?.cache_age_hours != null && (
+        <label className="step-in flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-sm">
+          <input
+            type="checkbox"
+            className="toggle mt-0.5"
+            checked={forceRecrawl}
+            onChange={(e) => setForceRecrawl(e.target.checked)}
+          />
+          <span>
+            <span className="block font-medium text-ink">Re-crawl my site from scratch</span>
+            <span className="block text-xs text-ink-300">
+              We have data from {formatAge(profileResult.cache_age_hours)} — leave this off to
+              reuse it (faster), or turn it on to read every page fresh.
+            </span>
+          </span>
+        </label>
+      )}
+    </>
+  );
+
+  const aboutFields = (
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))] gap-[18px]">
+      <Field label="Business name" required>
+        <input
+          className="input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Harbor Dental"
+          autoComplete="organization"
+          aria-label="Business name"
+        />
+      </Field>
+      <Field label="Industry">
+        <Combobox
+          value={category}
+          onChange={setCategory}
+          options={INDUSTRIES}
+          placeholder="Choose or type your own…"
+          ariaLabel="Industry"
+        />
+      </Field>
+      <Field label="Location" hint="optional">
+        <Combobox
+          value={location}
+          onChange={setLocation}
+          options={LOCATIONS}
+          placeholder="City, region, or online only…"
+          ariaLabel="Location"
+        />
+      </Field>
+      <Field label="What do you offer?" hint="optional — separate with commas">
+        <input
+          className="input"
+          value={servicesText}
+          onChange={(e) => setServicesText(e.target.value)}
+          placeholder="e.g. teeth whitening, implants, check-ups"
+          aria-label="What do you offer"
+        />
+      </Field>
+    </div>
+  );
+
+  const competitorFields = (
+    <CompetitorPicker
+      businessName={name}
+      category={category}
+      location={location}
+      domain={domain}
+      services={splitList(servicesText)}
+      selected={competitors}
+      onChange={setCompetitors}
+    />
+  );
+
+  const goalsFields = (
+    <>
+      {/* #3 — the analysis pre-selects the goals it recommends; the user
+          unticks what doesn't fit or adds their own below. */}
+      <div className="step-in rounded-xl border border-white/10 bg-white/[0.03] px-4 py-[13px] text-[13.5px] leading-[1.55] text-ink-500">
+        <strong className="font-semibold text-ink">
+          {profile ? "We pre-selected goals from your analysis." : "Pick what success looks like."}
+        </strong>{" "}
+        Keep what fits, untick what doesn&apos;t, or add your own.
+      </div>
+
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,270px),1fr))] gap-[13px]">
+        {GOAL_OPTIONS.map((g, i) => {
+          const on = goals.includes(g.label);
+          const rec = recommended.has(g.label);
+          return (
+            <button
+              key={g.label}
+              type="button"
+              aria-pressed={on}
+              onClick={() => toggleGoal(g.label)}
+              className={`step-in flex flex-col gap-[7px] rounded-[14px] border p-[17px] pb-[15px] text-left transition-[transform,border-color,background-color] duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-0.5 hover:border-white/40 ${
+                on ? "border-white/35 bg-white/[0.055]" : "border-white/10 bg-white/[0.018]"
+              }`}
+              style={{ animationDelay: `${i * 50}ms` }}
+            >
+              <span className="flex flex-wrap items-center gap-x-[11px] gap-y-1.5">
+                <span
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-all duration-200 ${
+                    on ? "border-accent bg-accent text-paper" : "border-white/30 bg-transparent"
+                  }`}
+                >
+                  {on && <Check className="animate-pop" width={12} height={12} />}
+                </span>
+                <span className="text-[15px] font-semibold text-ink">{g.label}</span>
+                {rec && (
+                  <span className="whitespace-nowrap rounded-full border border-white/15 px-2 py-[3px] font-mono text-[9px] font-medium uppercase tracking-[0.07em] text-ink-500">
+                    {profile ? "Rec. by AI" : "Suggested"}
+                  </span>
+                )}
+              </span>
+              <span className="pl-[31px] text-[13px] leading-[1.5] text-ink-300">{g.hint}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* #3 — custom goals: any objective the presets don't cover. */}
+      <div>
+        {customGoals.length > 0 && (
+          <div className="mb-2.5 flex flex-wrap gap-2">
+            {customGoals.map((cg) => (
+              <span key={cg} className="chip">
+                {cg}
+                <button
+                  type="button"
+                  onClick={() => toggleGoal(cg)}
+                  aria-label={`Remove goal ${cg}`}
+                  className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full text-ink-300 transition-colors hover:bg-ink/10 hover:text-ink"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2.5">
+          <input
+            className="input min-w-0 flex-1"
+            value={customGoalInput}
+            onChange={(e) => setCustomGoalInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addCustomGoal();
+              }
+            }}
+            placeholder="Add your own — e.g. Rank for niche topics"
+            aria-label="Add a custom goal"
+          />
+          <LiquidButton
+            variant="secondary"
+            className="shrink-0 px-6"
+            onClick={addCustomGoal}
+            disabled={!customGoalInput.trim()}
+          >
+            + Add
+          </LiquidButton>
+        </div>
+      </div>
+
+      <Field label="Anything frustrating you right now?" hint="optional">
+        <textarea
+          className="input min-h-20 resize-y"
+          value={challenges}
+          onChange={(e) => setChallenges(e.target.value)}
+          placeholder="e.g. Customers tell us ChatGPT never mentions our shop…"
+          aria-label="Anything frustrating you right now"
+        />
+      </Field>
+
+      <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5 text-sm">
+        <input
+          type="checkbox"
+          className="toggle"
+          checked={useLlm}
+          onChange={(e) => setUseLlm(e.target.checked)}
+        />
+        <span>
+          <span className="block font-medium text-ink">Write my downloadable files with AI</span>
+          <span className="block text-xs text-ink-300">
+            Optional. Your interactive plan is ready instantly either way — turn this on and we&apos;ll
+            offer to AI-write every downloadable page for you on the results screen (a few minutes,
+            only when you ask).
+          </span>
+        </span>
+      </label>
+    </>
+  );
+
+  // The expectation-setting line beside the "Build my plan" CTA (wizard step 4 footer /
+  // one-pager build panel).
+  const buildExpectation = !loading && (
+    <p className="text-[13px] leading-[1.55] text-[#6f6f77]">
+      {noSite
+        ? "“Build my plan” usually takes under a minute."
+        : "You already have your score — “Build my plan” runs the full page-by-page review, usually around 10 minutes. You'll see progress as it goes, and you can leave this tab open."}
+    </p>
+  );
+
   return (
     <section className="relative" style={{ padding: "clamp(70px, 9vh, 110px) 0" }}>
       {/* blueprint grid backdrop, masked to an ellipse so it fades out (design §3) */}
@@ -701,9 +1055,23 @@ export function StudioApp() {
           >
             Your results
           </h2>
+        ) : onePage ? (
+          <>
+            {/* key: swapping headline copy in place must REMOUNT DisplayH2 — its lead words
+                are keyed RisingWords inside a once-only whileInView container, so replaced
+                words would mount into an already-finished animation and stay hidden. */}
+            <DisplayH2 key="onepage-h" lead="Everything we found, on one" accent="page" trail="." className="mb-[18px] mt-[26px]" />
+            <p
+              className="mb-[clamp(40px,6vh,60px)] max-w-[58ch] text-ink-500"
+              style={{ fontSize: "clamp(1rem, 1.6vw, 1.15rem)", lineHeight: 1.6 }}
+            >
+              Your website, your business, your competitors, and your goals — prefilled from the scan
+              and laid out below. Edit anything, then run the full audit.
+            </p>
+          </>
         ) : (
           <>
-            <DisplayH2 lead="Start with your website. We’ll do the" accent="rest" trail="." className="mb-[18px] mt-[26px]" />
+            <DisplayH2 key="wizard-h" lead="Start with your website. We’ll do the" accent="rest" trail="." className="mb-[18px] mt-[26px]" />
             <p
               className="mb-[clamp(40px,6vh,60px)] max-w-[54ch] text-ink-500"
               style={{ fontSize: "clamp(1rem, 1.6vw, 1.15rem)", lineHeight: 1.6 }}
@@ -813,6 +1181,83 @@ export function StudioApp() {
         </>
       ) : prefilling ? (
         <AnalysisSequence domain={domain.trim() || "your site"} />
+      ) : onePage ? (
+        /* The one-page review: the same four intake sections the wizard steps through,
+           stacked and prefilled — score summary up top, one "Build my plan" CTA at the
+           end. The rail on the left jumps to sections instead of switching steps. */
+        <div className="grid animate-fade-up-slow items-start gap-[22px] md:grid-cols-[minmax(230px,290px)_minmax(0,1fr)]">
+          <SectionRail />
+          <div className="min-w-0">
+            {error && <ErrorNote message={error} />}
+            {(profileResult || (noSite && hasSite)) && (
+              <div className="mb-[22px] space-y-4">{aboutStatus}</div>
+            )}
+            <div className="flex flex-col gap-[22px]">
+              <ReviewSection index={0}>{siteFields}</ReviewSection>
+              <ReviewSection index={1}>{aboutFields}</ReviewSection>
+              <ReviewSection index={2}>{competitorFields}</ReviewSection>
+              <ReviewSection index={3}>
+                <div className="space-y-6">{goalsFields}</div>
+              </ReviewSection>
+
+              {/* the build panel — the page's single CTA */}
+              <div
+                className="rounded-[20px] border border-white/10"
+                style={{
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.01))",
+                  padding: "clamp(24px, 3vw, 36px)",
+                  boxShadow: "0 24px 70px -30px rgba(0,0,0,0.8)",
+                }}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="max-w-[54ch] space-y-2">
+                    <h3 className="text-[17px] font-semibold text-ink">
+                      {noSite
+                        ? "Happy with the details? Build your plan."
+                        : "Happy with the details? Run the full audit."}
+                    </h3>
+                    {buildExpectation}
+                  </div>
+                  <div className="text-right">
+                    <LiquidButton
+                      variant="primary"
+                      className="px-[26px] py-[13px]"
+                      onClick={createPlan}
+                      disabled={loading || (hasSite && !domain.trim())}
+                    >
+                      {loading ? (
+                        <>
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                          {noSite ? "Building your plan…" : "Reviewing your website…"}
+                        </>
+                      ) : hasRunResults ? (
+                        "Rebuild my plan →"
+                      ) : (
+                        "Build my plan →"
+                      )}
+                    </LiquidButton>
+                    {hasSite && !domain.trim() && (
+                      <p className="mt-1.5 text-xs text-ink-300">Add your website address in section 01 first</p>
+                    )}
+                  </div>
+                </div>
+                {loading && !noSite && auditJob && (
+                  <div className="mt-5">
+                    <AnalysisProgress job={auditJob} onCancel={cancelAudit} />
+                  </div>
+                )}
+                {hasRunResults && !loading && (
+                  <button
+                    onClick={() => setView("results")}
+                    className="mt-4 text-[13px] font-medium text-ink-500 underline-offset-4 transition-colors hover:text-ink hover:underline"
+                  >
+                    View my results →
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       ) : (
         <div className="grid animate-fade-up-slow items-start gap-[22px] md:grid-cols-[minmax(230px,290px)_minmax(0,1fr)]">
           <Stepper current={step} onJump={setStep} />
@@ -832,279 +1277,23 @@ export function StudioApp() {
               {/* keyed so header + content rise together on every step change */}
               <div key={step} className="panel-in">
                 <StepHeader index={step} />
-                {step === 0 && (
-                  <div className="space-y-6">
-                    <div>
-                      <span className="field-label">Do you have a website?</span>
-                      <div className="inline-flex rounded-xl border border-white/[0.13] bg-white/[0.04] p-1">
-                        {[
-                          { v: true, label: "Yes" },
-                          { v: false, label: "Not yet" },
-                        ].map(({ v, label }) => (
-                          <button
-                            key={label}
-                            type="button"
-                            aria-pressed={hasSite === v}
-                            onClick={() => setHasSite(v)}
-                            className={`rounded-lg px-5 py-2 text-sm transition-all duration-200 ${
-                              hasSite === v ? "bg-white/10 font-medium text-ink" : "text-ink-300 hover:text-ink-700"
-                            }`}
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <Field
-                      label={hasSite ? "Your website address" : "Got a domain name picked out?"}
-                      hint={hasSite ? undefined : "optional"}
-                      required={hasSite}
-                    >
-                      {/* NO autoFocus here: React focuses on hydration, and the browser scrolls
-                          a focused element into view — the page would open scrolled to this
-                          input instead of at the top. */}
-                      <input
-                        className="input"
-                        value={domain}
-                        onChange={(e) => setDomain(e.target.value)}
-                        placeholder="yourbusiness.com"
-                        inputMode="url"
-                        aria-label="Website address"
-                      />
-                    </Field>
-
-                    <p className="text-[13px] leading-[1.55] text-[#6f6f77]">
-                      {hasSite
-                        ? "We take a quick look and show your AI visibility score in seconds — then pre-fill the next steps for you."
-                        : "No website yet? No problem — we'll plan your ideal one from scratch."}
-                    </p>
-
-                    {/* The seconds-long prefill crawl: a per-section progress card so the
-                        wait reads as motion toward a filled-in "About you", not a spinner. */}
-                    {prefilling && hasSite && <PrefillProgress done={prefillDone} />}
-                  </div>
-                )}
+                {step === 0 && siteFields}
 
                 {step === 1 && (
                   <div className="space-y-5">
-                    {/* Critical #1: the score lands the instant the fast crawl finishes — a
-                        credit-score moment on step 1, not gated behind the 5–15 min audit. */}
-                    {profileResult?.profile && !noSite && (
-                      <ScoreRing profile={profileResult.profile} provisional className="step-in" />
-                    )}
-                    {profileResult && profileResult.route !== "dead" && (
-                      <p className="step-in rounded-lg border border-emerald-500/25 bg-emerald-500/[0.08] px-3.5 py-2.5 text-sm text-emerald-300">
-                        <Check className="mr-1.5 inline" width={13} height={13} />
-                        We looked at <span className="font-mono">{domain.trim()}</span> and filled in what we
-                        could. Edit anything below.
-                      </p>
-                    )}
-                    {noSite && hasSite && (
-                      <p className="step-in rounded-lg border border-amber-500/25 bg-amber-500/[0.08] px-3.5 py-2.5 text-sm text-amber-200">
-                        We couldn't read much from that address, so we'll plan from your answers. Fill in
-                        the basics below.
-                      </p>
-                    )}
-                    {!noSite && profileResult?.cache_age_hours != null && (
-                      <label className="step-in flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5 text-sm">
-                        <input
-                          type="checkbox"
-                          className="toggle mt-0.5"
-                          checked={forceRecrawl}
-                          onChange={(e) => setForceRecrawl(e.target.checked)}
-                        />
-                        <span>
-                          <span className="block font-medium text-ink">Re-crawl my site from scratch</span>
-                          <span className="block text-xs text-ink-300">
-                            We have data from {formatAge(profileResult.cache_age_hours)} — leave this off to
-                            reuse it (faster), or turn it on to read every page fresh.
-                          </span>
-                        </span>
-                      </label>
-                    )}
-                    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))] gap-[18px]">
-                      <Field label="Business name" required>
-                        <input
-                          className="input"
-                          value={name}
-                          onChange={(e) => setName(e.target.value)}
-                          placeholder="e.g. Harbor Dental"
-                          autoComplete="organization"
-                          aria-label="Business name"
-                        />
-                      </Field>
-                      <Field label="Industry">
-                        <Combobox
-                          value={category}
-                          onChange={setCategory}
-                          options={INDUSTRIES}
-                          placeholder="Choose or type your own…"
-                          ariaLabel="Industry"
-                        />
-                      </Field>
-                      <Field label="Location" hint="optional">
-                        <Combobox
-                          value={location}
-                          onChange={setLocation}
-                          options={LOCATIONS}
-                          placeholder="City, region, or online only…"
-                          ariaLabel="Location"
-                        />
-                      </Field>
-                      <Field label="What do you offer?" hint="optional — separate with commas">
-                        <input
-                          className="input"
-                          value={servicesText}
-                          onChange={(e) => setServicesText(e.target.value)}
-                          placeholder="e.g. teeth whitening, implants, check-ups"
-                          aria-label="What do you offer"
-                        />
-                      </Field>
-                    </div>
+                    {aboutStatus}
+                    {aboutFields}
                   </div>
                 )}
 
-                {step === 2 && (
-                  <CompetitorPicker
-                    businessName={name}
-                    category={category}
-                    location={location}
-                    domain={domain}
-                    services={splitList(servicesText)}
-                    selected={competitors}
-                    onChange={setCompetitors}
-                  />
-                )}
+                {step === 2 && competitorFields}
 
                 {step === 3 && (
                   <div className="space-y-6">
-                    {/* #3 — the analysis pre-selects the goals it recommends; the user
-                        unticks what doesn't fit or adds their own below. */}
-                    <div className="step-in rounded-xl border border-white/10 bg-white/[0.03] px-4 py-[13px] text-[13.5px] leading-[1.55] text-ink-500">
-                      <strong className="font-semibold text-ink">
-                        {profile ? "We pre-selected goals from your analysis." : "Pick what success looks like."}
-                      </strong>{" "}
-                      Keep what fits, untick what doesn&apos;t, or add your own.
-                    </div>
-
-                    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,270px),1fr))] gap-[13px]">
-                      {GOAL_OPTIONS.map((g, i) => {
-                        const on = goals.includes(g.label);
-                        const rec = recommended.has(g.label);
-                        return (
-                          <button
-                            key={g.label}
-                            type="button"
-                            aria-pressed={on}
-                            onClick={() => toggleGoal(g.label)}
-                            className={`step-in flex flex-col gap-[7px] rounded-[14px] border p-[17px] pb-[15px] text-left transition-[transform,border-color,background-color] duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-0.5 hover:border-white/40 ${
-                              on ? "border-white/35 bg-white/[0.055]" : "border-white/10 bg-white/[0.018]"
-                            }`}
-                            style={{ animationDelay: `${i * 50}ms` }}
-                          >
-                            <span className="flex flex-wrap items-center gap-x-[11px] gap-y-1.5">
-                              <span
-                                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-all duration-200 ${
-                                  on ? "border-accent bg-accent text-paper" : "border-white/30 bg-transparent"
-                                }`}
-                              >
-                                {on && <Check className="animate-pop" width={12} height={12} />}
-                              </span>
-                              <span className="text-[15px] font-semibold text-ink">{g.label}</span>
-                              {rec && (
-                                <span className="whitespace-nowrap rounded-full border border-white/15 px-2 py-[3px] font-mono text-[9px] font-medium uppercase tracking-[0.07em] text-ink-500">
-                                  {profile ? "Rec. by AI" : "Suggested"}
-                                </span>
-                              )}
-                            </span>
-                            <span className="pl-[31px] text-[13px] leading-[1.5] text-ink-300">{g.hint}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* #3 — custom goals: any objective the presets don't cover. */}
-                    <div>
-                      {customGoals.length > 0 && (
-                        <div className="mb-2.5 flex flex-wrap gap-2">
-                          {customGoals.map((cg) => (
-                            <span key={cg} className="chip">
-                              {cg}
-                              <button
-                                type="button"
-                                onClick={() => toggleGoal(cg)}
-                                aria-label={`Remove goal ${cg}`}
-                                className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full text-ink-300 transition-colors hover:bg-ink/10 hover:text-ink"
-                              >
-                                ×
-                              </button>
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      <div className="flex gap-2.5">
-                        <input
-                          className="input min-w-0 flex-1"
-                          value={customGoalInput}
-                          onChange={(e) => setCustomGoalInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              addCustomGoal();
-                            }
-                          }}
-                          placeholder="Add your own — e.g. Rank for niche topics"
-                          aria-label="Add a custom goal"
-                        />
-                        <LiquidButton
-                          variant="secondary"
-                          className="shrink-0 px-6"
-                          onClick={addCustomGoal}
-                          disabled={!customGoalInput.trim()}
-                        >
-                          + Add
-                        </LiquidButton>
-                      </div>
-                    </div>
-
-                    <Field label="Anything frustrating you right now?" hint="optional">
-                      <textarea
-                        className="input min-h-20 resize-y"
-                        value={challenges}
-                        onChange={(e) => setChallenges(e.target.value)}
-                        placeholder="e.g. Customers tell us ChatGPT never mentions our shop…"
-                        aria-label="Anything frustrating you right now"
-                      />
-                    </Field>
-
-                    <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5 text-sm">
-                      <input
-                        type="checkbox"
-                        className="toggle"
-                        checked={useLlm}
-                        onChange={(e) => setUseLlm(e.target.checked)}
-                      />
-                      <span>
-                        <span className="block font-medium text-ink">Write my downloadable files with AI</span>
-                        <span className="block text-xs text-ink-300">
-                          Optional. Your interactive plan is ready instantly either way — turn this on and we&apos;ll
-                          offer to AI-write every downloadable page for you on the results screen (a few minutes,
-                          only when you ask).
-                        </span>
-                      </span>
-                    </label>
-
+                    {goalsFields}
                     {/* The actual CTA lives in the panel footer ("Build my plan →") — this
                         is the expectation-setting line beside it. */}
-                    {!loading && (
-                      <p className="text-[13px] leading-[1.55] text-[#6f6f77]">
-                        {noSite
-                          ? "“Build my plan” usually takes under a minute."
-                          : "You already have your score — “Build my plan” runs the full page-by-page review, usually around 10 minutes. You'll see progress as it goes, and you can leave this tab open."}
-                      </p>
-                    )}
-
+                    {buildExpectation}
                     {loading && !noSite && auditJob && <AnalysisProgress job={auditJob} onCancel={cancelAudit} />}
                     {analyzed && !loading && (
                       <button
@@ -1347,6 +1536,74 @@ function Stepper({ current, onJump }: { current: number; onJump: (i: number) => 
         })}
       </ol>
     </nav>
+  );
+}
+
+// The one-page review's left rail — same look as the wizard Stepper, but every section is
+// already on the page, so rows are smooth-scroll anchor jumps instead of step switches.
+function SectionRail() {
+  return (
+    <nav aria-label="Sections" className="md:sticky md:top-24 md:self-start">
+      <ol className="flex gap-1.5 overflow-x-auto pb-2 md:flex-col md:overflow-visible md:pb-0">
+        {STEPS.map(({ label }, i) => (
+          <li key={label} className="shrink-0 md:shrink">
+            <a
+              href={`#review-sec-${i}`}
+              onClick={(e) => {
+                e.preventDefault();
+                document.getElementById(`review-sec-${i}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+              className="flex w-full items-center gap-3.5 rounded-xl border border-transparent px-4 py-[13px] text-left transition-colors duration-[250ms] hover:bg-white/[0.05]"
+            >
+              <span
+                aria-hidden
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/[0.14] bg-white/[0.03] font-mono text-[10.5px] font-medium text-ink-300"
+              >
+                {String(i + 1).padStart(2, "0")}
+              </span>
+              <span className="whitespace-nowrap text-[14.5px] font-medium text-ink-500 md:whitespace-normal">
+                {label}
+              </span>
+            </a>
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
+// One stacked panel of the one-page review — the same card treatment as the wizard panel,
+// headed by the section's wizard label + blurb so the two layouts read as the same product.
+function ReviewSection({ index, children }: { index: number; children: React.ReactNode }) {
+  return (
+    <section
+      id={`review-sec-${index}`}
+      aria-labelledby={`review-sec-h-${index}`}
+      className="rounded-[20px] border border-white/10"
+      style={{
+        background: "linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.01))",
+        padding: "clamp(24px, 3vw, 36px)",
+        boxShadow: "0 24px 70px -30px rgba(0,0,0,0.8)",
+        // Anchor jumps must clear the fixed top bar.
+        scrollMarginTop: 96,
+      }}
+    >
+      <div className="mb-[22px] flex items-start gap-3.5">
+        <span
+          aria-hidden
+          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/[0.18] bg-white/[0.06] font-mono text-[10.5px] font-medium text-accent"
+        >
+          {String(index + 1).padStart(2, "0")}
+        </span>
+        <div>
+          <h3 id={`review-sec-h-${index}`} className="text-xl font-semibold tracking-[-0.02em] text-accent">
+            {STEPS[index].label}
+          </h3>
+          <p className="mt-1.5 text-[14px] leading-[1.6] text-ink-500">{STEPS[index].blurb}</p>
+        </div>
+      </div>
+      {children}
+    </section>
   );
 }
 
