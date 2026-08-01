@@ -51,11 +51,26 @@ export function QuestMap({
   visible?: boolean;
 }) {
   const { model, shareUrl, error, verifying, lastVerify, checkSite } = tracker;
-  const verifyNote = lastVerify
-    ? lastVerify.newlyVerified > 0
-      ? `Verified live — ${lastVerify.newlyVerified} change${lastVerify.newlyVerified === 1 ? "" : "s"} confirmed on your site. Bonus coins awarded.`
-      : "We checked your site — nothing new is live yet. Publish a change, then check again."
-    : null;
+  // Mirrors MilestoneDashboard's wording rules: never congratulate work that wasn't done,
+  // and never report an unreadable site as "nothing new". Coins are only claimed for
+  // changes detected AFTER the baseline — pre-existing pages earn none.
+  const verifyNote = ((): string | null => {
+    if (!lastVerify) return null;
+    const { newlyVerified, alreadyLive, siteReachable, siteBlocked, baselined, skipped } = lastVerify;
+    if (skipped === "disabled") return "Automatic verification is turned off for this site.";
+    if (skipped === "nothing_pending") return "Everything we can check automatically is already verified.";
+    if (!siteReachable)
+      return siteBlocked
+        ? "We couldn't read your site — a bot filter blocked our check, so nothing could be confirmed."
+        : "We couldn't reach your site just now, so nothing could be confirmed. Try again in a minute.";
+    if (baselined)
+      return alreadyLive > 0
+        ? `Snapshot taken — ${alreadyLive} step${alreadyLive === 1 ? " was" : "s were"} already in place. From here, anything you publish counts as a real win.`
+        : "Snapshot taken — from here, anything you publish counts as a real win.";
+    if (newlyVerified > 0)
+      return `Verified live — ${newlyVerified} change${newlyVerified === 1 ? "" : "s"} confirmed on your site. Bonus coins awarded.`;
+    return "We read your site, but none of the remaining steps are live yet. Publish a change, then check again.";
+  })();
   // Fire the quest event before the shared write so telemetry keeps naming this surface.
   const setStatus = (taskKey: string, status: MilestoneStatus) => {
     api.track("quest_task_status", { task_key: taskKey, status });

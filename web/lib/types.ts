@@ -143,7 +143,10 @@ export interface MilestoneTask {
   verify_kind: "page" | "service" | "heading" | "manual";
   verify_target: string | null;
   status: MilestoneStatus;
-  status_source: "manual" | "crawl";
+  // How the current status was reached. "baseline" = already live the first time we
+  // looked, so it is NOT work the owner did this session (the plan is generated
+  // crawl-free and recommends pages a site may already have).
+  status_source: "manual" | "crawl" | "baseline";
   detected_at: string | null;
   // Developer Handoff: a developer-ready technical brief (server-generated from the
   // verify signal — JSON-LD snippet, exact heading tag, etc.). Present on owner + share views.
@@ -184,7 +187,24 @@ export interface MilestoneDashboard {
 }
 
 export interface MilestoneVerifyResult {
-  summary: { checked: number; newly_verified: number; verified_keys: string[] };
+  summary: {
+    checked: number;
+    // Artifacts detected AFTER the baseline — genuinely new, published work.
+    newly_verified: number;
+    // Artifacts already live the first time we looked. Real, but not done this session.
+    already_live: number;
+    verified_keys: string[];
+    // False → we could not read the site (DNS, timeout, or a bot wall). Without this the
+    // UI reported every silent failure as "nothing new is live yet", which blames the user
+    // for a fetch we never completed.
+    site_reachable: boolean;
+    site_blocked: boolean;
+    pages_fetched: number;
+    // True when this run established the baseline rather than crediting new work.
+    baselined: boolean;
+    // Set when the run returned without crawling: "nothing_pending" | "disabled".
+    skipped: "nothing_pending" | "disabled" | null;
+  };
   dashboard: MilestoneDashboard;
 }
 

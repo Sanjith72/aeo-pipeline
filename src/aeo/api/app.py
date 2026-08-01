@@ -1470,11 +1470,45 @@ def _owner_dashboard(target: Any, *, dashboard: dict[str, Any] | None = None) ->
     return dash
 
 
+def _client_for(domain: str) -> Any:
+    """The target row for ``domain``, or 404. Shared by every milestone endpoint."""
+    from ..storage.repos import targets as targets_repo
+
+    target = targets_repo.by_domain(domain)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"no client for domain {domain}")
+    return target
+
+
+def _assert_plan_access(target: Any, user: Any) -> None:
+    """Authorize a MUTATION of this client's implementation plan.
+
+    These routes take only ``{domain}`` and sit behind the shared service key, which the
+    web proxy injects on every anonymous browser request — so without this check any
+    visitor who knew a customer's domain could trigger a crawl of that site, flip their
+    milestones, or revoke their live Developer Handoff link.
+
+    An anonymously-created plan has no owner and stays open (unchanged signed-out flow).
+    Once a logged-in user has synced it, only that user may mutate it."""
+    from ..storage.repos import milestones as milestones_repo
+
+    owner = milestones_repo.owner_of(target.id)
+    if owner is None:
+        return
+    if user is None or str(user.id) != owner:
+        raise HTTPException(status_code=403, detail="this plan belongs to another account")
+
+
 @app.post("/api/milestones")
-def sync_milestones(req: MilestoneSyncRequest) -> dict[str, Any]:
+def sync_milestones(
+    req: MilestoneSyncRequest, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
     """Persist a generated plan as the client's implementation milestones and return the
     dashboard. Idempotent: re-syncing keeps existing per-task progress and any
-    crawl-verified status (stable task ids), only refreshing descriptions."""
+    crawl-verified status (stable task ids), only refreshing descriptions.
+
+    A logged-in sync CLAIMS the plan (``owner_user_id``); afterwards only that user can
+    mutate it. Anonymous syncs leave it unowned, as before."""
     from ..report.milestones import plan_to_milestones
     from ..storage.repos import milestones as milestones_repo
     from ..storage.repos import targets as targets_repo
@@ -1486,7 +1520,10 @@ def sync_milestones(req: MilestoneSyncRequest) -> dict[str, Any]:
     # on a later re-sync (upsert COALESCE-preserves the prior value when this is None).
     cms = req.cms_type if req.cms_type in ("wordpress", "shopify") else None
     target = targets_repo.upsert(req.name or domain, domain, "client", cms_type=cms)
-    milestones_repo.sync_plan(target.id, plan_to_milestones(req.plan))
+    _assert_plan_access(target, user)
+    milestones_repo.sync_plan(
+        target.id, plan_to_milestones(req.plan), owner_user_id=(str(user.id) if user else None)
+    )
     return _owner_dashboard(target)
 
 
@@ -1504,15 +1541,15 @@ def get_milestones(domain: str) -> dict[str, Any]:
 
 
 @app.post("/api/milestones/task")
-def update_milestone_task(req: MilestoneTaskUpdate) -> dict[str, Any]:
+def update_milestone_task(
+    req: MilestoneTaskUpdate, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
     """Owner's manual status toggle for one task (Pending / In Progress / Verified).
     Returns the recomputed dashboard."""
     from ..storage.repos import milestones as milestones_repo
-    from ..storage.repos import targets as targets_repo
 
-    target = targets_repo.by_domain(req.domain)
-    if target is None:
-        raise HTTPException(status_code=404, detail=f"no client for domain {req.domain}")
+    target = _client_for(req.domain)
+    _assert_plan_access(target, user)
     dash = milestones_repo.set_task_status(target.id, req.task_key, req.status)
     if dash is None:
         raise HTTPException(status_code=404, detail=f"no task {req.task_key}")
@@ -1520,36 +1557,58 @@ def update_milestone_task(req: MilestoneTaskUpdate) -> dict[str, Any]:
 
 
 @app.post("/api/milestones/verify")
-async def verify_milestones(req: MilestoneVerifyRequest) -> dict[str, Any]:
+async def verify_milestones(
+    req: MilestoneVerifyRequest, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
     """Run the verification crawl now ('Check my site') — discover the live site, detect
     which pending milestone artifacts are now present, auto-verify them, and return the
-    refreshed dashboard + a summary of what flipped. Needs network + a live DB."""
-    from ..crawl.discovery import discover
-    from ..pipeline.milestone_audit import verify_client_milestones
-    from ..storage.repos import targets as targets_repo
+    refreshed dashboard + a summary of what flipped. Needs network + a live DB.
 
-    target = targets_repo.by_domain(req.domain)
-    if target is None:
-        raise HTTPException(status_code=404, detail=f"no client for domain {req.domain}")
-    discovery = await discover(req.domain)
+    The FIRST run for a client is a baseline: the plan is generated crawl-free, so it
+    recommends pages the site may already have, and those are reported as ``already_live``
+    rather than credited as newly published work (see ``pipeline.milestone_audit``)."""
+    import asyncio
+
+    from ..crawl.discovery import discover, seed_url
+    from ..pipeline.milestone_audit import should_verify, verify_client_milestones
+
+    target = await asyncio.to_thread(_client_for, req.domain)
+    await asyncio.to_thread(_assert_plan_access, target, user)
+
+    # Decide BEFORE paying for a full site crawl. This used to run discovery first and only
+    # then notice there was nothing to verify (or that verification was switched off),
+    # making the user wait through a real crawl to be told "nothing new is live yet".
+    if not await asyncio.to_thread(should_verify, target.id):
+        summary = await verify_client_milestones(target.id, target.domain)
+        return {"summary": summary, "dashboard": await asyncio.to_thread(_owner_dashboard, target)}
+
+    # Crawl the canonical domain, not the raw typed string: `example.com/pricing` would
+    # otherwise seed discovery at an inner page and under-detect the rest of the site.
+    domain = seed_url(target.domain)
+    discovery = await discover(domain)
     summary = await verify_client_milestones(
-        target.id, req.domain, discovered_slugs=[d.url for d in discovery.urls],
+        target.id, domain, discovered_slugs=[d.url for d in discovery.urls],
     )
-    return {"summary": summary, "dashboard": _owner_dashboard(target)}
+    # psycopg2 + the dev_brief render are blocking; this is the one async route in the
+    # family, so keep them off the event loop the concurrent requests share.
+    return {"summary": summary, "dashboard": await asyncio.to_thread(_owner_dashboard, target)}
 
 
 @app.post("/api/share/rotate")
-def rotate_share(req: ShareRotateRequest) -> dict[str, Any]:
+def rotate_share(
+    req: ShareRotateRequest, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
     """Revoke the client's current Developer Handoff link and issue a fresh one (owner
     action — AUTHENTICATED; the guard only exempts the read-only GET under /api/share/).
     The old /share/<token> link stops resolving immediately. Returns the new token so the
-    UI can rebuild every handoff link/textarea optimistically."""
-    from ..storage.repos import milestones as milestones_repo
-    from ..storage.repos import targets as targets_repo
+    UI can rebuild every handoff link/textarea optimistically.
 
-    target = targets_repo.by_domain(req.domain)
-    if target is None:
-        raise HTTPException(status_code=404, detail=f"no client for domain {req.domain}")
+    Owner-gated: revoking another account's live handoff link is the most destructive of
+    these mutations, so it takes the same ownership check as the rest."""
+    from ..storage.repos import milestones as milestones_repo
+
+    target = _client_for(req.domain)
+    _assert_plan_access(target, user)
     return {"share_token": milestones_repo.rotate_share_token(target.id)}
 
 

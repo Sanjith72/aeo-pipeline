@@ -63,12 +63,15 @@ async function proxy(req: NextRequest, path: string[]): Promise<Response> {
     }
   }
 
+  // Log the target + cause server-side, but never echo them to the browser: this file
+  // exists precisely so the backend origin never ships to the client, and the old message
+  // put ${BACKEND} straight into the 502 body.
+  console.error(
+    `[api-proxy] ${method} ${path.join("/")} failed after ${MAX_ATTEMPTS} attempts ` +
+      `(target ${target}): ${(lastErr as Error)?.message ?? "fetch failed"}`,
+  );
   return NextResponse.json(
-    {
-      detail:
-        `proxy could not reach the API at ${BACKEND} after ${MAX_ATTEMPTS} attempts: ` +
-        `${(lastErr as Error)?.message ?? "fetch failed"}`,
-    },
+    { detail: "The API is temporarily unreachable. Please try again in a moment." },
     { status: 502 },
   );
 }

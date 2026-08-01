@@ -12,8 +12,10 @@ import asyncio
 
 from aeo.intelligence.milestone_verify import (
     SiteSignals,
+    confirm_slugs,
     evaluate,
     gather_site_signals,
+    page_candidates,
     path_slug,
     signals_from_docs,
 )
@@ -144,11 +146,57 @@ def test_evaluate_verifies_page_when_slug_is_live():
     assert evaluate(_tasks(), signals) == {"page:/services/teeth-whitening"}
 
 
-def test_evaluate_matches_renamed_slug_by_heading():
-    # Site shipped the page under a different slug but the offering shows in a heading.
-    signals = SiteSignals(slugs={"/whitening"}, headings=["Teeth Whitening"])
-    done = evaluate(_tasks(), signals)
-    assert "page:/services/teeth-whitening" in done
+def test_evaluate_matches_renamed_slug_by_last_segment():
+    # Sites move /services/x to /x (or /our-services/x) freely — still the same page.
+    signals = SiteSignals(slugs={"/teeth-whitening"})
+    assert "page:/services/teeth-whitening" in evaluate(_tasks(), signals)
+
+
+def test_evaluate_ignores_mere_mentions_in_copy():
+    """A page task is about a PAGE existing. Talking about the topic is not the same thing.
+
+    This is the regression that mattered most: the old heading/offering/nav fallback
+    fuzzy-matched a slug's last segment against live text, so an ordinary site verified
+    most of its roadmap on the first check without publishing anything."""
+    signals = SiteSignals(
+        slugs={"/", "/about-us", "/services", "/contact", "/blog"},
+        headings=["Emergency Plumbing Services in Austin", "Why Choose Us"],
+        services=["Emergency Plumbing", "Drain Cleaning"],
+        nav_labels=["Home", "About Us", "Services", "Contact", "Blog", "FAQs", "EN"],
+    )
+    tasks = [
+        {"task_key": k, "verify_kind": "page", "verify_target": k}
+        for k in (
+            "/about",                        # nav "About Us"
+            "/faq",                          # nav "FAQs"
+            "/services/emergency-plumbing",  # an <h1> mentions it
+            "/services/drain-cleaning",      # a listed service mentions it
+            "/locations/austin",             # "...in Austin" inside a heading
+            "/contact-us",                   # nav "Contact"
+        )
+    ]
+    assert evaluate(tasks, signals) == set()
+
+
+def test_evaluate_tail_match_requires_a_multi_segment_target():
+    """`/blog/pricing` must not satisfy a `/pricing` task — the tail rule exists to absorb
+    a renamed PREFIX, not to match any page that happens to end the same way."""
+    tasks = [{"task_key": "p", "verify_kind": "page", "verify_target": "/pricing"}]
+    assert evaluate(tasks, SiteSignals(slugs={"/blog/pricing"})) == set()
+    assert evaluate(tasks, SiteSignals(slugs={"/pricing"})) == {"p"}
+
+
+def test_label_match_is_whole_token_not_substring():
+    """A two-letter language switcher must not verify an unrelated service page: the old
+    bidirectional substring test accepted "en" inside "emergency"."""
+    tasks = [{"task_key": "svc", "verify_kind": "service", "verify_target": "Emergency Plumbing"}]
+    assert evaluate(tasks, SiteSignals(services=["EN"], nav_labels=["EN"])) == set()
+    assert evaluate(tasks, SiteSignals(services=["Emergency Plumbing Services"])) == {"svc"}
+
+
+def test_label_match_needs_more_than_one_generic_word():
+    tasks = [{"task_key": "svc", "verify_kind": "service", "verify_target": "Services"}]
+    assert evaluate(tasks, SiteSignals(services=["Services"], nav_labels=["Services"])) == set()
 
 
 def test_evaluate_never_auto_verifies_manual_tasks():
@@ -214,3 +262,65 @@ def test_gather_site_signals_dead_homepage_is_empty_not_fatal():
 
     sig = asyncio.run(gather_site_signals("nope.example", fetch=dead_fetch))
     assert sig.slugs == set() and sig.services == []
+    # ...but it must NOT read as "we looked and found nothing". Callers branch on this to
+    # avoid telling the user their published work isn't live when we never reached them.
+    assert sig.reachable is False
+    assert sig.pages_fetched == 0
+
+
+def test_gather_site_signals_reports_reachable_when_it_reads_the_site():
+    async def fake_fetch(url: str):
+        return _HTML if url.rstrip("/").endswith("harbor.com") else None
+
+    sig = asyncio.run(gather_site_signals("harbor.com", fetch=fake_fetch))
+    assert sig.reachable is True
+    assert sig.blocked is False
+    assert sig.pages_fetched == 1
+
+
+def test_gather_site_signals_flags_a_bot_wall_as_blocked():
+    """A 200 challenge stub is not the site. Parsing it yields empty signals, which used to
+    be indistinguishable from an honest "nothing published yet"."""
+
+    async def walled(url: str):
+        return "<html><head><title>Just a moment...</title></head><body>Client Challenge</body></html>"
+
+    sig = asyncio.run(gather_site_signals("walled.example", fetch=walled))
+    assert sig.reachable is False
+    assert sig.blocked is True
+
+
+# ── confirm_slugs (a referenced slug is not a live page) ─────────────────────
+
+
+def test_confirm_slugs_keeps_only_urls_that_resolve():
+    """Sitemap <loc>s and nav hrefs are never fetched upstream, so a stale entry or a broken
+    link would otherwise mark a 404 as "verified live"."""
+
+    async def fetch(url: str):
+        return "<html>ok</html>" if url.endswith("/real") else None
+
+    confirmed = asyncio.run(
+        confirm_slugs({"/real", "/stale"}, domain="harbor.com", fetch=fetch)
+    )
+    assert confirmed == {"/real"}
+
+
+def test_page_candidates_exposes_slugs_needing_confirmation():
+    signals = SiteSignals(slugs={"/services/teeth-whitening"})
+    assert page_candidates(_tasks(), signals) == {
+        "page:/services/teeth-whitening": "/services/teeth-whitening"
+    }
+
+
+def test_confirm_slugs_caps_work_without_optimistically_accepting():
+    """Over the cap we leave slugs UNconfirmed rather than assuming they're live —
+    under-claiming is the safe direction for a signal that permanently marks work done."""
+
+    async def fetch(url: str):
+        return "<html>ok</html>"
+
+    slugs = {f"/p{i}" for i in range(10)}
+    confirmed = asyncio.run(confirm_slugs(slugs, domain="x.com", fetch=fetch, limit=3))
+    assert len(confirmed) == 3
+    assert confirmed < slugs

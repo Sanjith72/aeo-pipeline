@@ -39,11 +39,40 @@ const STATUS_ORDER: MilestoneStatus[] = ["pending", "in_progress", "verified_com
 
 export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
   const { dash, error, verifying, lastVerify, shareUrl, checkSite } = tracker;
-  const verifyNote = lastVerify
-    ? lastVerify.newlyVerified > 0
-      ? `Nice — we found ${lastVerify.newlyVerified} change${lastVerify.newlyVerified === 1 ? "" : "s"} live and marked ${lastVerify.newlyVerified === 1 ? "it" : "them"} verified.`
-      : "We checked your site — nothing new is live yet. Publish a change, then check again."
-    : null;
+  // Every branch here used to collapse into "nothing new is live yet" — including the ones
+  // where we never actually read the site. Each distinct outcome now says what happened,
+  // and only genuinely new work is congratulated.
+  const verifyNote = ((): { text: string; tone: "good" | "warn" } | null => {
+    if (!lastVerify) return null;
+    const { newlyVerified, alreadyLive, siteReachable, siteBlocked, baselined, skipped } = lastVerify;
+    if (skipped === "disabled")
+      return { text: "Automatic verification is turned off for this site.", tone: "warn" };
+    if (skipped === "nothing_pending")
+      return { text: "Everything we can check automatically is already verified.", tone: "good" };
+    if (!siteReachable)
+      return {
+        text: siteBlocked
+          ? "We couldn't read your site — it's behind a bot filter that blocked our check. Your changes may well be live; we just can't confirm them automatically."
+          : "We couldn't reach your site just now, so nothing could be confirmed. This is on our side, not yours — try again in a minute.",
+        tone: "warn",
+      };
+    if (baselined)
+      return {
+        text: alreadyLive > 0
+          ? `We've taken a snapshot of your site. ${alreadyLive} step${alreadyLive === 1 ? " was" : "s were"} already in place, so ${alreadyLive === 1 ? "it's" : "they're"} marked done — not counted as new work. From here, anything you publish gets verified as a real change.`
+          : "We've taken a snapshot of your site. From here, anything you publish gets verified as a real change.",
+        tone: "good",
+      };
+    if (newlyVerified > 0)
+      return {
+        text: `Nice — we found ${newlyVerified} change${newlyVerified === 1 ? "" : "s"} live and marked ${newlyVerified === 1 ? "it" : "them"} verified.`,
+        tone: "good",
+      };
+    return {
+      text: "We read your site, but none of the remaining steps are live yet. Publish a change, then check again.",
+      tone: "good",
+    };
+  })();
 
   // Fire the list event before the shared write so telemetry keeps naming this surface.
   // The segmented control re-sends the current status on a same-state click — skip those.
@@ -105,8 +134,9 @@ export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
                 <span className="font-medium text-amber-200">{progress.in_progress} in progress</span> ·{" "}
               </>
             )}
-            Our crawler re-checks your live site every week and marks each step done the moment
-            the change is detected — or check on demand.
+            Our crawler re-checks your live site every week and marks a step done once it can
+            confirm the new page is live — or check on demand. Steps without an on-site
+            signal (and anything we can&apos;t confirm) stay yours to tick off.
           </p>
           <button
             type="button"
@@ -125,9 +155,27 @@ export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
             )}
           </button>
         </div>
-        {verifyNote && (
-          <p className="step-in mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
-            {verifyNote}
+        {/* The shared tracker error, rendered where it can actually be SEEN. The only other
+            branch that reads `error` is the `error && !dash` early return above, which is
+            unreachable once the dashboard has loaded — so every failed check, status toggle,
+            and (worst) handoff-link revoke used to fail completely silently. */}
+        {error && (
+          <p
+            role="alert"
+            className="step-in mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300"
+          >
+            That didn&apos;t work: {error}
+          </p>
+        )}
+        {verifyNote && !error && (
+          <p
+            className={`step-in mt-3 rounded-lg border px-3 py-2 text-sm ${
+              verifyNote.tone === "warn"
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+            }`}
+          >
+            {verifyNote.text}
           </p>
         )}
         {done && (
@@ -263,6 +311,9 @@ function TaskRow({
 }) {
   const [open, setOpen] = useState(false);
   const verifiedByCrawl = task.status === "verified_completed" && task.status_source === "crawl";
+  // Already live when we first looked — real, but not work done here. Labelled separately
+  // so the tracker never implies the owner published something they didn't.
+  const preExisting = task.status === "verified_completed" && task.status_source === "baseline";
   const isVerified = task.status === "verified_completed";
   return (
     <li className="px-4 py-3">
@@ -284,6 +335,14 @@ function TaskRow({
             {verifiedByCrawl && (
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 font-medium text-emerald-300">
                 <Check width={10} height={10} /> auto-detected live
+              </span>
+            )}
+            {preExisting && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-ink/[0.06] px-1.5 py-0.5 font-medium text-ink-300"
+                title="This was already live when we first checked your site, so it's marked done — but it isn't counted as a change you published."
+              >
+                <Check width={10} height={10} /> already in place
               </span>
             )}
           </div>

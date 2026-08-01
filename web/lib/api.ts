@@ -281,9 +281,11 @@ export const api = {
     return postJson<MilestoneDashboard>("/api/milestones/task", req);
   },
   /** Run the verification crawl now ("Check my site") — detects which pending
-   *  artifacts are live, auto-verifies them, and returns the refreshed dashboard. */
-  verifyMilestones(domain: string): Promise<MilestoneVerifyResult> {
-    return postJson<MilestoneVerifyResult>("/api/milestones/verify", { domain });
+   *  artifacts are live, auto-verifies them, and returns the refreshed dashboard.
+   *  Takes `init` so callers can bound it: this runs a real site crawl, and without an
+   *  AbortSignal the spinner was capped only by the proxy's 300s ceiling. */
+  verifyMilestones(domain: string, init?: RequestInit): Promise<MilestoneVerifyResult> {
+    return postJson<MilestoneVerifyResult>("/api/milestones/verify", { domain }, init);
   },
   /** Revoke the current Developer Handoff link and get a fresh token (owner action,
    *  authenticated). The old /share/<token> link stops working immediately. */

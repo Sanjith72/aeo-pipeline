@@ -23,7 +23,9 @@ export interface QuestTask {
   category: string; // "content" | "visibility"
   // status, lifted from the milestone record
   status: MilestoneStatus;
-  statusSource: "manual" | "crawl" | null;
+  /** "baseline" = already live when we first checked, so it is NOT a win the player
+   *  earned here — it neither banks coins nor gets the "verified live" flourish. */
+  statusSource: "manual" | "crawl" | "baseline" | null;
   /** completed AND detected live by the verification crawl — earns the honest flourish. */
   verifiedLive: boolean;
   /** Coins actually count: crawl-verified, or an off-site (verify_kind "manual") task

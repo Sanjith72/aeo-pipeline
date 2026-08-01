@@ -24,6 +24,10 @@ _STATUSES = (PENDING, IN_PROGRESS, VERIFIED)
 
 SOURCE_MANUAL = "manual"
 SOURCE_CRAWL = "crawl"
+# Found already live the first time we looked (migration 0033). Real, but not work done
+# this session — the plan is generated crawl-free, so it recommends pages a site may
+# already have, and crediting those as "you published this" was a lie.
+SOURCE_BASELINE = "baseline"
 
 
 def _recompute_statuses(cur, client_id: int) -> None:
@@ -53,23 +57,54 @@ def _recompute_statuses(cur, client_id: int) -> None:
     )
 
 
-def sync_plan(client_id: int, specs: list[MilestoneSpec]) -> dict[str, int]:
+def owner_of(client_id: int) -> str | None:
+    """The user who owns this client's implementation plan, or None if it was created
+    anonymously. Ownership is claimed by the first LOGGED-IN sync (see ``sync_plan``) and
+    never transfers; an anonymous plan stays unowned, preserving the signed-out flow.
+
+    Callers use this to gate mutations — the endpoints previously took a bare ``{domain}``
+    and the shared service key, so any visitor could mutate any known customer's plan."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT owner_user_id FROM implementation_milestones "
+            " WHERE client_id = %s AND milestone_key NOT LIKE 'pack:%%' "
+            "   AND owner_user_id IS NOT NULL LIMIT 1",
+            (client_id,),
+        )
+        row = cur.fetchone()
+        return str(row["owner_user_id"]) if row else None
+
+
+def sync_plan(
+    client_id: int, specs: list[MilestoneSpec], *, owner_user_id: str | None = None
+) -> dict[str, int]:
     """Upsert a plan's milestones + tasks for a client. Idempotent: existing rows keep
     their status / status_source / detection, only their descriptive fields refresh, and
-    brand-new tasks are inserted as pending. Returns {milestones, tasks} counts touched."""
-    milestones = tasks = 0
+    brand-new tasks are inserted as pending.
+
+    Tasks the new plan no longer contains are PRUNED. Without this a re-plan left every
+    superseded recommendation on the dashboard forever, inflating ``progress.total`` and
+    telling the owner to build pages the current plan no longer asks for. Only milestones
+    present in ``specs`` are touched, so the disjoint v5 ``pack:`` tickets are unaffected.
+
+    Returns {milestones, tasks, pruned} counts touched."""
+    milestones = tasks = pruned = 0
     with transaction() as conn, conn.cursor() as cur:
         for spec in specs:
             cur.execute(
                 """
                 INSERT INTO implementation_milestones
-                    (client_id, milestone_key, title, blurb, position)
-                VALUES (%s, %s, %s, %s, %s)
+                    (client_id, milestone_key, title, blurb, position, owner_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (client_id, milestone_key) DO UPDATE SET
-                    title = EXCLUDED.title, blurb = EXCLUDED.blurb, position = EXCLUDED.position
+                    title = EXCLUDED.title, blurb = EXCLUDED.blurb, position = EXCLUDED.position,
+                    -- First logged-in sync claims ownership; it never transfers afterwards,
+                    -- so a later visitor (anonymous or not) cannot take over the plan.
+                    owner_user_id = COALESCE(implementation_milestones.owner_user_id,
+                                             EXCLUDED.owner_user_id)
                 RETURNING id
                 """,
-                (client_id, spec.milestone_key, spec.title, spec.blurb, spec.position),
+                (client_id, spec.milestone_key, spec.title, spec.blurb, spec.position, owner_user_id),
             )
             milestone_id = cur.fetchone()["id"]
             milestones += 1
@@ -99,8 +134,16 @@ def sync_plan(client_id: int, specs: list[MilestoneSpec]) -> dict[str, int]:
                     ),
                 )
                 tasks += 1
+            # Drop tasks this milestone no longer plans. Scoped to the milestone we just
+            # synced, so nothing outside this plan can be collected.
+            cur.execute(
+                "DELETE FROM milestone_tasks "
+                " WHERE milestone_id = %s AND NOT (task_key = ANY(%s))",
+                (milestone_id, [t.task_key for t in spec.tasks]),
+            )
+            pruned += cur.rowcount
         _recompute_statuses(cur, client_id)
-    return {"milestones": milestones, "tasks": tasks}
+    return {"milestones": milestones, "tasks": tasks, "pruned": pruned}
 
 
 def get_dashboard(client_id: int) -> dict[str, Any]:
@@ -169,7 +212,12 @@ def _task_dict(row: dict) -> dict[str, Any]:
 
 def set_task_status(client_id: int, task_key: str, status: str) -> dict[str, Any] | None:
     """Owner's manual status toggle for one task (status_source='manual'). Recomputes the
-    milestone roll-up and returns the updated dashboard, or None if the task isn't found."""
+    milestone roll-up and returns the updated dashboard, or None if the task isn't found.
+
+    Moving a task OUT of verified pins it (``owner_pinned``), so the next verification run
+    can't silently re-flip it — the owner has seen the crawl's verdict and disagreed.
+    Manually verifying it again clears the pin: they now agree, so let the crawl resume
+    maintaining it."""
     if status not in _STATUSES:
         raise ValueError(f"invalid status {status!r}")
     with transaction() as conn, conn.cursor() as cur:
@@ -178,12 +226,17 @@ def set_task_status(client_id: int, task_key: str, status: str) -> dict[str, Any
             UPDATE milestone_tasks t
                SET status = %s, status_source = 'manual',
                    detected_run_id = NULL,
-                   detected_at = CASE WHEN %s = 'verified_completed' THEN NOW() ELSE NULL END
+                   detected_at = CASE WHEN %s = 'verified_completed' THEN NOW() ELSE NULL END,
+                   owner_pinned = CASE
+                       WHEN %s = 'verified_completed' THEN FALSE
+                       WHEN t.status = 'verified_completed' THEN TRUE
+                       ELSE t.owner_pinned
+                   END
               FROM implementation_milestones m
              WHERE t.milestone_id = m.id AND m.client_id = %s AND t.task_key = %s
             RETURNING t.id
             """,
-            (status, status, client_id, task_key),
+            (status, status, status, client_id, task_key),
         )
         if cur.fetchone() is None:
             return None
@@ -192,8 +245,13 @@ def set_task_status(client_id: int, task_key: str, status: str) -> dict[str, Any
 
 
 def pending_verifiable(client_id: int) -> list[dict[str, Any]]:
-    """Tasks the weekly crawl can still try to auto-verify: not yet verified, and with an
-    on-site signal (verify_kind != 'manual'). The input to milestone_verify.evaluate."""
+    """Tasks the weekly crawl can still try to auto-verify: not yet verified, with an
+    on-site signal (verify_kind != 'manual'), and not pinned by the owner.
+
+    ``owner_pinned`` (0033) is the fix for a silent override: a task the owner un-verified
+    used to reappear as verified on the very next run, because this query could not tell an
+    untouched row from a deliberate reversal — every fresh task also defaults to
+    status_source='manual'. The input to milestone_verify.evaluate."""
     with transaction() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -204,32 +262,64 @@ def pending_verifiable(client_id: int) -> list[dict[str, Any]]:
                AND m.milestone_key NOT LIKE 'pack:%%'
                AND t.status <> 'verified_completed'
                AND t.verify_kind <> 'manual'
+               AND NOT t.owner_pinned
             """,
             (client_id,),
         )
         return [dict(r) for r in cur.fetchall()]
 
 
-def mark_verified(client_id: int, task_keys: list[str], run_id: int | None) -> int:
-    """Flip the given tasks to verified_completed (status_source='crawl'), stamp the
-    detecting run + time, and recompute milestone status. Returns how many flipped.
+def is_baselined(client_id: int) -> bool:
+    """Whether this client's site has already been snapshotted by a verification run.
+    False → the next run is the baseline and may not claim credit for what it finds."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute("SELECT milestones_baselined_at FROM clients WHERE id = %s", (client_id,))
+        row = cur.fetchone()
+        return bool(row and row["milestones_baselined_at"])
 
-    Only ever ADVANCES a task to verified (never un-verifies), and never overwrites a row
-    already verified — so a manual verification isn't relabeled 'crawl'."""
+
+def mark_baselined(client_id: int) -> None:
+    """Stamp the baseline moment. Set once and never cleared — after this, any newly
+    detected artifact is genuinely new work. Stamped even when the baseline run matched
+    nothing, because the site has still been looked at."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE clients SET milestones_baselined_at = NOW() "
+            "WHERE id = %s AND milestones_baselined_at IS NULL",
+            (client_id,),
+        )
+
+
+def mark_verified(
+    client_id: int, task_keys: list[str], run_id: int | None, *, source: str = SOURCE_CRAWL
+) -> int:
+    """Flip the given tasks to verified_completed, stamp the detecting run + time, and
+    recompute milestone status. Returns how many flipped.
+
+    ``source`` is ``'crawl'`` (detected after the baseline — real, credited work) or
+    ``'baseline'`` (already live the first time we looked — shown as "already in place"
+    and never counted as newly verified).
+
+    Only ever ADVANCES a task to verified (never un-verifies), never overwrites a row
+    already verified — so a manual verification isn't relabeled — and never touches a row
+    the owner pinned."""
     if not task_keys:
         return 0
+    if source not in (SOURCE_CRAWL, SOURCE_BASELINE):
+        raise ValueError(f"invalid verification source {source!r}")
     with transaction() as conn, conn.cursor() as cur:
         cur.execute(
             """
             UPDATE milestone_tasks t
-               SET status = 'verified_completed', status_source = 'crawl',
+               SET status = 'verified_completed', status_source = %s,
                    detected_run_id = %s, detected_at = NOW()
               FROM implementation_milestones m
              WHERE t.milestone_id = m.id AND m.client_id = %s
                AND t.task_key = ANY(%s)
                AND t.status <> 'verified_completed'
+               AND NOT t.owner_pinned
             """,
-            (run_id, client_id, task_keys),
+            (source, run_id, client_id, task_keys),
         )
         flipped = cur.rowcount
         if flipped:
