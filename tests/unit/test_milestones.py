@@ -313,6 +313,106 @@ def test_page_candidates_exposes_slugs_needing_confirmation():
     }
 
 
+# ── verify_client_milestones (the "Check my site now" flow, offline) ─────────
+#
+# Proves the exact question the button exists to answer: publish one of the plan's
+# suggested pages, click the button, and does that task flip (which is what moves the
+# dashboard's progress bar)? DB + network are both injected, so this runs offline.
+
+_BARE_HOME = "<html><body><h1>Harbor Dental</h1></body></html>"
+
+
+def _fetch_serving(live: set[str]):
+    """A site whose homepage links to nothing — so a page can only be found by probing
+    its exact recommended URL, the path that survives sitemap truncation."""
+
+    async def fetch(url: str):
+        path = path_slug(url)
+        if path == "/":
+            return _BARE_HOME
+        return "<html><body><h1>a real page</h1></body></html>" if path in live else None
+
+    return fetch
+
+
+def _stub_repo(monkeypatch, *, pending: list[dict], baselined: bool) -> dict:
+    from aeo.pipeline import milestone_audit as ma
+
+    recorded: dict = {}
+
+    def _mark(client_id, keys, run_id, *, source="crawl"):
+        recorded["keys"] = sorted(keys)
+        recorded["source"] = source
+        return len(keys)
+
+    monkeypatch.setattr(ma.milestones_repo, "pending_verifiable", lambda cid: pending)
+    monkeypatch.setattr(ma.milestones_repo, "is_baselined", lambda cid: baselined)
+    monkeypatch.setattr(ma.milestones_repo, "mark_baselined", lambda cid: recorded.setdefault("baselined", True))
+    monkeypatch.setattr(ma.milestones_repo, "mark_verified", _mark)
+    return recorded
+
+
+_PAGE_TASK = [
+    {"task_key": "page:/services/teeth-whitening", "verify_kind": "page",
+     "verify_target": "/services/teeth-whitening"},
+]
+
+
+def test_publishing_a_suggested_page_verifies_it(monkeypatch):
+    """The headline behaviour: the suggested page is now live, so the task flips and the
+    progress roll-up that feeds the bar gains a verified task."""
+    from aeo.pipeline.milestone_audit import verify_client_milestones
+
+    rec = _stub_repo(monkeypatch, pending=_PAGE_TASK, baselined=True)
+    out = asyncio.run(
+        verify_client_milestones(
+            1, "harbor.com", fetch=_fetch_serving({"/services/teeth-whitening"})
+        )
+    )
+    assert out["newly_verified"] == 1
+    assert out["verified_keys"] == ["page:/services/teeth-whitening"]
+    assert rec["source"] == "crawl"  # credited as real, published work
+
+
+def test_unpublished_page_stays_pending(monkeypatch):
+    from aeo.pipeline.milestone_audit import verify_client_milestones
+
+    _stub_repo(monkeypatch, pending=_PAGE_TASK, baselined=True)
+    out = asyncio.run(verify_client_milestones(1, "harbor.com", fetch=_fetch_serving(set())))
+    assert out["newly_verified"] == 0
+    assert out["site_reachable"] is True  # we DID read the site — an honest "not yet"
+
+
+def test_first_run_baselines_instead_of_claiming_credit(monkeypatch):
+    """A page that was already there before the plan existed is marked done, but reported
+    as already_live — never as a change the owner published."""
+    from aeo.pipeline.milestone_audit import verify_client_milestones
+
+    rec = _stub_repo(monkeypatch, pending=_PAGE_TASK, baselined=False)
+    out = asyncio.run(
+        verify_client_milestones(
+            1, "harbor.com", fetch=_fetch_serving({"/services/teeth-whitening"})
+        )
+    )
+    assert out["baselined"] is True
+    assert out["already_live"] == 1
+    assert out["newly_verified"] == 0
+    assert rec["source"] == "baseline"
+    assert rec["baselined"] is True
+
+
+def test_unreachable_site_is_not_reported_as_nothing_published(monkeypatch):
+    from aeo.pipeline.milestone_audit import verify_client_milestones
+
+    async def dead(url: str):
+        return None
+
+    _stub_repo(monkeypatch, pending=_PAGE_TASK, baselined=True)
+    out = asyncio.run(verify_client_milestones(1, "harbor.com", fetch=dead))
+    assert out["site_reachable"] is False
+    assert out["newly_verified"] == 0
+
+
 def test_confirm_slugs_caps_work_without_optimistically_accepting():
     """Over the cap we leave slugs UNconfirmed rather than assuming they're live —
     under-claiming is the safe direction for a signal that permanently marks work done."""
