@@ -134,11 +134,17 @@ def sync_plan(
                     ),
                 )
                 tasks += 1
-            # Drop tasks this milestone no longer plans. Scoped to the milestone we just
-            # synced, so nothing outside this plan can be collected.
+            # Drop ONLY pending/in_progress tasks this milestone no longer plans — the
+            # stale recommendations that inflate progress.total and tell the owner to build
+            # pages the current plan doesn't ask for. Verified rows are never deleted: they
+            # hold the detection record (detected_at / detected_run_id), and removing them
+            # would shrink progress.verified and march the progress bar BACKWARD after a
+            # re-plan. Same rule the ticket regen applies (see generate_tickets_from_run).
+            # Scoped to the milestone just synced, so nothing outside this plan is touched.
             cur.execute(
                 "DELETE FROM milestone_tasks "
-                " WHERE milestone_id = %s AND NOT (task_key = ANY(%s))",
+                " WHERE milestone_id = %s AND status IN ('pending', 'in_progress') "
+                "   AND NOT (task_key = ANY(%s))",
                 (milestone_id, [t.task_key for t in spec.tasks]),
             )
             pruned += cur.rowcount
