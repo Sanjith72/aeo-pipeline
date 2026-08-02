@@ -207,9 +207,12 @@ export const api = {
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as TicketsResponse;
   },
-  /** The tickets for one pack of a run. */
+  /** The tickets for one pack of a run. 403 when the pack is locked for the viewer — the
+   *  same gate as getPackDetail, since a ticket carries the same page×skill deep value.
+   *  Status-carrying so the board can render "locked" instead of "couldn't load". */
   async getPackTickets(runId: number, packIndex: number): Promise<TicketsResponse> {
     const res = await fetch(`${BASE}/api/tickets/${runId}/${packIndex}`, { headers: headers() });
+    if (res.status === 403) throw Object.assign(new Error("locked"), { status: 403 });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
     return (await res.json()) as TicketsResponse;
   },
@@ -241,6 +244,13 @@ export const api = {
    *  without changing its status — the "Recheck" affordance. */
   recheckTicket(runId: number, taskKey: string): Promise<{ ticket: Ticket; verify_job_id: number | null }> {
     return postJson(`/api/tickets/${runId}/recheck`, { task_key: taskKey });
+  },
+
+  /** Start Stripe Checkout for one pack (v5 CH-02b, flat price per pack). Returns the
+   *  hosted checkout URL to redirect to. The BUYER is never sent — the server takes it
+   *  from the verified JWT. 503 = payments unconfigured, 409 = already unlocked. */
+  checkoutPack(domain: string, packIndex: number): Promise<{ checkout_url: string; session_id: string }> {
+    return postJson("/api/checkout/pack", { domain, pack_index: packIndex });
   },
 
   // ── auth (v5 CH-07) ────────────────────────────────────────────────────────

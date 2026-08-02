@@ -161,6 +161,8 @@ export function StudioApp() {
   const [packs, setPacks] = useState<PackPreview[]>([]);
   const [runId, setRunId] = useState<number | null>(null);
   const [unlockOpen, setUnlockOpen] = useState(false);
+  // Which pack the unlock dialog is for (v5 CH-02b) — drives the per-pack Stripe checkout.
+  const [unlockPack, setUnlockPack] = useState<number | null>(null);
   const [openPack, setOpenPack] = useState<number | null>(null);
   const { authEnabled, user, openAuth } = useAuth();
   // R2-2 re-crawl: when the homepage was crawled recently, default to reusing that data
@@ -467,12 +469,14 @@ export function StudioApp() {
   }
 
   // v5 CH-02a/b: clicking "Unlock" on a locked pack. Anonymous → sign in first; a logged-in
-  // user gets the promo-code dialog. On unlock we re-fetch packs so the locks recompute.
-  function handleUnlock() {
+  // user gets the unlock dialog (buy this pack, or redeem a promo code). We remember WHICH
+  // pack was clicked so checkout charges for that one — the dialog can't guess it.
+  function handleUnlock(packIndex?: number) {
     if (!user) {
       openAuth("unlock-pack");
       return;
     }
+    setUnlockPack(packIndex ?? null);
     setUnlockOpen(true);
   }
   async function refreshPacks() {
@@ -846,7 +850,10 @@ export function StudioApp() {
 
   const aboutFields = (
     <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))] gap-[18px]">
-      <Field label="Business name" required>
+      {/* v5 CH-01: NOT required — a blank name derives from the domain (briefFromForm here,
+          BriefRequest server-side), and nothing but the URL may block submission. The
+          asterisk used to claim otherwise. */}
+      <Field label="Business name" hint="optional — we'll use your domain">
         <input
           className="input"
           value={name}
@@ -1130,7 +1137,7 @@ export function StudioApp() {
                     key={pack.pack_index}
                     pack={pack}
                     ctaMode={authEnabled ? "gated" : "preview"}
-                    onUnlock={handleUnlock}
+                    onUnlock={() => handleUnlock(pack.pack_index)}
                     onOpen={pack.locked ? undefined : () => setOpenPack((cur) => (cur === pack.pack_index ? null : pack.pack_index))}
                     opened={openPack === pack.pack_index}
                   />
@@ -1150,6 +1157,7 @@ export function StudioApp() {
           {unlockOpen && domain.trim() && (
             <UnlockModal
               domain={domain.trim()}
+              packIndex={unlockPack ?? undefined}
               onUnlocked={() => {
                 setUnlockOpen(false);
                 void refreshPacks();

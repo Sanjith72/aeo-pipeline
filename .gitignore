@@ -1,4 +1,9 @@
+# Every dotenv variant, not just the bare name: `.env` alone left .env.local /
+# .env.production committable, and those now hold the Stripe + Supabase credentials.
+# The negation keeps the tracked template tracked. (Mirrors root .dockerignore.)
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.pyc

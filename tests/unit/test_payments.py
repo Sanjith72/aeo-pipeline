@@ -1,0 +1,448 @@
+"""v5 CH-02b — Stripe Checkout for flat per-pack unlocks.
+
+The security-critical half is the webhook: it is exempt from the service X-API-Key guard,
+so its HMAC signature is the ONLY thing standing between a stranger's POST and a free pack.
+These run fully offline — no Stripe account, no network.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import time
+
+import pytest
+
+pytest.importorskip("fastapi")
+
+SECRET = "whsec_test_secret_value"
+
+
+def _auth_off(monkeypatch) -> None:
+    """Degrade user auth to dev mode so these tests exercise the PAYMENT path, not the JWT
+    gate. Blanking (not delenv) is required: pydantic-settings reads the .env FILE, so a
+    developer with real auth configured would otherwise get a 401 before the handler runs."""
+    for key in ("AEO__AUTH__JWT_SECRET", "AEO__AUTH__JWKS_URL", "AEO__AUTH__JWT_ISSUER"):
+        monkeypatch.setenv(key, "")
+
+
+@pytest.fixture
+def payments_on(monkeypatch):
+    """Configure Stripe keys on the live settings object and stub the entitlement write."""
+    monkeypatch.setenv("AEO__PAYMENTS__STRIPE_SECRET_KEY", "sk_test_123")
+    monkeypatch.setenv("AEO__PAYMENTS__WEBHOOK_SECRET", SECRET)
+    from aeo.settings import get_settings
+
+    get_settings.cache_clear()
+    from aeo.payments import stripe as mod
+
+    yield mod
+    get_settings.cache_clear()
+
+
+def _sign(body: bytes, secret: str = SECRET, ts: int | None = None) -> str:
+    t = int(time.time()) if ts is None else ts
+    sig = hmac.new(secret.encode(), f"{t}.".encode() + body, hashlib.sha256).hexdigest()
+    return f"t={t},v1={sig}"
+
+
+def _event(**meta) -> bytes:
+    payload = {
+        "type": "checkout.session.completed",
+        "data": {"object": {"id": "cs_1", "payment_status": "paid",
+                            "metadata": {"user_id": "u-1", "domain": "x.com", "pack_index": "2", **meta}}},
+    }
+    return json.dumps(payload).encode()
+
+
+# ── signature verification ────────────────────────────────────────────────────────
+
+
+def test_valid_signature_accepted(payments_on):
+    body = _event()
+    assert payments_on.verify_webhook(body, _sign(body))["type"] == "checkout.session.completed"
+
+
+def test_forged_signature_rejected(payments_on):
+    body = _event()
+    with pytest.raises(ValueError):
+        payments_on.verify_webhook(body, _sign(body, secret="whsec_attacker"))
+
+
+def test_missing_header_rejected(payments_on):
+    with pytest.raises(ValueError):
+        payments_on.verify_webhook(_event(), None)
+
+
+def test_tampered_body_rejected(payments_on):
+    """Sign one body, deliver another — the classic 'change the pack_index in flight'."""
+    header = _sign(_event())
+    with pytest.raises(ValueError):
+        payments_on.verify_webhook(_event(pack_index="99"), header)
+
+
+def test_stale_timestamp_rejected(payments_on):
+    body = _event()
+    old = int(time.time()) - 3600
+    with pytest.raises(ValueError):
+        payments_on.verify_webhook(body, _sign(body, ts=old))
+
+
+def test_unsigned_garbage_never_reaches_the_json_parser(payments_on):
+    """Body is parsed only AFTER the HMAC passes, so malformed JSON from an unsigned
+    source raises the signature error, not a JSON error."""
+    with pytest.raises(ValueError, match=r"does not match|malformed"):
+        payments_on.verify_webhook(b"not json at all", _sign(b"different bytes"))
+
+
+def test_no_webhook_secret_configured_rejects_everything(monkeypatch):
+    monkeypatch.setenv("AEO__PAYMENTS__WEBHOOK_SECRET", "")
+    from aeo.settings import get_settings
+
+    get_settings.cache_clear()
+    from aeo.payments import stripe as mod
+
+    body = _event()
+    with pytest.raises(ValueError):
+        mod.verify_webhook(body, _sign(body))
+    get_settings.cache_clear()
+
+
+def test_secret_rotation_accepts_either_signature(payments_on):
+    """Stripe sends several v1 signatures while a signing secret is being rolled."""
+    body = _event()
+    good = _sign(body).split("v1=")[1]
+    t = _sign(body).split(",")[0].split("=")[1]
+    header = f"t={t},v1=deadbeef,v1={good}"
+    assert payments_on.verify_webhook(body, header)["type"] == "checkout.session.completed"
+
+
+# ── event -> entitlement ──────────────────────────────────────────────────────────
+
+
+def test_paid_event_grants_that_pack(payments_on, monkeypatch):
+    calls = []
+    from aeo.storage.repos import entitlements as ent
+
+    monkeypatch.setattr(ent, "grant", lambda *a, **k: calls.append((a, k)) or {"id": 1})
+    row = payments_on.grant_from_event(json.loads(_event()))
+    assert row is not None
+    (args, kwargs) = calls[0]
+    assert args == ("u-1", "x.com")
+    assert kwargs["scope"] == "pack" and kwargs["pack_index"] == 2 and kwargs["source"] == "stripe"
+
+
+def test_unpaid_session_grants_nothing(payments_on, monkeypatch):
+    from aeo.storage.repos import entitlements as ent
+
+    monkeypatch.setattr(ent, "grant", lambda *a, **k: pytest.fail("must not grant"))
+    evt = json.loads(_event())
+    evt["data"]["object"]["payment_status"] = "unpaid"
+    assert payments_on.grant_from_event(evt) is None
+
+
+def test_unrelated_event_type_ignored(payments_on, monkeypatch):
+    from aeo.storage.repos import entitlements as ent
+
+    monkeypatch.setattr(ent, "grant", lambda *a, **k: pytest.fail("must not grant"))
+    evt = json.loads(_event())
+    evt["type"] = "invoice.paid"
+    assert payments_on.grant_from_event(evt) is None
+
+
+def test_missing_metadata_grants_nothing(payments_on, monkeypatch):
+    """Metadata is what we stamped server-side; without it there is no one to grant to —
+    never fall back to anything the payload might otherwise suggest."""
+    from aeo.storage.repos import entitlements as ent
+
+    monkeypatch.setattr(ent, "grant", lambda *a, **k: pytest.fail("must not grant"))
+    evt = json.loads(_event())
+    evt["data"]["object"]["metadata"] = {}
+    assert payments_on.grant_from_event(evt) is None
+
+
+def test_non_numeric_pack_index_grants_nothing(payments_on, monkeypatch):
+    from aeo.storage.repos import entitlements as ent
+
+    monkeypatch.setattr(ent, "grant", lambda *a, **k: pytest.fail("must not grant"))
+    assert payments_on.grant_from_event(json.loads(_event(pack_index="; DROP"))) is None
+
+
+# ── form encoding (Stripe's API is form-encoded, not JSON) ─────────────────────────
+
+
+def test_nested_form_encoding():
+    from aeo.payments.stripe import _form
+
+    out = dict(_form({"line_items": [{"price_data": {"unit_amount": 4900}, "quantity": 1}]}))
+    assert out["line_items[0][price_data][unit_amount]"] == "4900"
+    assert out["line_items[0][quantity]"] == "1"
+
+
+def test_form_encoding_drops_none():
+    from aeo.payments.stripe import _form
+
+    assert dict(_form({"a": 1, "b": None})) == {"a": "1"}
+
+
+# ── route wiring ──────────────────────────────────────────────────────────────────
+
+
+def test_webhook_route_is_exempt_from_the_api_key_guard(monkeypatch):
+    """Stripe cannot send X-API-Key. If the guard covered this path every real payment
+    would 401 and silently never grant."""
+    from unittest.mock import MagicMock
+
+    from aeo.api.app import require_api_key
+    from aeo.settings import get_settings
+
+    monkeypatch.setattr(get_settings().api, "auth_key", "s3cret")
+    req = MagicMock()
+    req.url.path = "/api/webhooks/stripe"
+    req.method = "POST"
+    req.headers = {}
+    require_api_key(req)  # must not raise
+
+    other = MagicMock()
+    other.url.path = "/api/packs/1"
+    other.method = "GET"
+    other.headers = {}
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:  # the exemption must be path-specific
+        require_api_key(other)
+    assert exc.value.status_code == 401
+
+
+def test_payments_disabled_without_a_key(monkeypatch):
+    monkeypatch.setenv("AEO__PAYMENTS__STRIPE_SECRET_KEY", "")
+    from aeo.settings import get_settings
+
+    get_settings.cache_clear()
+    from aeo.payments.stripe import payments_enabled
+
+    assert payments_enabled() is False
+    get_settings.cache_clear()
+
+
+# ── POST /api/checkout/pack ───────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def checkout_client(payments_on, monkeypatch):
+    """TestClient with auth degraded to the dev user and Stripe's HTTP call stubbed."""
+    from fastapi.testclient import TestClient
+
+    _auth_off(monkeypatch)
+    from aeo.settings import get_settings
+
+    get_settings.cache_clear()
+    from aeo.api import app as app_mod
+    from aeo.payments import stripe as pay
+    from aeo.storage.repos import entitlements as ent
+
+    monkeypatch.setattr(ent, "ensure_user", lambda *a, **k: None)
+    monkeypatch.setattr(ent, "list_for_user_domain", lambda uid, d: [])
+    monkeypatch.setattr(
+        pay, "create_pack_checkout",
+        lambda **kw: {"id": "cs_test", "url": "https://checkout.stripe.com/c/pay/cs_test", **kw},
+    )
+    return TestClient(app_mod.app)
+
+
+def test_checkout_returns_a_session_url(checkout_client):
+    res = checkout_client.post("/api/checkout/pack", json={"domain": "x.com", "pack_index": 2})
+    assert res.status_code == 200
+    assert res.json()["checkout_url"].startswith("https://checkout.stripe.com/")
+
+
+def test_pack_1_is_never_sold(checkout_client):
+    """Pack 1 is free by the unlock rule — charging for it would be selling nothing."""
+    res = checkout_client.post("/api/checkout/pack", json={"domain": "x.com", "pack_index": 1})
+    assert res.status_code == 422
+
+
+def test_already_unlocked_pack_409s_instead_of_charging_twice(checkout_client, monkeypatch):
+    from aeo.storage.repos import entitlements as ent
+
+    monkeypatch.setattr(ent, "list_for_user_domain", lambda uid, d: [{"scope": "all_packs"}])
+    res = checkout_client.post("/api/checkout/pack", json={"domain": "x.com", "pack_index": 3})
+    assert res.status_code == 409
+
+
+def test_buyer_comes_from_the_token_not_the_body(checkout_client, monkeypatch):
+    """The session metadata must be stamped from the verified user. If the body could set
+    it, anyone could pay a pack into (or out of) another account."""
+    seen = {}
+    from aeo.payments import stripe as pay
+
+    monkeypatch.setattr(
+        pay, "create_pack_checkout",
+        lambda **kw: seen.update(kw) or {"id": "cs", "url": "https://checkout.stripe.com/x"},
+    )
+    checkout_client.post(
+        "/api/checkout/pack",
+        json={"domain": "x.com", "pack_index": 2, "user_id": "attacker-controlled"},
+    )
+    assert seen["user_id"] != "attacker-controlled"
+
+
+def test_checkout_503s_when_payments_unconfigured(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    _auth_off(monkeypatch)
+    monkeypatch.setenv("AEO__PAYMENTS__STRIPE_SECRET_KEY", "")
+    from aeo.settings import get_settings
+
+    get_settings.cache_clear()
+    from aeo.api import app as app_mod
+    from aeo.storage.repos import entitlements as ent
+
+    monkeypatch.setattr(ent, "ensure_user", lambda *a, **k: None)
+    res = TestClient(app_mod.app).post("/api/checkout/pack", json={"domain": "x.com", "pack_index": 2})
+    assert res.status_code == 503
+    get_settings.cache_clear()
+
+
+def test_delayed_payment_grants_on_the_async_success_event(payments_on, monkeypatch):
+    """ACH/SEPA/Bacs: `completed` arrives unpaid and must NOT grant; the money lands later
+    on `async_payment_succeeded`, which must. Ignoring the second event would mean a paying
+    customer silently never receives the pack."""
+    granted = []
+    from aeo.storage.repos import entitlements as ent
+
+    monkeypatch.setattr(ent, "grant", lambda *a, **k: granted.append(k) or {"id": 1})
+
+    pending = json.loads(_event())
+    pending["data"]["object"]["payment_status"] = "unpaid"
+    assert payments_on.grant_from_event(pending) is None
+    assert granted == []
+
+    settled = json.loads(_event())
+    settled["type"] = "checkout.session.async_payment_succeeded"
+    assert payments_on.grant_from_event(settled) is not None
+    assert granted[0]["pack_index"] == 2
+
+
+def test_async_payment_failed_grants_nothing(payments_on, monkeypatch):
+    from aeo.storage.repos import entitlements as ent
+
+    monkeypatch.setattr(ent, "grant", lambda *a, **k: pytest.fail("must not grant"))
+    evt = json.loads(_event())
+    evt["type"] = "checkout.session.async_payment_failed"
+    evt["data"]["object"]["payment_status"] = "unpaid"
+    assert payments_on.grant_from_event(evt) is None
+
+
+# ── admin boundary: the service key is NOT an authorization boundary ───────────────
+# web/app/api/[...path]/route.ts injects X-API-Key into every /api/* request it forwards, so
+# any visitor's browser can present it. Gating entitlement MINTING on it let a signed-in user
+# POST themselves all_packs from the devtools console and walk the whole paywall for free.
+
+
+def _grant_body():
+    return {"user_id": "11111111-1111-1111-1111-111111111111", "domain": "x.com", "scope": "all_packs"}
+
+
+def test_grant_is_refused_when_only_the_service_key_is_configured(monkeypatch):
+    """Deployed posture with no admin credential must FAIL CLOSED, not stay open."""
+    from fastapi.testclient import TestClient
+
+    from aeo.api import app as app_mod
+    from aeo.settings import get_settings
+
+    monkeypatch.setattr(get_settings().api, "auth_key", "s3rvice")
+    monkeypatch.setattr(get_settings().api, "admin_key", None)
+    res = TestClient(app_mod.app).post(
+        "/api/entitlements/grant", json=_grant_body(), headers={"X-API-Key": "s3rvice"}
+    )
+    assert res.status_code == 503, "service key alone must never mint entitlements"
+
+
+def test_grant_requires_the_admin_key_when_configured(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from aeo.api import app as app_mod
+    from aeo.settings import get_settings
+
+    monkeypatch.setattr(get_settings().api, "auth_key", "s3rvice")
+    monkeypatch.setattr(get_settings().api, "admin_key", "adm1n")
+    client = TestClient(app_mod.app)
+
+    # The proxy-injected service key is not enough — this is the exploit request.
+    assert client.post(
+        "/api/entitlements/grant", json=_grant_body(), headers={"X-API-Key": "s3rvice"}
+    ).status_code == 403
+    # A wrong admin key is refused too.
+    assert client.post(
+        "/api/entitlements/grant", json=_grant_body(),
+        headers={"X-API-Key": "s3rvice", "X-Admin-Key": "nope"},
+    ).status_code == 403
+
+
+def test_proxy_denylist_blocks_the_grant_path():
+    """Second layer: the Next proxy must not forward the admin route at all."""
+    import re
+    from pathlib import Path
+
+    src = Path("web/app/api/[...path]/route.ts").read_text(encoding="utf-8")
+    assert "BLOCKED_PATHS" in src
+    assert "entitlements/grant" in src
+    # the guard must run BEFORE the target URL is built
+    assert re.search(r"BLOCKED_PATHS\.has\([^)]*\)[\s\S]{0,200}?const target", src)
+
+
+def test_payments_disabled_without_a_webhook_secret(monkeypatch):
+    """Selling with no webhook secret takes money and never grants the pack — Stripe's
+    deliveries all 400 and it gives up after ~3 days."""
+    monkeypatch.setenv("AEO__PAYMENTS__STRIPE_SECRET_KEY", "sk_test_123")
+    monkeypatch.setenv("AEO__PAYMENTS__WEBHOOK_SECRET", "")
+    from aeo.settings import get_settings
+
+    get_settings.cache_clear()
+    from aeo.payments.stripe import payments_enabled
+
+    assert payments_enabled() is False
+    get_settings.cache_clear()
+
+
+def test_success_url_uses_the_public_app_origin_not_the_request(payments_on, monkeypatch):
+    """The Next proxy rewrites Host, so request.base_url is the BACKEND. Building the
+    redirect from it sent the paying customer to an API 404."""
+    sent = {}
+
+    class _Res:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"id": "cs_1", "url": "https://checkout.stripe.com/x"}
+
+    import httpx
+
+    monkeypatch.setattr(
+        httpx, "post", lambda url, **kw: (sent.update(dict(kw.get("data") or [])), _Res)[1]
+    )
+    monkeypatch.setenv("AEO__PAYMENTS__PUBLIC_APP_URL", "https://app.example.com")
+    from aeo.settings import get_settings
+
+    get_settings.cache_clear()
+    from aeo.payments.stripe import create_pack_checkout
+
+    create_pack_checkout(
+        user_id="u-1", email=None, domain="x.com", pack_index=2,
+        origin="http://api:8000",  # what request.base_url would give behind the proxy
+    )
+    assert sent["success_url"].startswith("https://app.example.com/")
+    assert sent["cancel_url"].startswith("https://app.example.com/")
+    get_settings.cache_clear()
+
+
+def test_non_ascii_signature_raises_valueerror_not_typeerror(payments_on):
+    """The webhook is unauthenticated; a TypeError would 500 it (and the handler maps only
+    ValueError to 400, so Stripe would retry a server error for days)."""
+    body = _event()
+    t = int(time.time())
+    with pytest.raises(ValueError):
+        payments_on.verify_webhook(body, f"t={t},v1=\u00e9\u00e9\u00e9")

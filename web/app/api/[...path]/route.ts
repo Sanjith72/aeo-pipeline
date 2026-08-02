@@ -24,8 +24,21 @@ const RETRY_BACKOFF_MS = [250, 750]; // waited before attempt 2 and attempt 3
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Paths this proxy must NEVER forward. The injected API_KEY authenticates the PROXY, not the
+// person — every visitor's browser can reach this route same-origin, so any backend route
+// gated only by X-API-Key is effectively public through here. These mint entitlements or read
+// another user's data; before this denylist, a signed-in visitor could POST themselves
+// `all_packs` from the devtools console and bypass the entire paywall. The backend also
+// enforces this independently (require_admin_key) — this is the second layer, and the one
+// that keeps the admin surface off the public origin entirely.
+const BLOCKED_PATHS = new Set(["entitlements/grant"]);
+
 async function proxy(req: NextRequest, path: string[]): Promise<Response> {
-  const target = `${BACKEND}/api/${path.join("/")}${req.nextUrl.search}`;
+  const joined = path.join("/");
+  if (BLOCKED_PATHS.has(joined)) {
+    return NextResponse.json({ detail: "not found" }, { status: 404 });
+  }
+  const target = `${BACKEND}/api/${joined}${req.nextUrl.search}`;
 
   const headers = new Headers(req.headers);
   headers.delete("host");

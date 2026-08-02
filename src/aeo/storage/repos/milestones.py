@@ -75,6 +75,25 @@ def owner_of(client_id: int) -> str | None:
         return str(row["owner_user_id"]) if row else None
 
 
+def pack_owner_of(client_id: int) -> str | None:
+    """The user who owns this client's v5 PACK milestones, or None when they were generated
+    anonymously (the free Pack-1 path, which must keep working signed-out).
+
+    The mirror of :func:`owner_of`, which deliberately covers only the agency plan
+    (``NOT LIKE 'pack:%'``). The two milestone families share a table but are different
+    products, so they own separately — an agency plan owner is not thereby the owner of a
+    v5 ticket board on the same domain, nor the reverse."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT owner_user_id FROM implementation_milestones "
+            " WHERE client_id = %s AND milestone_key LIKE 'pack:%%' "
+            "   AND owner_user_id IS NOT NULL LIMIT 1",
+            (client_id,),
+        )
+        row = cur.fetchone()
+        return str(row["owner_user_id"]) if row else None
+
+
 def sync_plan(
     client_id: int, specs: list[MilestoneSpec], *, owner_user_id: str | None = None
 ) -> dict[str, int]:
@@ -223,7 +242,16 @@ def set_task_status(client_id: int, task_key: str, status: str) -> dict[str, Any
     Moving a task OUT of verified pins it (``owner_pinned``), so the next verification run
     can't silently re-flip it — the owner has seen the crawl's verdict and disagreed.
     Manually verifying it again clears the pin: they now agree, so let the crawl resume
-    maintaining it."""
+    maintaining it.
+
+    **AGENCY PLAN ONLY** — the ``NOT LIKE 'pack:%'`` guard is load-bearing. Without it,
+    ``POST /api/milestones/task`` (whose ``_assert_plan_access`` consults :func:`owner_of`,
+    which is itself agency-only and returns None for a v5 domain) let an ANONYMOUS caller
+    flip v5 pack tickets straight to ``verified_completed``. That fills
+    ``packs.completed_pack_indices``, which drives progressive unlock — so a stranger could
+    mark Pack 1 "done" without doing any work and open the paid Pack 2 for everyone. The
+    ticket routes (``_require_unlocked_pack`` + ``_require_ticket_owner``) must remain the
+    only write path for ``pack:N`` tasks."""
     if status not in _STATUSES:
         raise ValueError(f"invalid status {status!r}")
     with transaction() as conn, conn.cursor() as cur:
@@ -240,6 +268,7 @@ def set_task_status(client_id: int, task_key: str, status: str) -> dict[str, Any
                    END
               FROM implementation_milestones m
              WHERE t.milestone_id = m.id AND m.client_id = %s AND t.task_key = %s
+               AND m.milestone_key NOT LIKE 'pack:%%'
             RETURNING t.id
             """,
             (status, status, status, client_id, task_key),

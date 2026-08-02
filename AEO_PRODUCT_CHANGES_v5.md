@@ -32,8 +32,17 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 | **P7** | AI-snapshot visibility metric | CH-14 | Marketable Discovery metric; reuses existing Perplexity check. |
 
 > **Status: ALL PHASES (P0–P7) implemented — the v5 build is complete.** §9 decisions
-> resolved (see §9); contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0032`
+> resolved (see §9); contracts locked in `docs/V5_CONTRACTS.md`; migrations `0027`–`0033`
 > applied + Supabase baseline regenerated.
+>
+> **Turning gating on is a DEPLOY step, not a code step.** With `NEXT_PUBLIC_SUPABASE_URL` /
+> `NEXT_PUBLIC_SUPABASE_ANON_KEY` (web) and `AEO__AUTH__JWT_SECRET` *or*
+> `AEO__AUTH__JWKS_URL` (backend) unset, auth degrades to open: no Sign-in button, every
+> caller anonymous, nothing unlockable. Both `.env.example` files document the pair; sign-in
+> is **Google** (Supabase OAuth → `/auth/callback`) with email+password as the fallback.
+> Verification supports both the legacy HS256 shared secret and **ES256/RS256 via JWKS** —
+> Supabase projects created with JWT signing keys have no shared secret, so the JWKS path is
+> what makes a new project work at all.
 >
 > - **P0/P1** — `POST /api/overview` (free 5-skill homepage overview + pack preview,
 >   per-domain 24h cache, per-IP + global daily caps, SSRF-guarded crawl transport),
@@ -67,9 +76,17 @@ This is a **re-aiming of the existing engine**, not a rebuild. The crawl → ext
 >   grant, source='promo'; monetization stub — payments still deferred). Migration `0031`
 >   adds `implementation_milestones.owner_user_id` (unused until P5). Frontend: degradable
 >   `@supabase/supabase-js` login/signup + Bearer attach + unlock UI (all hidden without env).
->   **Deploy env:** backend `AEO__AUTH__JWT_SECRET` (+ `AEO__AUTH__PROMO_CODES`), frontend
->   `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` — both sides must be
->   configured together (HS256; JWKS/asymmetric is a documented follow-up).
+>   **Deploy env:** backend `AEO__AUTH__JWT_SECRET` **or** `AEO__AUTH__JWKS_URL`
+>   (+ `AEO__AUTH__PROMO_CODES`), frontend `NEXT_PUBLIC_SUPABASE_URL` /
+>   `NEXT_PUBLIC_SUPABASE_ANON_KEY` — both sides must be configured together or there is no
+>   gating at all. **Google sign-in** (`signInWithGoogle` → Supabase OAuth → the
+>   `/auth/callback` PKCE exchange route) is the primary path, email+password the fallback;
+>   Google itself is configured in the Supabase dashboard, no extra env var.
+>   **Ticket routes are gated too:** `/api/tickets/{run_id}` filters to the viewer's unlocked
+>   packs (returning `locked_ticket_count`), and the per-pack read + every mutation
+>   (fields/close/reopen/recheck) 403s on a locked pack — a ticket carries the same page×skill
+>   deep value as pack detail, so leaving them open made the pack-detail 403 bypassable, and
+>   `close` both spends crawl budget and drives progressive unlock.
 > - **P5 (CH-08/CH-15)** — findings become **tickets** (one per page×skill), reusing the
 >   `clients → milestones → tasks` chain with one milestone per pack (`pack:N`) — so pack
 >   completion is free and the shipped agency dashboard/quest stays byte-stable (`pack:`

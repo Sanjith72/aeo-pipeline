@@ -41,7 +41,10 @@ pdf = ["reportlab>=4.0.0"]
 api = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
-    "pyjwt>=2.8",  # v5 CH-07: Supabase-JWT verification (HS256; pure-Python, no crypto extra)
+    # v5 CH-07: Supabase-JWT verification. The [crypto] extra pulls `cryptography`, which is
+    # REQUIRED for the ES256/RS256 JWKS path — Supabase projects created with JWT signing
+    # keys (the current default) have no shared HS256 secret to fall back on.
+    "pyjwt[crypto]>=2.8",
 ]
 dev = [
     "pytest>=8.0.0",

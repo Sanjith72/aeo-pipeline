@@ -22,6 +22,7 @@ import asyncio
 import json
 import socket
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -115,6 +116,12 @@ def require_api_key(request: Request) -> None:
     # developer who got the link has no key). Only the GET: owner-only actions under
     # /api/share/ (e.g. POST /api/share/rotate, which revokes a link) stay authenticated.
     if path.startswith("/api/share/") and request.method == "GET":
+        return
+    # v5 CH-02b: Stripe posts webhooks from its own infrastructure and cannot send our
+    # service key. The endpoint is NOT unauthenticated — it verifies Stripe's HMAC
+    # signature over the raw body (payments/stripe.verify_webhook), which is a strictly
+    # stronger credential than a shared header for this caller.
+    if path == "/api/webhooks/stripe" and request.method == "POST":
         return
     if request.headers.get("x-api-key") != key:
         raise HTTPException(status_code=401, detail="invalid or missing X-API-Key")
@@ -360,6 +367,14 @@ class GrantRequest(BaseModel):
     pack_index: int | None = None
     source: str = "manual"
     expires_at: datetime | None = None
+
+
+class CheckoutRequest(BaseModel):
+    """Buy one pack (v5 CH-02b, flat price per pack). The BUYER is never in the body — it
+    comes from the verified JWT, so a caller cannot purchase into another account."""
+
+    domain: str
+    pack_index: int
 
 
 class RedeemRequest(BaseModel):
@@ -976,6 +991,67 @@ def _grants_for(user: User | None, run_id: int) -> list[dict[str, Any]]:
     return entitlements_repo.list_for_user_domain(user.id, domain) if domain else []
 
 
+def _pack_locked_for(user: User | None, run_id: int) -> Callable[[int], bool]:
+    """A ``locked(pack_index)`` predicate for this viewer on this run — the SAME derivation
+    the pack routes use (``_grants_for`` → ``resolve_unlock_state`` → ``is_pack_locked``), so
+    the ticket gate and the pack gate can never drift apart. Resolved once per request (one
+    grants query + one completion query) rather than per ticket. Deliberately independent of
+    the persisted pack headers: a run whose ``packs`` rows are missing still gates by the
+    same rule (Pack 1 free, deeper needs a grant or the earned-forward completion)."""
+    from ..entitlements.logic import is_pack_locked, resolve_unlock_state
+    from ..storage.repos import packs as packs_repo
+
+    all_packs, unlocked = resolve_unlock_state(_grants_for(user, run_id))
+    completed = packs_repo.completed_pack_indices(run_id)
+
+    def locked(pack_index: int) -> bool:
+        return is_pack_locked(
+            int(pack_index), unlocked_pack_indices=unlocked,
+            all_packs=all_packs, completed_pack_indices=completed,
+        )
+
+    return locked
+
+
+def _require_unlocked_pack(user: User | None, run_id: int, pack_index: int | None) -> None:
+    """403 unless this viewer has the pack unlocked. Used by every ticket route: a ticket
+    carries the same page×skill deep value the gated pack detail does, so leaving the
+    ticket routes open would make the pack-detail 403 bypassable (v5 CH-02a)."""
+    if pack_index is None or _pack_locked_for(user, run_id)(pack_index):
+        raise HTTPException(status_code=403, detail="unlock this pack to work its tickets")
+
+
+def _require_ticket_owner(user: User | None, run_id: int, client_id: int) -> None:
+    """403 unless this viewer may MUTATE this client's v5 tickets (P5 per-user ownership).
+
+    Migration 0031 stamped ``owner_user_id`` but nothing enforced it, so any logged-in user
+    with an entitlement on a domain could close another user's tickets — and closing drives
+    progressive unlock and spends crawl budget.
+
+    Three ways through, in order:
+      * **Unowned** — generated anonymously (the signed-out free Pack-1 flow). Left open, or
+        enabling this would break the anonymous experience the free tier depends on.
+      * **The owner** — the user the board was stamped for.
+      * **An ``all_packs`` holder** — the explicit agency/advanced override from §9.2's
+        entitlement model. Blocking them here would defeat the override's whole purpose.
+    """
+    from ..storage.repos import entitlements as entitlements_repo
+    from ..storage.repos import milestones as milestones_repo
+    from ..storage.repos import runs as runs_repo
+
+    owner = milestones_repo.pack_owner_of(client_id)
+    if owner is None:
+        return
+    if user is not None:
+        if user.id == owner:
+            return
+        domain = runs_repo.domain_for_run(run_id)
+        grants = entitlements_repo.list_for_user_domain(user.id, domain) if domain else []
+        if any(g.get("scope") == "all_packs" for g in grants):
+            return
+    raise HTTPException(status_code=403, detail="these tickets belong to another account")
+
+
 @app.get("/api/packs/{run_id}")
 def get_packs(run_id: int, user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
     """The impact-ordered packs persisted for a run (v5 CH-03), each with its
@@ -1039,7 +1115,12 @@ def get_tickets(run_id: int, user: User | None = Depends(get_optional_user)) -> 
     """The v5 tickets for a run's packs (CH-08): one per (page, skill), with status /
     assignee / target_date / baseline→current score. Lazily GENERATES them on first view
     (stamping owner_user_id when a logged-in user views) so tickets exist even for audits
-    that predate this path. Empty list (200) when the run produced no packs."""
+    that predate this path. Empty list (200) when the run produced no packs.
+
+    **Gated (v5 CH-02a):** the response is FILTERED to the viewer's unlocked packs. A ticket
+    carries the same page×skill deep value as the gated pack detail, so returning every
+    pack's tickets here would make the pack-detail 403 pointless. Pack 1 stays free (the
+    anonymous tier is unchanged); deeper packs need a grant or the earned-forward unlock."""
     from ..storage.repos import milestones as milestones_repo
     from ..storage.repos import runs as runs_repo
     from ..storage.repos import targets as targets_repo
@@ -1053,25 +1134,44 @@ def get_tickets(run_id: int, user: User | None = Depends(get_optional_user)) -> 
         milestones_repo.generate_tickets_from_run(run_id, owner_user_id=(user.id if user else None))
         target = targets_repo.by_domain(domain)
         tickets = milestones_repo.list_tickets_for_run(target.id) if target else []
-    return {"run_id": run_id, "tickets": tickets}
+    locked = _pack_locked_for(user, run_id)
+    visible = [t for t in tickets if not locked(t.get("pack_index"))]
+    return {
+        "run_id": run_id,
+        "tickets": visible,
+        # So the board can say "3 more fixes in locked packs" without leaking them.
+        "locked_ticket_count": len(tickets) - len(visible),
+    }
 
 
 @app.get("/api/tickets/{run_id}/{pack_index}")
-def get_pack_tickets(run_id: int, pack_index: int) -> dict[str, Any]:
-    """The v5 tickets for one pack of a run."""
+def get_pack_tickets(
+    run_id: int, pack_index: int, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
+    """The v5 tickets for one pack of a run. Gated exactly like the pack detail (CH-02a):
+    a locked pack is a 403, never a filtered-empty 200."""
     from ..storage.repos import milestones as milestones_repo
 
     client_id, _ = _ticket_client(run_id)
+    _require_unlocked_pack(user, run_id, pack_index)
     return {"run_id": run_id, "pack_index": pack_index,
             "tickets": milestones_repo.list_tickets_for_run(client_id, pack_index)}
 
 
 @app.post("/api/tickets/{run_id}/fields")
-def set_ticket_fields(run_id: int, req: TicketFieldsRequest) -> dict[str, Any]:
-    """Set a ticket's assignee / target_date (CH-08 async board)."""
+def set_ticket_fields(
+    run_id: int, req: TicketFieldsRequest, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
+    """Set a ticket's assignee / target_date (CH-08 async board). Gated: you can only edit a
+    ticket in a pack you have unlocked."""
     from ..storage.repos import milestones as milestones_repo
 
     client_id, _ = _ticket_client(run_id)
+    existing = milestones_repo.get_ticket(client_id, req.task_key)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="no such ticket")
+    _require_unlocked_pack(user, run_id, existing.get("pack_index"))
+    _require_ticket_owner(user, run_id, client_id)
     kwargs: dict[str, Any] = {}
     if req.set_assignee:
         kwargs["assignee"] = (req.assignee or None)
@@ -1084,15 +1184,26 @@ def set_ticket_fields(run_id: int, req: TicketFieldsRequest) -> dict[str, Any]:
 
 
 @app.post("/api/tickets/{run_id}/close")
-def close_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
+def close_ticket(
+    run_id: int, req: TicketKeyRequest, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
     """Owner marks a ticket done (CH-15): → closed_pending_verify, then enqueue a
     FORCED re-crawl of its page so the re-score can prove the lift (an unchanged page
     would otherwise fingerprint-skip and never verify). The frontend polls the ticket
-    until it flips to verified_completed."""
+    until it flips to verified_completed.
+
+    Gated (CH-02a): closing costs a real crawl AND drives progressive unlock, so it is
+    restricted to packs the viewer has unlocked — otherwise anyone could burn crawl budget
+    on any run and earn their way into paid packs for free."""
     from ..pipeline import worker
     from ..storage.repos import milestones as milestones_repo
 
     client_id, target = _ticket_client(run_id)
+    existing = milestones_repo.get_ticket(client_id, req.task_key)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="no such open ticket")
+    _require_unlocked_pack(user, run_id, existing.get("pack_index"))
+    _require_ticket_owner(user, run_id, client_id)
     ticket = milestones_repo.close_ticket(client_id, req.task_key)
     if ticket is None:
         raise HTTPException(status_code=404, detail="no such open ticket")
@@ -1111,11 +1222,18 @@ def close_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
 
 
 @app.post("/api/tickets/{run_id}/reopen")
-def reopen_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
-    """Reopen a closed-pending-verify ticket (CH-08)."""
+def reopen_ticket(
+    run_id: int, req: TicketKeyRequest, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
+    """Reopen a closed-pending-verify ticket (CH-08). Gated like close."""
     from ..storage.repos import milestones as milestones_repo
 
     client_id, _ = _ticket_client(run_id)
+    existing = milestones_repo.get_ticket(client_id, req.task_key)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="no such ticket to reopen")
+    _require_unlocked_pack(user, run_id, existing.get("pack_index"))
+    _require_ticket_owner(user, run_id, client_id)
     ticket = milestones_repo.reopen_ticket(client_id, req.task_key)
     if ticket is None:
         raise HTTPException(status_code=404, detail="no such ticket to reopen")
@@ -1123,16 +1241,25 @@ def reopen_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
 
 
 @app.post("/api/tickets/{run_id}/recheck")
-def recheck_ticket(run_id: int, req: TicketKeyRequest) -> dict[str, Any]:
+def recheck_ticket(
+    run_id: int, req: TicketKeyRequest, user: User | None = Depends(get_optional_user)
+) -> dict[str, Any]:
     """Re-run verification on a ticket the owner already closed (CH-15): re-enqueue the
     FORCED re-crawl of its page without changing the ticket's status. Used by the "Recheck"
-    affordance when a first re-crawl didn't yet prove the lift (edit not live / regressed)."""
+    affordance when a first re-crawl didn't yet prove the lift (edit not live / regressed).
+    Gated like close — it spends the same crawl budget."""
     from ..pipeline import worker
     from ..storage.repos import milestones as milestones_repo
 
     client_id, target = _ticket_client(run_id)
     ticket = milestones_repo.get_ticket(client_id, req.task_key)
-    if ticket is None or ticket["status"] != "closed_pending_verify":
+    if ticket is None:
+        raise HTTPException(status_code=409, detail="ticket is not awaiting verification")
+    # Authorize BEFORE validating state: a 409-vs-403 split would otherwise let a caller
+    # probe the status of tickets in packs they cannot see.
+    _require_unlocked_pack(user, run_id, ticket.get("pack_index"))
+    _require_ticket_owner(user, run_id, client_id)
+    if ticket["status"] != "closed_pending_verify":
         raise HTTPException(status_code=409, detail="ticket is not awaiting verification")
     job_id = None
     if ticket.get("page_url"):
@@ -1629,11 +1756,38 @@ def shared_plan(token: str) -> dict[str, Any]:
     return {"business_name": client["name"], "domain": client["domain"], **dash}
 
 
+def require_admin_key(request: Request) -> None:
+    """Guard for routes that can MINT entitlements or read another user's data.
+
+    The service ``X-API-Key`` is NOT sufficient here. ``web/app/api/[...path]/route.ts`` is a
+    catch-all proxy that injects that key into every ``/api/*`` request it forwards, so any
+    visitor's browser can present it — it authenticates the proxy, not the person. Gating
+    ``/api/entitlements/grant`` on it alone let anyone POST themselves ``all_packs`` from the
+    devtools console and walk through the entire CH-02a gate and CH-02b paywall for free.
+
+    Fails CLOSED: if no admin key is configured but the service key IS, these routes are
+    disabled (503) rather than open. Fully-open local dev (neither key set) still works."""
+    from ..settings import get_settings
+
+    cfg = get_settings().api
+    if cfg.admin_key:
+        if request.headers.get("x-admin-key") != cfg.admin_key:
+            raise HTTPException(status_code=403, detail="admin credential required")
+        return
+    if cfg.auth_key:  # deployed posture, no admin credential → refuse rather than expose
+        raise HTTPException(
+            status_code=503,
+            detail="admin routes are disabled: set AEO__API__ADMIN_KEY to enable them",
+        )
+
+
 @app.post("/api/entitlements/grant")
-def grant_entitlement(req: GrantRequest) -> dict[str, Any]:
-    """Manually grant a pack entitlement (v5 CH-02b stub — no payment provider yet).
-    Upserts the app_users row the FK requires, then the entitlement. X-API-Key gated
-    (admin-only in effect). ``scope='pack'`` requires ``pack_index``."""
+def grant_entitlement(req: GrantRequest, _: None = Depends(require_admin_key)) -> dict[str, Any]:
+    """Manually grant a pack entitlement (v5 CH-02b promo/manual path; Stripe is the paid
+    path). Upserts the app_users row the FK requires, then the entitlement.
+
+    **ADMIN-gated** (``X-Admin-Key``), deliberately NOT the service ``X-API-Key`` — see
+    :func:`require_admin_key`. ``scope='pack'`` requires ``pack_index``."""
     from ..reference.domain_config import normalize_domain
     from ..storage.repos import entitlements as entitlements_repo
 
@@ -1653,14 +1807,23 @@ def grant_entitlement(req: GrantRequest) -> dict[str, Any]:
 
 
 @app.get("/api/entitlements")
-def list_entitlements(user_id: UUID, domain: str) -> dict[str, Any]:
-    """A user's currently-valid entitlements for a domain (debug/admin). X-API-Key gated.
-    ``domain`` is canonicalized to match how grants are stored."""
+def list_entitlements(
+    domain: str, user_id: UUID | None = None, user: User = Depends(get_current_user)
+) -> dict[str, Any]:
+    """The CALLER's currently-valid entitlements for a domain.
+
+    Previously took an arbitrary ``user_id`` behind the service key alone, which — through
+    the key-injecting proxy — let anyone enumerate any user's grants. The subject is now the
+    verified JWT; an explicit ``user_id`` is accepted only when it matches (so existing
+    callers keep working) and 403s otherwise. ``domain`` is canonicalized to match how grants
+    are stored."""
     from ..reference.domain_config import normalize_domain
     from ..storage.repos import entitlements as entitlements_repo
 
+    if user_id is not None and str(user_id) != user.id:
+        raise HTTPException(status_code=403, detail="you can only read your own entitlements")
     canon = normalize_domain(domain) or domain.strip().lower()
-    return {"entitlements": entitlements_repo.list_for_user_domain(str(user_id), canon)}
+    return {"entitlements": entitlements_repo.list_for_user_domain(user.id, canon)}
 
 
 @app.get("/api/auth/me")
@@ -1689,6 +1852,70 @@ def redeem_promo(req: RedeemRequest, user: User = Depends(get_current_user)) -> 
         raise HTTPException(status_code=422, detail="a domain is required")
     row = entitlements_repo.grant(user.id, domain, scope="all_packs", source="promo")
     return {"unlocked": True, "domain": domain, "entitlement": row}
+
+
+@app.post("/api/checkout/pack")
+def checkout_pack(req: CheckoutRequest, request: Request, user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Start a Stripe Checkout Session to buy ONE pack (v5 CH-02b, flat price per pack).
+
+    Login is required and the buyer is taken ONLY from the verified JWT — the session's
+    metadata is stamped server-side, so nobody can pay a pack into another account. Already
+    -unlocked packs 409 rather than charging twice, and Pack 1 is free so it is never sold."""
+    from ..payments.stripe import PaymentsError, create_pack_checkout, payments_enabled
+    from ..reference.domain_config import normalize_domain
+
+    if not payments_enabled():
+        raise HTTPException(status_code=503, detail="payments are not configured")
+    if req.pack_index <= 1:
+        raise HTTPException(status_code=422, detail="Pack 1 is free")
+
+    domain = normalize_domain(req.domain) or req.domain.strip().lower()
+    if not domain:
+        raise HTTPException(status_code=422, detail="a domain is required")
+
+    # Don't charge for something the buyer already has (a re-click, or a promo/manual grant).
+    from ..entitlements.logic import is_pack_locked, resolve_unlock_state
+    from ..storage.repos import entitlements as entitlements_repo
+
+    all_packs, unlocked = resolve_unlock_state(entitlements_repo.list_for_user_domain(user.id, domain))
+    if not is_pack_locked(req.pack_index, unlocked_pack_indices=unlocked, all_packs=all_packs):
+        raise HTTPException(status_code=409, detail="you already have this pack")
+
+    origin = str(request.base_url).rstrip("/")
+    try:
+        session = create_pack_checkout(
+            user_id=user.id, email=user.email, domain=domain,
+            pack_index=req.pack_index, origin=origin,
+        )
+    except PaymentsError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"checkout_url": session["url"], "session_id": session["id"]}
+
+
+@app.post("/api/webhooks/stripe")
+async def stripe_webhook(request: Request) -> dict[str, Any]:
+    """Stripe's payment callback — the ONLY thing that turns money into an entitlement.
+
+    Exempt from the X-API-Key guard (Stripe cannot send it) and authenticated instead by
+    the HMAC signature over the RAW body, checked before the JSON is parsed. Always 200s on
+    a verified event, including ones we ignore: a non-2xx makes Stripe retry for days, and
+    an unrelated event type is not an error. Replays are safe — the grant upserts."""
+    from ..logging import get_logger
+    from ..payments.stripe import grant_from_event, verify_webhook
+
+    raw = await request.body()
+    try:
+        event = verify_webhook(raw, request.headers.get("stripe-signature"))
+    except ValueError as exc:
+        # 400 (not 401) so Stripe surfaces it in the dashboard as a delivery failure.
+        get_logger(__name__).warning("stripe_webhook_rejected", error=str(exc))
+        raise HTTPException(status_code=400, detail="invalid signature") from exc
+
+    try:
+        row = grant_from_event(event)
+    except Exception as exc:  # a DB blip must not make Stripe give up on the event
+        raise HTTPException(status_code=500, detail="could not apply the event") from exc
+    return {"received": True, "granted": bool(row)}
 
 
 @app.get("/api/metrics")

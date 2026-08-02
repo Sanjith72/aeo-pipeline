@@ -526,7 +526,13 @@ export interface SkillPriority {
   text: string;
   criterion: string | null;
   skill_score: number;
+  /** weight x severity x lift (CH-06). */
   impact: number;
+  /** CH-06's third factor: deterministic headroom on the targeted rubric criterion, 0-1. */
+  lift: number;
+  /** 'headroom' = measured from the criterion's tier; 'imputed' = an LLM suggestion with no
+   *  rubric criterion, substituted at the mean so it ranks neutrally. Never fabricated. */
+  lift_basis: "headroom" | "imputed";
 }
 
 export interface SkillScores {
@@ -654,7 +660,13 @@ export interface Ticket extends TicketFields {
 export interface TicketsResponse {
   run_id: number;
   pack_index?: number;
+  /** Only the tickets in packs the viewer has unlocked (v5 CH-02a — the server filters;
+   *  the client never receives a locked pack's findings). */
   tickets: Ticket[];
+  /** How many tickets were withheld because their pack is locked, so the board can say
+   *  "N more fixes behind a locked pack" without leaking them. Absent on the per-pack
+   *  route, which 403s instead of filtering. */
+  locked_ticket_count?: number;
 }
 
 // Entitlements (CH-02b) — P0 lock; enforcement arrives with auth in P4. Payments are

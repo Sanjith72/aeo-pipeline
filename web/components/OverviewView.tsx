@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
-import type { AiVisibility, OverviewResponse, SkillKey, SkillScore } from "@/lib/types";
+import type { AiVisibility, OverviewResponse, SkillKey, SkillPriority, SkillScore } from "@/lib/types";
 import { SheetTag } from "@/components/chrome";
 import { Reveal } from "@/components/motion/primitives";
 import { ArrowRight } from "@/components/ui/icons";
@@ -325,21 +325,7 @@ export function OverviewView() {
                 <p className="mb-4 max-w-[64ch] text-[13.5px] leading-[1.6] text-ink-300">
                   Ranked by impact — the highest-leverage fixes for the skills that matter most, first.
                 </p>
-                <ol className="m-0 flex list-none flex-col gap-2 p-0">
-                  {data.skills.priorities.slice(0, 6).map((p, i) => (
-                    <li key={`${p.skill}-${i}`} className="card flex items-start gap-3 p-4">
-                      <span className="font-display text-[15px] font-semibold text-accent">
-                        {String(i + 1).padStart(2, "0")}
-                      </span>
-                      <div className="min-w-0">
-                        <p className="m-0 text-[14px] leading-[1.5] text-ink">{p.text}</p>
-                        <span className="label-mono !text-[10px] text-ink-300">
-                          {SKILL_META.find((s) => s.key === p.skill)?.label ?? p.skill}
-                        </span>
-                      </div>
-                    </li>
-                  ))}
-                </ol>
+                <PriorityList priorities={data.skills.priorities.slice(0, 6)} domain={data.domain} />
               </section>
             )}
             {!data.skills && data.route !== "dead" && (
@@ -422,5 +408,70 @@ export function OverviewView() {
         )}
       </div>
     </section>
+  );
+}
+
+// v5 CH-05 ("let the AI decide, humans validate") — the ranked fixes are an AI decision, so
+// each one is dismissible and the dismissal is CAPTURED as a learning signal
+// (POST /api/overrides -> events + a human-gated 'proposed' refinement, never auto-applied).
+// Local-only state: dismissing hides the row for this reader; it never edits the stored
+// ranking, so one person's judgement can't silently rewrite another's report.
+function PriorityList({ priorities, domain }: { priorities: SkillPriority[]; domain: string }) {
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
+
+  function dismiss(index: number, p: SkillPriority) {
+    setDismissed((prev) => new Set(prev).add(index));
+    api.captureOverride(
+      `priority:${p.skill}:${p.criterion ?? "llm"}`,
+      p.text,
+      null,
+      "recommendation_rejected",
+      domain,
+    );
+  }
+
+  const visible = priorities.map((p, i) => ({ p, i })).filter(({ i }) => !dismissed.has(i));
+
+  return (
+    <>
+      <ol className="m-0 flex list-none flex-col gap-2 p-0">
+        {visible.map(({ p, i }, position) => (
+          <li key={`${p.skill}-${i}`} className="card flex items-start gap-3 p-4">
+            <span className="font-display text-[15px] font-semibold text-accent">
+              {String(position + 1).padStart(2, "0")}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="m-0 text-[14px] leading-[1.5] text-ink">{p.text}</p>
+              <span className="label-mono !text-[10px] text-ink-300">
+                {SKILL_META.find((s) => s.key === p.skill)?.label ?? p.skill}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => dismiss(i, p)}
+              // >=40px target per DESIGN.md's accessibility rules.
+              className="-m-2 min-h-[40px] min-w-[40px] shrink-0 rounded-lg p-2 text-[12px] text-ink-300 transition hover:text-ink"
+              aria-label={`Not relevant: ${p.text}`}
+              title="Not relevant to my business"
+            >
+              Not relevant
+            </button>
+          </li>
+        ))}
+      </ol>
+      {dismissed.size > 0 && (
+        <p className="mt-3 text-[12.5px] text-ink-300" role="status">
+          {dismissed.size} fix{dismissed.size === 1 ? "" : "es"} hidden. Thanks — we use this to
+          rank better.{" "}
+          <button
+            type="button"
+            onClick={() => setDismissed(new Set())}
+            className="underline underline-offset-2 hover:text-ink"
+          >
+            Undo
+          </button>
+        </p>
+      )}
+    </>
   );
 }

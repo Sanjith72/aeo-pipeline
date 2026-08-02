@@ -66,9 +66,10 @@ def _cache_put(domain: str, question: str, payload: dict[str, Any]) -> None:
     _CACHE[(domain, question)] = (now, payload)
 
 
-async def check_ai_visibility(bundle: ExtractionBundle, url: str) -> dict[str, Any]:
-    """The AI-visibility verdict for one page. Never raises — any failure or a disabled
-    engine degrades to ``unavailable`` (honest), never a fake ``not_cited``."""
+def _prepare(bundle: ExtractionBundle, url: str) -> tuple[dict[str, Any] | None, Any, str, str]:
+    """Shared pre-flight for both entry points: derive the question, check the engine is
+    configured, and serve the cache. Returns ``(early_result, client, question, domain)`` —
+    when ``early_result`` is non-None the caller returns it verbatim and never probes."""
     from ..nlp.perplexity import get_perplexity_client
     from ..validation.independent import derive_question
 
@@ -77,19 +78,62 @@ async def check_ai_visibility(bundle: ExtractionBundle, url: str) -> dict[str, A
     except Exception:
         question = None
     if not question:
-        return _unavailable("no_question")
+        return _unavailable("no_question"), None, "", ""
 
     try:
         client = get_perplexity_client()
         if not client.enabled:
-            return _unavailable("not_configured", question)
+            return _unavailable("not_configured", question), None, question, ""
         domain = host_of(normalize(url)) or url
     except Exception:  # honor the never-raises contract even on a malformed URL
-        return _unavailable("error", question)
+        return _unavailable("error", question), None, question or "", ""
 
     cached = _cache_get(domain, question)
     if cached is not None:
-        return {**cached, "cached": True}
+        return {**cached, "cached": True}, None, question, domain
+    return None, client, question, domain
+
+
+def _verdict(probe: Any, question: str, domain: str) -> dict[str, Any]:
+    """Turn a probe result into the honest three-state verdict and cache it."""
+    if probe is None:  # disabled mid-flight / transport failure
+        return _unavailable("probe_failed", question)
+    verdict = {
+        "status": "cited" if probe.cited else "not_cited",
+        "engine": "perplexity",
+        "question": question,
+        # 'citations' = structured citation URLs that matched our domain (hard signal);
+        # 'answer_text' = the domain only appeared in the answer prose (softer signal).
+        "via": "citations" if probe.matched else ("answer_text" if probe.cited else None),
+        "matched": probe.matched,
+        "cached": False,
+    }
+    _cache_put(domain, question, verdict)
+    return verdict
+
+
+def check_ai_visibility_sync(bundle: ExtractionBundle, url: str) -> dict[str, Any]:
+    """Blocking variant, for callers already off the event loop (the deep-audit page
+    pipeline, ``Orchestrator._process_one``, is synchronous). The Perplexity client is
+    itself synchronous, so this is the primitive and the async version wraps it — no
+    ``asyncio.run`` inside a live loop. Same never-raises contract."""
+    early, client, question, domain = _prepare(bundle, url)
+    if early is not None:
+        return early
+    try:
+        probe = client.cited(question, target_url=url, timeout=_PROBE_WAIT_SEC)
+    except Exception as exc:
+        log.warning("ai_visibility_probe_failed", url=url, error=str(exc))
+        return _unavailable("probe_failed", question)
+    return _verdict(probe, question, domain)
+
+
+async def check_ai_visibility(bundle: ExtractionBundle, url: str) -> dict[str, Any]:
+    """The AI-visibility verdict for one page. Never raises — any failure or a disabled
+    engine degrades to ``unavailable`` (honest), never a fake ``not_cited``."""
+    early, client, question, domain = _prepare(bundle, url)
+    if early is not None:
+        return early
 
     try:
         # The client is synchronous → run it off the event loop. The HTTP call itself is
@@ -105,18 +149,4 @@ async def check_ai_visibility(bundle: ExtractionBundle, url: str) -> dict[str, A
         log.warning("ai_visibility_probe_failed", url=url, error=str(exc))
         return _unavailable("probe_failed", question)
 
-    if probe is None:  # disabled mid-flight / transport failure
-        return _unavailable("probe_failed", question)
-
-    verdict = {
-        "status": "cited" if probe.cited else "not_cited",
-        "engine": "perplexity",
-        "question": question,
-        # 'citations' = structured citation URLs that matched our domain (hard signal);
-        # 'answer_text' = the domain only appeared in the answer prose (softer signal).
-        "via": "citations" if probe.matched else ("answer_text" if probe.cited else None),
-        "matched": probe.matched,
-        "cached": False,
-    }
-    _cache_put(domain, question, verdict)
-    return verdict
+    return _verdict(probe, question, domain)
