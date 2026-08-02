@@ -42,6 +42,10 @@ _DEFAULT_WEIGHTS: dict[str, float] = {
 }
 _DEFAULT_MAX_PRIORITIES = 8
 _DEFAULT_LLM_BLEND = 0.6
+# CH-14: Discovery points deducted when an engine RAN and did not cite the page. Only ever
+# applies to a real 'not_cited' verdict — 'unavailable' (the default, engine off) changes
+# nothing, so enabling Perplexity is what turns this on, not a silent score shift.
+_DEFAULT_AI_VIS_PENALTY = 10
 _LLM_CONTENT_CAP = 2500  # chars of body text handed to the messaging/conversion judge
 
 
@@ -55,6 +59,7 @@ def _skills_cfg() -> dict[str, Any]:
         "weights": weights,
         "max_priorities": int(raw.get("max_priorities", _DEFAULT_MAX_PRIORITIES)),
         "llm_blend": float(raw.get("llm_blend", _DEFAULT_LLM_BLEND)),
+        "ai_visibility_penalty": int(raw.get("ai_visibility_penalty", _DEFAULT_AI_VIS_PENALTY)),
     }
 
 SKILL_KEYS = (
@@ -337,46 +342,140 @@ def _conversion_skill(bundle: ExtractionBundle, llm: LLMClient | None = None) ->
     return _blend(det, "conversion", judgement)
 
 
-def _priorities(skills: dict[str, dict[str, Any]], weights: dict[str, float], limit: int) -> list[dict[str, Any]]:
-    """The impact-ranked "fix these first" list (CH-06): every skill's suggestions,
-    scored by ``weight × severity`` and sorted so the highest-weight failures surface
-    first — the "50 from 500" cut. Severity is the skill's score gap ((100-score)/100):
-    a skill already near 100 contributes low-severity, low-priority items.
+def _lift_factor(sug: dict[str, Any], skill: dict[str, Any]) -> float | None:
+    """Deterministic predicted-lift factor in 0-1 for one suggestion, or None when it
+    cannot be measured.
 
-    (Predicted-lift is the third CH-06 factor; the deterministic simulator lives at the
-    rubric-criterion tier — wiring per-suggestion lift here is a follow-up. Until then the
-    ranking is weight × severity, which already surfaces high-weight failures first.)"""
-    items: list[dict[str, Any]] = []
+    This is CH-06's third factor at the SUGGESTION tier: the headroom left on the rubric
+    criterion the suggestion targets — ``(5 - tier) / 4``. A criterion already at tier 5 has
+    no headroom (0.0); one at tier 1 has all of it (1.0). It is deliberately NOT
+    ``validation.predict.predict_lifts``: that simulator re-scores a synthetic bundle per
+    recommendation, which is far too heavy to run per suggestion on every scored page.
+    Headroom is the same signal the simulator integrates, read directly.
+
+    Returns None for the LLM-judged Messaging/Conversion suggestions, which target no rubric
+    criterion — there is nothing deterministic to measure, and inventing a number would make
+    the ranking look more grounded than it is. The caller substitutes the mean of the
+    measurable factors so those items rank neutrally rather than being pushed up or down.
+    """
+    criterion = sug.get("criterion")
+    if not criterion:
+        return None
+    tier = (skill.get("evidence") or {}).get("tier_inputs", {}).get(criterion)
+    if tier is None:
+        return None
+    return max(0.0, min(1.0, (5.0 - float(tier)) / 4.0))
+
+
+def _priorities(skills: dict[str, dict[str, Any]], weights: dict[str, float], limit: int) -> list[dict[str, Any]]:
+    """The impact-ranked "fix these first" list (CH-06): every skill's suggestions, scored by
+    ``weight × severity × predicted_lift`` and sorted so the highest-impact failures surface
+    first — the "50 from 500" cut.
+
+    * ``weight``   — the skill's configured weight (scoring.yaml ``skills.weights``).
+    * ``severity`` — the skill's score gap, ``(100 - score)/100``: a skill already near 100
+      contributes low-severity items.
+    * ``lift``     — deterministic headroom on the targeted rubric criterion (see
+      :func:`_lift_factor`). This is what stops a suggestion for an already-strong criterion
+      inside a weak skill from outranking a genuinely broken one.
+
+    Each item carries ``lift_basis`` ('headroom' or 'imputed') so a reader can tell a
+    measured factor from a substituted one — the ranking is never silently fabricated."""
+    raw: list[tuple[dict[str, Any], float | None]] = []
     for name, skill in skills.items():
         weight = weights.get(name, 1.0)
         severity = max(0.0, (100 - skill["score"]) / 100)
         for sug in skill["suggestions"]:
-            items.append(
-                {
-                    "skill": name,
-                    "text": sug["text"],
-                    "criterion": sug.get("criterion"),
-                    "skill_score": skill["score"],
-                    "impact": round(weight * severity, 4),
-                }
+            raw.append(
+                (
+                    {
+                        "skill": name,
+                        "text": sug["text"],
+                        "criterion": sug.get("criterion"),
+                        "skill_score": skill["score"],
+                        "_base": weight * severity,
+                    },
+                    _lift_factor(sug, skill),
+                )
             )
+
+    # Impute the unmeasurable (LLM) suggestions at the MEAN of the measured ones, so they
+    # rank among them rather than systematically above (factor 1.0) or below (factor 0).
+    measured = [f for _, f in raw if f is not None]
+    neutral = (sum(measured) / len(measured)) if measured else 1.0
+
+    items: list[dict[str, Any]] = []
+    for item, factor in raw:
+        lift = neutral if factor is None else factor
+        base = item.pop("_base")
+        items.append(
+            {
+                **item,
+                "lift": round(lift, 4),
+                "lift_basis": "imputed" if factor is None else "headroom",
+                "impact": round(base * lift, 4),
+            }
+        )
     items.sort(key=lambda it: (-it["impact"], it["skill"]))
     return items[:limit]
 
 
+def _apply_ai_visibility(skill: dict[str, Any], verdict: dict[str, Any] | None, penalty: int) -> dict[str, Any]:
+    """Fold the CH-14 AI-snapshot verdict into Discovery & Visibility (CH-04 puts it there).
+
+    Honest by construction, mirroring ``pipeline/ai_visibility``'s three states:
+      * ``unavailable`` — the probe did NOT run (engine off/unkeyed is the default). Attach
+        it for transparency but change NOTHING: penalising a check we never made would
+        invent a failure, and it would silently move every score the moment ops toggles
+        Perplexity on.
+      * ``cited`` — no fake boost. Being found is the goal, not extra credit; inflating here
+        would make the skill score depend on an external engine's mood.
+      * ``not_cited`` — a real, measured Discovery failure: a bounded penalty plus a
+        concrete suggestion, ranked first because it is the outcome the product sells.
+    """
+    out = dict(skill)
+    out["ai_visibility"] = verdict  # always attached (may be None) so the UI can render it
+    if not verdict or verdict.get("status") != "not_cited" or penalty <= 0:
+        return out
+    out["score"] = max(0, int(skill["score"]) - penalty)
+    out["suggestions"] = [
+        {
+            # `id` is part of the SkillSuggestion contract (web/lib/types.ts) and is the
+            # React key the UI renders with — omitting it broke the shape for this one item.
+            "id": "sug:discovery_visibility:ai_visibility",
+            "criterion": "ai_visibility",
+            "text": (
+                "AI answer engines don't cite this page yet. Add a direct, quotable answer "
+                "to the question buyers actually ask, near the top, in plain sentences."
+            ),
+        },
+        *skill.get("suggestions", []),
+    ][:3]
+    return out
+
+
 def build_skill_scores(
-    page_score: PageScore, bundle: ExtractionBundle, *, llm: LLMClient | None = None
+    page_score: PageScore,
+    bundle: ExtractionBundle,
+    *,
+    llm: LLMClient | None = None,
+    ai_visibility: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The CH-04 output for one page: five skills (each 0-100 with suggestions), the
     WEIGHTED overall (CH-06), and an impact-ranked ``priorities`` list. Pass ``llm`` to
     LLM-judge Messaging/Conversion (the deep audit); omit it for the deterministic-only
-    free tier (the cost boundary)."""
+    free tier (the cost boundary). Pass ``ai_visibility`` (CH-14) to fold the AI-snapshot
+    verdict into Discovery & Visibility."""
     cfg = _skills_cfg()
     weights = cfg["weights"]
     skills = {
         "messaging": _messaging_skill(bundle, llm),
         "conversion": _conversion_skill(bundle, llm),
-        "discovery_visibility": _mapped_skill("discovery_visibility", page_score),
+        "discovery_visibility": _apply_ai_visibility(
+            _mapped_skill("discovery_visibility", page_score),
+            ai_visibility,
+            cfg["ai_visibility_penalty"],
+        ),
         "proof_trust": _mapped_skill("proof_trust", page_score),
         "structure_ux": _mapped_skill("structure_ux", page_score),
     }

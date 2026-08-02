@@ -31,6 +31,20 @@ function patchTask(dash: MilestoneDashboard, taskKey: string, status: MilestoneS
   };
 }
 
+// A real site crawl runs inside this request. Bound it client-side: the only other ceiling
+// is the proxy's maxDuration (300s), which left the spinner running for up to five minutes
+// and then failed silently.
+const VERIFY_TIMEOUT_MS = 120_000;
+
+export interface VerifyOutcome {
+  newlyVerified: number;
+  alreadyLive: number;
+  siteReachable: boolean;
+  siteBlocked: boolean;
+  baselined: boolean;
+  skipped: "nothing_pending" | "disabled" | null;
+}
+
 export interface QuestTracker {
   /** Raw server dashboard — what the List view renders. */
   dash: MilestoneDashboard | null;
@@ -39,8 +53,11 @@ export interface QuestTracker {
   shareUrl: string | null;
   error: string | null;
   verifying: boolean;
-  /** Outcome of the last "Check my site now" — each view words its own note from the count. */
-  lastVerify: { newlyVerified: number } | null;
+  /** Outcome of the last "Check my site now" — each view words its own note from this.
+   *  Richer than a bare count so a silent failure can't be reported as "nothing new":
+   *  `siteReachable` false means we never read the site, and `baselined` means this run
+   *  recorded what was ALREADY live rather than crediting new work. */
+  lastVerify: VerifyOutcome | null;
   rotating: boolean;
   setStatus: (taskKey: string, status: MilestoneStatus) => Promise<void>;
   checkSite: () => Promise<void>;
@@ -62,7 +79,7 @@ export function useQuestTracker({
   const [dash, setDash] = useState<MilestoneDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
-  const [lastVerify, setLastVerify] = useState<{ newlyVerified: number } | null>(null);
+  const [lastVerify, setLastVerify] = useState<VerifyOutcome | null>(null);
   const [rotating, setRotating] = useState(false);
 
   // Persist (sync) the generated plan as milestones on mount, then render what comes back.
@@ -100,12 +117,24 @@ export function useQuestTracker({
   const checkSite = useCallback(async () => {
     setVerifying(true);
     setLastVerify(null);
+    setError(null);
     try {
-      const res = await api.verifyMilestones(domain);
+      const res = await api.verifyMilestones(domain, {
+        signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
+      });
       setDash(res.dashboard);
-      setLastVerify({ newlyVerified: res.summary.newly_verified });
-      setError(null);
+      setLastVerify({
+        newlyVerified: res.summary.newly_verified,
+        alreadyLive: res.summary.already_live,
+        siteReachable: res.summary.site_reachable,
+        siteBlocked: res.summary.site_blocked,
+        baselined: res.summary.baselined,
+        skipped: res.summary.skipped,
+      });
     } catch (e) {
+      // Must not leave a stale success note above a failed check — the two together read
+      // as "we checked and found nothing", which is exactly the lie being fixed.
+      setLastVerify(null);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setVerifying(false);

@@ -1,9 +1,20 @@
 """
 Supabase-JWT user authentication (v5 CH-07).
 
-A stateless HS256 verifier — the backend never calls Supabase; GoTrue only has to have
-*issued* the token, and we verify it with the shared project JWT secret. That is why this
-works even when the app data DB is Neon.
+A stateless verifier — the backend never calls Supabase to check a session; GoTrue only has
+to have *issued* the token. That is why this works even when the app data DB is Neon.
+
+Two verification modes, chosen by what is configured:
+
+* **Shared secret (HS256)** — ``AEO__AUTH__JWT_SECRET``, the project's legacy JWT secret.
+* **Asymmetric (ES256/RS256) via JWKS** — ``AEO__AUTH__JWKS_URL``. Supabase projects created
+  with *JWT signing keys* (the current default) have no shared secret at all, so the
+  secret-only path would reject every real login. The public keys are fetched + cached from
+  the project's JWKS endpoint and selected by the token's ``kid``.
+
+Either alone is enough; both together is a valid rotation window. The asymmetric algorithms
+are accepted **only** when a JWKS URL is configured, so a secret-only deployment can never be
+tricked into verifying an attacker-supplied public key as an HMAC secret.
 
 **The load-bearing security fact:** Supabase's PUBLIC anon key and the service_role key are
 themselves long-lived JWTs signed with the SAME HS256 secret, so signature verification
@@ -25,8 +36,11 @@ local dev needs no Supabase. ``verify_signature=False`` appears NOWHERE.
 
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass
+from functools import lru_cache
+from typing import Any
 
 import jwt
 from fastapi import HTTPException, Request
@@ -56,10 +70,89 @@ def _cfg() -> AuthCfg:
 
 
 def auth_active() -> bool:
-    """True when user-JWT verification is configured. When False, auth degrades to
-    open/dev (optional → None, required → dev user)."""
+    """True when user-JWT verification is configured — by EITHER a shared secret or a JWKS
+    URL. When False, auth degrades to open/dev (optional → None, required → dev user)."""
     cfg = _cfg()
-    return cfg.enabled and bool(cfg.jwt_secret)
+    return cfg.enabled and bool(cfg.jwt_secret or cfg.jwks_url)
+
+
+def _algorithms(cfg: AuthCfg) -> list[str]:
+    """The accepted algorithms for this deployment. Asymmetric algs are added ONLY when a
+    JWKS URL is configured — without it there is no public key to verify against, and
+    accepting RS256/ES256 alongside an HMAC secret is the classic key-confusion hole."""
+    algs = list(cfg.jwt_algorithms)
+    if cfg.jwks_url:
+        algs += [a for a in cfg.jwt_asymmetric_algorithms if a not in algs]
+    return algs
+
+
+@lru_cache(maxsize=4)
+def _jwk_client(url: str, lifespan: int) -> Any:
+    """One cached PyJWKClient per URL — it holds the fetched JWKS in memory and refreshes on
+    a `kid` miss (so a key rotation heals without a redeploy). Cached because constructing
+    one per request would refetch the key set on every call.
+
+    ``timeout`` is pinned short: PyJWKClient defaults to 30s, and this runs in the sync
+    dependency threadpool, so one slow fetch can hold a worker for half a minute."""
+    from jwt import PyJWKClient
+
+    return PyJWKClient(url, cache_keys=True, lifespan=lifespan, timeout=_JWKS_FETCH_TIMEOUT_SEC)
+
+
+# Unknown-`kid` negative cache. A miss makes PyJWKClient refetch the whole key set, and the
+# failure is NOT cached by its lru_cache — so a stream of tokens bearing random `kid`s turns
+# every request into an outbound HTTP fetch on a threadpool worker: an unauthenticated
+# DoS against both this API and the JWKS endpoint. We remember recently-rejected kids and
+# refuse them without touching the network, while still allowing periodic refetches so a
+# genuine key ROTATION still heals on its own.
+_KID_MISS: dict[str, float] = {}
+_KID_MISS_TTL_SEC = 300
+_KID_MISS_MAX = 512
+_JWKS_FETCH_TIMEOUT_SEC = 5
+
+
+def _kid_recently_missed(kid: str) -> bool:
+    hit = _KID_MISS.get(kid)
+    if hit is None:
+        return False
+    if time.time() - hit >= _KID_MISS_TTL_SEC:
+        _KID_MISS.pop(kid, None)
+        return False
+    return True
+
+
+def _remember_kid_miss(kid: str) -> None:
+    now = time.time()
+    if len(_KID_MISS) >= _KID_MISS_MAX:  # drop expired, then oldest — a real memory bound
+        for k, ts in list(_KID_MISS.items()):
+            if now - ts >= _KID_MISS_TTL_SEC:
+                _KID_MISS.pop(k, None)
+        if len(_KID_MISS) >= _KID_MISS_MAX:
+            for k, _ in sorted(_KID_MISS.items(), key=lambda kv: kv[1])[: len(_KID_MISS) - _KID_MISS_MAX + 1]:
+                _KID_MISS.pop(k, None)
+    _KID_MISS[kid] = now
+
+
+def _verify_key(token: str, cfg: AuthCfg) -> Any:
+    """The key to verify this token with: the JWKS public key matching its ``kid`` when
+    asymmetric verification is configured and the header names one, else the shared secret.
+    Raises when neither is available, so an unverifiable token can never fall through."""
+    header = jwt.get_unverified_header(token)  # header only — no trust placed in it
+    alg = header.get("alg")
+    if cfg.jwks_url and alg in cfg.jwt_asymmetric_algorithms:
+        kid = header.get("kid")
+        if isinstance(kid, str) and _kid_recently_missed(kid):
+            # Refuse without touching the network (see _KID_MISS). Same 401 either way.
+            raise ValueError("unknown signing key")
+        try:
+            return _jwk_client(cfg.jwks_url, cfg.jwks_cache_sec).get_signing_key_from_jwt(token).key
+        except Exception:
+            if isinstance(kid, str):
+                _remember_kid_miss(kid)
+            raise
+    if cfg.jwt_secret:
+        return cfg.jwt_secret
+    raise ValueError(f"no verification key configured for alg={alg!r}")
 
 
 def _extract_bearer(request: Request) -> str | None:
@@ -76,11 +169,12 @@ def _extract_bearer(request: Request) -> str | None:
 def _decode(token: str, cfg: AuthCfg) -> dict:
     """Verify signature + aud + exp and decode claims. Raises jwt exceptions on any
     failure. Algorithms are pinned (never omitted) so alg=none / RS256→HS256 confusion
-    is impossible; the secret is the verify key and comes from env only."""
+    is impossible; the key is the env secret or a JWKS public key, never anything the
+    caller supplies."""
     return jwt.decode(
         token,
-        cfg.jwt_secret,
-        algorithms=cfg.jwt_algorithms,
+        _verify_key(token, cfg),
+        algorithms=_algorithms(cfg),
         audience=cfg.jwt_aud,
         issuer=cfg.jwt_issuer,  # None → issuer not checked (only pinned when configured)
         leeway=cfg.leeway_sec,

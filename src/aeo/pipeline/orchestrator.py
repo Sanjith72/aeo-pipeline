@@ -130,6 +130,9 @@ class Orchestrator:
         self.extract = ExtractStage()
         self.score = ScoreStage(self._llm)
         self.persist = PersistStage()
+        # v5 CH-14: AI-visibility probes spent per run, so a wide crawl can't fan out into
+        # one engine call per page. Keyed by run_id — an Orchestrator can serve several runs.
+        self._ai_vis_used: dict[int, int] = {}
 
     async def run_urls(
         self,
@@ -696,7 +699,47 @@ class Orchestrator:
         )
         return site_reports_repo.put(site)
 
-    def _persist_skill_scores(self, page_score: PageScore, bundle, run_id: int) -> None:
+    def _ai_visibility_for(self, bundle, url: str, run_id: int) -> dict | None:
+        """v5 CH-14: the per-page AI-snapshot verdict for the deep audit — the acceptance
+        criterion is "each analyzed page", not just the free overview's homepage.
+
+        Two guards keep this from becoming a cost bomb on a wide crawl:
+          * Perplexity is OFF by default → an instant ``unavailable`` with ZERO network, so
+            the common deployment pays nothing and no score moves.
+          * When ops enables it, ``ai_visibility_max_pages`` caps probes PER RUN; pages past
+            the cap get an honest ``unavailable``/``budget_exhausted`` rather than a guess.
+
+        Best-effort like the rest of this layer — any failure yields None and the skill is
+        scored exactly as before."""
+        settings = get_settings()
+        cap = settings.scoring.ai_visibility_max_pages
+        if cap <= 0:
+            return None
+        try:
+            from .ai_visibility import check_ai_visibility_sync
+
+            # Bound the counter: a long-lived worker processes many runs, and an unpruned
+            # dict would grow for the process lifetime.
+            if len(self._ai_vis_used) > 64:
+                for stale in sorted(self._ai_vis_used)[:32]:  # run ids ascend — drop oldest
+                    self._ai_vis_used.pop(stale, None)
+            used = self._ai_vis_used.get(run_id, 0)
+            if used >= cap:
+                return {
+                    "status": "unavailable", "engine": "perplexity",
+                    "reason": "budget_exhausted", "question": None,
+                }
+            verdict = check_ai_visibility_sync(bundle, url)
+            # Only a probe that actually reached the engine consumes budget; the free
+            # short-circuits (engine off, no question, cache hit) must not burn the cap.
+            if verdict.get("reason") not in ("not_configured", "no_question") and not verdict.get("cached"):
+                self._ai_vis_used[run_id] = used + 1
+            return verdict
+        except Exception as exc:  # never fatal — CH-14 is additive
+            log.warning("ai_visibility_skipped", run_id=run_id, error=str(exc))
+            return None
+
+    def _persist_skill_scores(self, page_score: PageScore, bundle, run_id: int, url: str = "") -> None:
         """v5 CH-04: derive + persist the five-skill layer for a freshly-scored page.
         Best-effort and isolated — like completion detection, this is bookkeeping on top
         of the scored crawl and must never abort it. ``skill_llm`` off (or a disabled LLM)
@@ -709,7 +752,8 @@ class Orchestrator:
             from ..storage.repos import skill_scores as skill_scores_repo
 
             llm = self._llm if settings.scoring.skill_llm else None
-            payload = build_skill_scores(page_score, bundle, llm=llm)
+            ai_vis = self._ai_visibility_for(bundle, url, run_id) if url else None
+            payload = build_skill_scores(page_score, bundle, llm=llm, ai_visibility=ai_vis)
             skill_scores_repo.put(page_score.page_id, run_id, payload)
             return payload  # v5 CH-15: the ticket-verify hook reads current skill scores here
         except Exception as exc:  # skill scoring is additive — never fatal to a run
@@ -802,7 +846,7 @@ class Orchestrator:
             # v5 CH-04: the five-skill derived layer, persisted alongside the rubric score.
             # Additive + isolated — a skills failure must never abort the crawl that carries
             # it (mirrors _detect_completions).
-            skills_payload = self._persist_skill_scores(page_score, bundle, run_id)
+            skills_payload = self._persist_skill_scores(page_score, bundle, run_id, page.url)
             # v5 CH-15: prove closed tickets' lift from the fresh skill scores (own table).
             self._verify_tickets(page, run_id, skills_payload)
             # Retention Engine (#11): verify recommendation completions AFTER re-scoring,

@@ -705,6 +705,24 @@ def verify_milestones(
 
     result = asyncio.run(_run())
     _print(result)
+    if result.get("skipped"):
+        typer.secho(f"nothing to do ({result['skipped']})", fg=typer.colors.YELLOW)
+        return
+    if not result.get("site_reachable", True):
+        reason = "blocked by a bot filter" if result.get("site_blocked") else "unreachable"
+        typer.secho(
+            f"could not read {domain} ({reason}) — nothing could be confirmed",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+    if result.get("baselined"):
+        # First run: record what was already live rather than claiming it as new work.
+        typer.echo(
+            f"baseline recorded for {domain}: {result['checked']} pending task(s) checked; "
+            f"{result.get('already_live', 0)} already in place. "
+            "Future runs report genuinely new changes."
+        )
+        return
     typer.echo(
         f"checked {result['checked']} pending task(s); "
         f"newly verified {result['newly_verified']}"

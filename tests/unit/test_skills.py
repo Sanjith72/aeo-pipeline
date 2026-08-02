@@ -109,3 +109,108 @@ def test_malformed_llm_output_falls_back() -> None:
     out = build_skill_scores(_page_score(_ALL_CRITERIA), _bundle(strong=True),
                              llm=_FakeLLM({"nonsense": True}))
     assert out["skills"]["conversion"]["confidence"] == "provisional"
+
+
+# ── CH-14: AI-snapshot visibility folded into Discovery & Visibility ───────────────
+
+
+def _discovery(out) -> dict:
+    return out["skills"]["discovery_visibility"]
+
+
+def test_ai_visibility_absent_leaves_discovery_untouched() -> None:
+    base = build_skill_scores(_page_score(_ALL_CRITERIA), _bundle(strong=True))
+    with_none = build_skill_scores(_page_score(_ALL_CRITERIA), _bundle(strong=True), ai_visibility=None)
+    assert _discovery(base)["score"] == _discovery(with_none)["score"]
+    assert _discovery(with_none)["ai_visibility"] is None
+
+
+def test_unavailable_verdict_never_penalises() -> None:
+    """The default deployment has Perplexity off -> every page is 'unavailable'. Penalising
+    a check that never ran would invent a failure and would silently move every score the
+    moment ops enables the engine."""
+    base = build_skill_scores(_page_score(_ALL_CRITERIA), _bundle(strong=True))
+    out = build_skill_scores(
+        _page_score(_ALL_CRITERIA), _bundle(strong=True),
+        ai_visibility={"status": "unavailable", "reason": "not_configured"},
+    )
+    assert _discovery(out)["score"] == _discovery(base)["score"]
+    assert _discovery(out)["ai_visibility"]["status"] == "unavailable"  # still attached
+
+
+def test_cited_verdict_gives_no_fake_boost() -> None:
+    base = build_skill_scores(_page_score(_ALL_CRITERIA), _bundle(strong=True))
+    out = build_skill_scores(
+        _page_score(_ALL_CRITERIA), _bundle(strong=True),
+        ai_visibility={"status": "cited", "via": "citations"},
+    )
+    assert _discovery(out)["score"] == _discovery(base)["score"]
+
+
+def test_not_cited_penalises_and_suggests_first() -> None:
+    base = build_skill_scores(_page_score(_ALL_CRITERIA), _bundle(strong=True))
+    out = build_skill_scores(
+        _page_score(_ALL_CRITERIA), _bundle(strong=True),
+        ai_visibility={"status": "not_cited", "via": None},
+    )
+    d = _discovery(out)
+    assert d["score"] < _discovery(base)["score"]
+    assert d["suggestions"][0]["criterion"] == "ai_visibility"
+    assert len(d["suggestions"]) <= 3
+
+
+def test_not_cited_score_never_goes_negative() -> None:
+    floor = {k: 1 for k in _ALL_CRITERIA}
+    out = build_skill_scores(
+        _page_score(floor), _bundle(strong=False),
+        ai_visibility={"status": "not_cited"},
+    )
+    assert _discovery(out)["score"] >= 0
+
+
+# ── CH-06: predicted lift is the third ranking factor ──────────────────────────────
+
+
+def test_priorities_carry_a_lift_factor_and_basis() -> None:
+    out = build_skill_scores(_page_score(_ALL_CRITERIA), _bundle(strong=False))
+    assert out["priorities"], "expected ranked fixes on a weak page"
+    for p in out["priorities"]:
+        assert 0.0 <= p["lift"] <= 1.0
+        assert p["lift_basis"] in ("headroom", "imputed")
+        # criterion-backed items must be MEASURED, never imputed
+        if p["criterion"] and p["criterion"] != "ai_visibility":
+            assert p["lift_basis"] == "headroom"
+
+
+def test_lift_reorders_within_a_skill() -> None:
+    """Two Discovery criteria, same skill weight and severity: the one with more headroom
+    (lower tier) must rank first. Under weight x severity alone they were tied, so this is
+    the ONLY guard that predicted lift actually reaches the ranking.
+
+    Tier choice matters: _mapped_skill emits suggestions for just the 3 WEAKEST criteria, so
+    both compared criteria must survive that cut. qa_blocks is parked at 5 to make it the one
+    that is dropped. The presence assertions below keep the test from silently going vacuous
+    again if that selection ever changes."""
+    tiers = {**_ALL_CRITERIA, "schema_markup": 1, "entity_consistency": 2,
+             "heading_structure": 3, "qa_blocks": 5}
+    out = build_skill_scores(_page_score(tiers), _bundle(strong=True))
+    by_crit = {p["criterion"]: p for p in out["priorities"] if p["skill"] == "discovery_visibility"}
+
+    assert "schema_markup" in by_crit, f"test went vacuous — ranked: {sorted(by_crit)}"
+    assert "entity_consistency" in by_crit, f"test went vacuous — ranked: {sorted(by_crit)}"
+    # Same skill => identical weight and severity; only lift can separate them.
+    assert by_crit["schema_markup"]["lift"] > by_crit["entity_consistency"]["lift"]
+    assert by_crit["schema_markup"]["impact"] > by_crit["entity_consistency"]["impact"]
+    order = [p["criterion"] for p in out["priorities"] if p["skill"] == "discovery_visibility"]
+    assert order.index("schema_markup") < order.index("entity_consistency")
+
+
+def test_zero_headroom_criterion_ranks_last() -> None:
+    """A criterion already at tier 5 has no headroom -> lift 0 -> it cannot outrank a real
+    failure, even inside a low-scoring skill."""
+    from aeo.scoring.skills import _lift_factor
+
+    skill = {"evidence": {"tier_inputs": {"schema_markup": 5, "qa_blocks": 1}}}
+    assert _lift_factor({"criterion": "schema_markup"}, skill) == 0.0
+    assert _lift_factor({"criterion": "qa_blocks"}, skill) == 1.0
+    assert _lift_factor({"criterion": None}, skill) is None  # LLM suggestion -> imputed

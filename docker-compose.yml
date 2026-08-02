@@ -66,6 +66,13 @@ services:
   web:
     build:
       context: ./web
+      args:
+        # BUILD-time, not runtime: Next.js inlines NEXT_PUBLIC_* during `next build`, so
+        # listing them under `environment:` below would do nothing and the image would ship
+        # with user auth disabled (no Sign-in, every gate open). Set them in .env to enable
+        # login + pack gating in the compose stack; leave blank for the anonymous-only stack.
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
     image: aeo-web:latest
     restart: unless-stopped
     environment:

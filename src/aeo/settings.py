@@ -279,6 +279,12 @@ class ScoringCfg(BaseModel):
     # mapped skills (Discovery/Proof/Structure) are always free — derived from criteria.
     skills_enabled: bool = True
     skill_llm: bool = True
+    # v5 CH-14: max AI-visibility probes per RUN in the deep audit ("each analyzed page",
+    # but bounded). Costs nothing in the default deployment — Perplexity is off, so every
+    # page short-circuits to 'unavailable' with no network and no score change. Only real
+    # engine calls consume the budget; pages past it report 'budget_exhausted' rather than
+    # a guess. 0 disables per-page AI visibility entirely (the free overview is unaffected).
+    ai_visibility_max_pages: int = 10
 
 
 class AgentsCfg(BaseModel):
@@ -319,6 +325,14 @@ class ApiCfg(BaseModel):
     # /api/health requires a matching X-API-Key header. Unset (default) = open mode for
     # local dev; set it in any deployment that exposes the API.
     auth_key: str | None = None
+    # ADMIN credential for the handful of routes that can mint entitlements or read another
+    # user's data (X-Admin-Key). It MUST be distinct from auth_key: the web app's server-side
+    # proxy (web/app/api/[...path]/route.ts) injects auth_key into every /api/* request it
+    # forwards, so any visitor's browser can present it. auth_key authenticates the PROXY,
+    # not the person — it is not an authorization boundary. Unset + auth_key set → the admin
+    # routes are DISABLED (fail closed), because "open admin route in a deployment" hands out
+    # free entitlements. Unset + auth_key unset → fully-open local dev, allowed.
+    admin_key: str | None = None
     # Browser origins allowed to call the API (the SP-4b web UI runs on another port,
     # so every fetch is cross-origin). Comma-separated via AEO__API__CORS_ORIGINS.
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
@@ -346,14 +360,26 @@ class AuthCfg(BaseModel):
     # Degrades to disabled/open when the secret is unset, exactly like auth_key.
     enabled: bool = True
     # The Supabase project JWT secret (Settings → API → JWT Secret). HS256 sign==verify key:
-    # treat as a SIGNING key — env-only, never logged. Unset → auth inactive (dev/open).
+    # treat as a SIGNING key — env-only, never logged. Unset → auth inactive (dev/open),
+    # UNLESS jwks_url is set (asymmetric projects have no shared secret to configure).
     jwt_secret: str | None = None
+    # Asymmetric verification (ES256/RS256). Supabase projects created with JWT *signing
+    # keys* — the current default — do NOT expose a shared HS256 secret, so the secret-only
+    # path silently rejects every real login. Point this at the project's JWKS endpoint
+    # (https://<ref>.supabase.co/auth/v1/.well-known/jwks.json) and the verifier fetches +
+    # caches the public keys and picks the key by the token's `kid`. Private keys never
+    # leave Supabase. Set EITHER this or jwt_secret; both is fine during a key rotation.
+    jwks_url: str | None = None
+    jwks_cache_sec: int = 600  # PyJWKClient lifespan — bounds how long a rotated-out key lingers
     # Supabase access tokens carry aud="authenticated"; the anon/service_role keys (also JWTs
     # signed with the SAME secret) do NOT — this + the role check is what blocks them.
     jwt_aud: str = "authenticated"
-    # Pinned explicitly so alg=none / RS256→HS256 confusion is impossible. HS256 only unless
-    # a project migrates to asymmetric signing (JWKS path is out of scope for P4).
+    # Pinned explicitly so alg=none is impossible. HS256 for a shared-secret project; the
+    # asymmetric algs are only ever ACCEPTED when jwks_url is configured (see
+    # api/auth.py::_algorithms) — a secret-only deployment stays HS256-only, so a public
+    # key can never be smuggled in as an HMAC secret (the classic RS256→HS256 confusion).
     jwt_algorithms: list[str] = Field(default_factory=lambda: ["HS256"])
+    jwt_asymmetric_algorithms: list[str] = Field(default_factory=lambda: ["ES256", "RS256"])
     # Optional issuer pin (https://<ref>.supabase.co/auth/v1) — defends against a token minted
     # for a different project with the same secret. Off unless configured.
     jwt_issuer: str | None = None
@@ -364,9 +390,60 @@ class AuthCfg(BaseModel):
     # Disabled-mode stand-in so pack-detail routes stay reachable in local dev with no secret.
     dev_user_id: str = "00000000-0000-0000-0000-000000000000"
 
+    @field_validator("jwt_secret", "jwks_url", "jwt_issuer", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: Any) -> Any:
+        """Treat an empty/whitespace env value as UNSET. Writing `AEO__AUTH__JWT_ISSUER=`
+        in a .env reads as "not configured" to a human, but an empty string is truthy
+        enough to reach jwt.decode(issuer="") — which then rejects EVERY token, with the
+        misleading 'invalid token' 401. Same trap for a blank secret/JWKS URL."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     @property
     def promo_code_set(self) -> frozenset[str]:
         return frozenset(c.strip() for c in self.promo_codes.split(",") if c.strip())
+
+
+class PaymentsCfg(BaseModel):
+    """v5 CH-02b — Stripe Checkout, flat price per pack (§9.2's open pricing decision,
+    resolved). Unset → the buy path 503s and the UI hides it; promo codes and manual grants
+    still work, so an unconfigured deployment degrades to the documented stub."""
+
+    enabled: bool = True
+    # Stripe SECRET key (sk_live_… / sk_test_…). Env-only, never logged, never sent to the
+    # browser — the publishable key is not needed here because Checkout is a redirect.
+    stripe_secret_key: str | None = None
+    # Webhook signing secret (whsec_…) from the endpoint's Stripe dashboard page. This is
+    # the ONLY credential on /api/webhooks/stripe, which is exempt from the X-API-Key guard.
+    webhook_secret: str | None = None
+    # Flat price for ONE pack, in the currency's minor unit (4900 = $49.00).
+    pack_price_cents: int = 4900
+    currency: str = "usd"
+    # Optional dashboard-managed Price id; overrides pack_price_cents/currency when set.
+    stripe_price_id: str | None = None
+    # The PUBLIC WEB APP origin Stripe returns the buyer to (e.g. https://app.example.com).
+    # This must be set in any real deployment. It cannot be derived from the request: the
+    # browser talks to the Next.js proxy, which rewrites Host before forwarding, so
+    # request.base_url is the BACKEND's origin (http://api:8000, or the Railway API host).
+    # Building success_url from that sent the paying customer to a backend 404 — the API
+    # serves no /studio. Unset → fall back to the request origin, which is correct only when
+    # the API and the UI are the same origin (local dev).
+    public_app_url: str | None = None
+    # Where Stripe returns the buyer, joined onto public_app_url.
+    success_path: str = "/studio?checkout=success"
+    cancel_path: str = "/studio?checkout=cancelled"
+    request_timeout_sec: float = 20.0
+
+    @field_validator("stripe_secret_key", "webhook_secret", "stripe_price_id", "public_app_url", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: Any) -> Any:
+        """Blank env value = unset (mirrors AuthCfg) — so a stray `AEO__PAYMENTS__…=` in a
+        .env reads as "not configured" instead of an empty credential that fails oddly."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class ReferenceArchitectureCfg(BaseModel):
@@ -423,6 +500,7 @@ class Settings(BaseSettings):
     obs: ObsCfg = ObsCfg()
     api: ApiCfg = ApiCfg()
     auth: AuthCfg = AuthCfg()
+    payments: PaymentsCfg = PaymentsCfg()
 
     log_level: str = "INFO"
     log_format: str = "console"

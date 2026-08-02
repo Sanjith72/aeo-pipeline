@@ -141,12 +141,20 @@ function TicketCard({
 export function TicketBoard({ runId, packIndex }: { runId: number; packIndex: number }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [locked, setLocked] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
     try {
       setTickets((await api.getPackTickets(runId, packIndex)).tickets);
+      setLocked(false);
     } catch (e) {
+      // A locked pack is an expected state (v5 CH-02a), not a failure — say so rather than
+      // showing the generic "couldn't load".
+      if (typeof e === "object" && e !== null && (e as { status?: number }).status === 403) {
+        setLocked(true);
+        return;
+      }
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [runId, packIndex]);
@@ -172,6 +180,12 @@ export function TicketBoard({ runId, packIndex }: { runId: number; packIndex: nu
     setTickets((prev) => (prev ? prev.map((x) => (x.task_key === t.task_key ? t : x)) : prev));
   }
 
+  if (locked)
+    return (
+      <p className="text-[13px] text-ink-300">
+        Unlock this pack to see and work its fixes.
+      </p>
+    );
   if (error) return <p className="text-[13px] text-ink-300">Couldn&apos;t load tickets.</p>;
   if (tickets == null) return <p className="text-[13px] text-ink-300">Loading tickets…</p>;
   if (tickets.length === 0) return <p className="text-[13px] text-ink-300">No tickets for this pack yet.</p>;
