@@ -100,6 +100,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # GHCR requires an all-lowercase repository name, but `github.repository` preserves the
+      # owner's casing ("Sanjith72/aeo-pipeline") — which failed EVERY run on main with
+      # `invalid tag ...: repository name must be lowercase`. There is no built-in lowercase
+      # expression in workflow syntax, so normalise it here.
+      - name: Compute lowercase image name
+        id: img
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       # Build once, push with both the commit SHA and a moving 'latest' tag.
       - name: Build & push
         uses: docker/build-push-action@v6
@@ -107,7 +115,7 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ steps.img.outputs.name }}:latest
+            ghcr.io/${{ steps.img.outputs.name }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
