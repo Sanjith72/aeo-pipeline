@@ -153,18 +153,60 @@ def _check_auth(s: Settings, fatal: list[str], warnings: list[str], *, serving: 
     bad = [a for a in auth.jwt_algorithms if a.strip().lower() == "none" or a not in _SAFE_JWT_ALGS]
     if bad:
         fatal.append(f"AEO__AUTH__JWT_ALGORITHMS has unsafe/unknown entries: {bad}")
-    auth_active = auth.enabled and bool(auth.jwt_secret)
+    # Must mirror api.auth.auth_active(): EITHER credential activates verification. Checking
+    # only jwt_secret told correctly-configured JWKS deployments (the Supabase default, which
+    # has no shared secret at all) that auth was disabled — a false alarm that trains you to
+    # ignore the warning that matters.
+    auth_active = auth.enabled and bool(auth.jwt_secret or auth.jwks_url)
     if serving and not auth_active:
         warnings.append(
-            "serving without AEO__AUTH__JWT_SECRET — deep-value routes (pack detail, per-user "
-            "unlocks) are open and bind to a shared dev user; set it in any public deployment"
+            "serving without AEO__AUTH__JWT_SECRET or AEO__AUTH__JWKS_URL — deep-value routes "
+            "(pack detail, per-user unlocks) are open and bind to a shared dev user; set one "
+            "in any public deployment"
         )
     # Prod-posture mismatch: the service key is set but user auth is off.
     if serving and s.api.auth_key and not auth_active:
         warnings.append(
             "AEO__API__AUTH_KEY is set but user auth is disabled — deep-value routes have no "
-            "per-user gate (shared dev user); set AEO__AUTH__JWT_SECRET too"
+            "per-user gate (shared dev user); set AEO__AUTH__JWT_SECRET or AEO__AUTH__JWKS_URL"
         )
+    # The service key is NOT an authorization boundary: the web proxy injects it into every
+    # forwarded request, so any visitor's browser presents it. Without a distinct admin key
+    # the entitlement-minting routes refuse to serve (require_admin_key fails closed) — say
+    # so at boot rather than letting an operator discover it via a 503.
+    if serving and s.api.auth_key and not s.api.admin_key:
+        warnings.append(
+            "AEO__API__ADMIN_KEY is unset — admin routes (/api/entitlements/grant) are "
+            "DISABLED. Set it to issue manual grants; never reuse AEO__API__AUTH_KEY, which "
+            "the web proxy hands to every visitor"
+        )
+
+
+def _check_payments(s: Settings, fatal: list[str], warnings: list[str], *, serving: bool) -> None:
+    """v5 CH-02b Stripe config. Pure config (no I/O).
+
+    The fatal case is money-losing and otherwise silent: a secret key WITHOUT a webhook
+    secret means checkout succeeds, customers are charged, and every webhook delivery fails
+    signature verification — so no entitlement is ever written and Stripe gives up retrying
+    after ~3 days. Refuse to boot rather than sell something that cannot be delivered."""
+    pay = s.payments
+    if not pay.enabled or not pay.stripe_secret_key:
+        return
+    if not pay.webhook_secret:
+        fatal.append(
+            "AEO__PAYMENTS__STRIPE_SECRET_KEY is set without AEO__PAYMENTS__WEBHOOK_SECRET — "
+            "customers would be charged and never granted their pack (every webhook would be "
+            "rejected). Set the signing secret from the Stripe endpoint, or unset the key"
+        )
+    if pay.pack_price_cents <= 0 and not pay.stripe_price_id:
+        fatal.append("AEO__PAYMENTS__PACK_PRICE_CENTS must be > 0 (or set a STRIPE_PRICE_ID)")
+    if serving and not pay.public_app_url:
+        warnings.append(
+            "AEO__PAYMENTS__PUBLIC_APP_URL is unset — Stripe will return buyers to the API's "
+            "own origin, which serves no /studio. Set it to the web app's public URL"
+        )
+    if serving and pay.stripe_secret_key.startswith("sk_live_") and not s.api.auth_key:
+        warnings.append("LIVE Stripe key with no AEO__API__AUTH_KEY — the API is unauthenticated")
 
 
 def validate_settings(*, serving: bool = False) -> list[str]:
@@ -182,6 +224,7 @@ def validate_settings(*, serving: bool = False) -> list[str]:
     _check_agents(s, fatal)
     _check_api(s, fatal, warnings, serving=serving)
     _check_auth(s, fatal, warnings, serving=serving)
+    _check_payments(s, fatal, warnings, serving=serving)
 
     for w in warnings:
         log.warning("startup_config_warning", detail=w)

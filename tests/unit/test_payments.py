@@ -446,3 +446,102 @@ def test_non_ascii_signature_raises_valueerror_not_typeerror(payments_on):
     t = int(time.time())
     with pytest.raises(ValueError):
         payments_on.verify_webhook(body, f"t={t},v1=\u00e9\u00e9\u00e9")
+
+
+# ── startup validation: refuse to sell what we cannot deliver ──────────────────────
+
+
+def _validate(monkeypatch, **env):
+    from aeo.settings import get_settings
+    from aeo.startup import StartupValidationError, validate_settings
+
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    get_settings.cache_clear()
+    try:
+        return validate_settings(serving=True), None
+    except StartupValidationError as exc:
+        return None, str(exc)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_startup_is_fatal_when_the_webhook_secret_is_missing(monkeypatch):
+    """The silent money-loser: checkout works, customers are charged, every webhook is
+    rejected, Stripe gives up after ~3 days. Must not boot."""
+    _warns, err = _validate(
+        monkeypatch,
+        AEO__PAYMENTS__STRIPE_SECRET_KEY="sk_test_123",
+        AEO__PAYMENTS__WEBHOOK_SECRET="",
+    )
+    assert err is not None and "WEBHOOK_SECRET" in err
+
+
+def test_startup_ok_when_both_stripe_credentials_are_set(monkeypatch):
+    warns, err = _validate(
+        monkeypatch,
+        AEO__PAYMENTS__STRIPE_SECRET_KEY="sk_test_123",
+        AEO__PAYMENTS__WEBHOOK_SECRET="whsec_123",
+        AEO__PAYMENTS__PUBLIC_APP_URL="https://app.example.com",
+    )
+    assert err is None
+    assert not any("WEBHOOK_SECRET" in w or "PUBLIC_APP_URL" in w for w in warns)
+
+
+def test_startup_warns_when_the_return_url_is_unset(monkeypatch):
+    """Without it the buyer is redirected to the API's own origin — a 404 after paying."""
+    warns, err = _validate(
+        monkeypatch,
+        AEO__PAYMENTS__STRIPE_SECRET_KEY="sk_test_123",
+        AEO__PAYMENTS__WEBHOOK_SECRET="whsec_123",
+        AEO__PAYMENTS__PUBLIC_APP_URL="",
+    )
+    assert err is None
+    assert any("PUBLIC_APP_URL" in w for w in warns)
+
+
+def test_startup_is_silent_about_payments_when_stripe_is_unconfigured(monkeypatch):
+    """No Stripe key = the documented §9.2 stub, not a misconfiguration."""
+    warns, err = _validate(monkeypatch, AEO__PAYMENTS__STRIPE_SECRET_KEY="")
+    assert err is None
+    assert not any("PAYMENTS" in w for w in warns)
+
+
+def test_startup_flags_a_missing_admin_key_in_a_deployed_posture(monkeypatch):
+    from aeo.settings import get_settings
+
+    monkeypatch.setenv("AEO__API__AUTH_KEY", "s3rvice")
+    monkeypatch.setenv("AEO__API__ADMIN_KEY", "")
+    get_settings.cache_clear()
+    from aeo.startup import validate_settings
+
+    warns = validate_settings(serving=True)
+    assert any("ADMIN_KEY" in w for w in warns)
+    get_settings.cache_clear()
+
+
+def test_jwks_only_deployment_is_not_reported_as_auth_disabled(monkeypatch):
+    """A JWKS-only project (the Supabase default — no shared secret exists) is correctly
+    gated; warning that auth is off trains you to ignore the warning that matters."""
+    from aeo.settings import get_settings
+
+    monkeypatch.setenv("AEO__AUTH__JWT_SECRET", "")
+    monkeypatch.setenv("AEO__AUTH__JWKS_URL", "https://p.supabase.co/auth/v1/.well-known/jwks.json")
+    get_settings.cache_clear()
+    from aeo.startup import validate_settings
+
+    warns = validate_settings(serving=True)
+    assert not any("deep-value routes" in w for w in warns)
+    get_settings.cache_clear()
+
+
+def test_stripe_webhook_is_exempt_from_the_rate_limiter():
+    """Stripe retries in bursts from shared egress IPs; a 429 is a delivery FAILURE, so a
+    throttled webhook loses the grant for a payment already taken."""
+    from aeo.api.app import _HEALTH_PATH, _STRIPE_WEBHOOK_PATH
+
+    assert _STRIPE_WEBHOOK_PATH == "/api/webhooks/stripe"
+    src = __import__("pathlib").Path("src/aeo/api/app.py").read_text(encoding="utf-8")
+    assert "exempt = (_HEALTH_PATH, _STRIPE_WEBHOOK_PATH)" in src
+    assert "path not in exempt" in src
+    assert _HEALTH_PATH == "/api/health"

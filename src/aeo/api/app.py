@@ -172,6 +172,11 @@ class _RateLimiter:
         return count > limit
 
 
+# Paths exempt from the per-IP throttle. Constants so the webhook literal used here, in
+# require_api_key's guard exemption, and in the route decorator can never drift apart.
+_HEALTH_PATH = "/api/health"
+_STRIPE_WEBHOOK_PATH = "/api/webhooks/stripe"
+
 _RATE = _RateLimiter()
 # The free-overview daily caps live in their OWN limiter: the middleware limiter runs a
 # 60s window and its overflow eviction drops any entry older than that window, which would
@@ -193,12 +198,18 @@ def _client_ip(request: Request) -> str:
 async def _rate_limit(request: Request, call_next):
     """Throttle each client IP on ``/api/*`` (``/api/health`` excluded so liveness probes are
     never limited). No-op when ``AEO__API__RATE_LIMIT`` is 0 (the dev default). Runs before
-    auth, so an attacker can't hammer the key check either."""
+    auth, so an attacker can't hammer the key check either.
+
+    The Stripe webhook is exempt too: Stripe delivers from a small pool of shared egress IPs
+    and retries in bursts, so a 429 there is recorded as a delivery FAILURE — money captured
+    with no entitlement written, and after ~3 days Stripe stops retrying. Its HMAC signature
+    is a far stronger gate than an IP counter, so it does not need this one."""
     from ..settings import get_settings
 
     cfg = get_settings().api
     path = request.url.path
-    limited = cfg.rate_limit > 0 and path.startswith("/api/") and path != "/api/health"
+    exempt = (_HEALTH_PATH, _STRIPE_WEBHOOK_PATH)
+    limited = cfg.rate_limit > 0 and path.startswith("/api/") and path not in exempt
     if limited and _RATE.over_limit(_client_ip(request), cfg.rate_limit, cfg.rate_window_sec):
         return JSONResponse(
             {"detail": "rate limit exceeded — slow down"},
