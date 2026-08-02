@@ -26,6 +26,7 @@ import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownl
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { PackCard } from "@/components/PackCard";
 import { TicketBoard } from "@/components/TicketBoard";
+import { PackDetail } from "@/components/PackDetail";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { UnlockModal } from "@/components/auth/UnlockModal";
 import { GamificationStrip } from "@/components/GamificationStrip";
@@ -1145,11 +1146,23 @@ export function StudioApp() {
               </div>
               {/* v5 CH-08/CH-15: the ticket board for the opened (unlocked) pack. */}
               {runId != null && openPack != null && packs.some((p) => p.pack_index === openPack && !p.locked) && (
-                <div className="mt-5 rounded-[18px] border border-white/[0.09] p-5">
-                  <h4 className="mb-3 text-[15px] font-semibold text-ink">
-                    Pack {String(openPack).padStart(2, "0")} — your fixes
-                  </h4>
-                  <TicketBoard runId={runId} packIndex={openPack} />
+                <div className="mt-5 flex flex-col gap-6 rounded-[18px] border border-white/[0.09] p-5">
+                  <div>
+                    <h4 className="mb-3 text-[15px] font-semibold text-ink">
+                      Pack {String(openPack).padStart(2, "0")} — your fixes
+                    </h4>
+                    <TicketBoard runId={runId} packIndex={openPack} />
+                  </div>
+                  {/* v5 CH-04: the five-skill scores behind those tickets, page by page.
+                      The board says WHAT to do; this says WHY. Same 403 gate. */}
+                  <div>
+                    <h4 className="mb-1 text-[15px] font-semibold text-ink">Page-by-page scores</h4>
+                    <p className="mb-3 max-w-[64ch] text-[13px] leading-[1.6] text-ink-300">
+                      How each page in this pack scores on the five skills, with the
+                      highest-impact fix first.
+                    </p>
+                    <PackDetail runId={runId} packIndex={openPack} />
+                  </div>
                 </div>
               )}
             </section>

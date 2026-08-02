@@ -517,6 +517,9 @@ export interface SkillScore {
   source_criteria: string[];
   suggestions: SkillSuggestion[];
   evidence?: Record<string, unknown>;
+  /** v5 CH-14 — present on discovery_visibility: the AI-snapshot verdict folded into the
+   *  skill. null when no check was attached; the three statuses are never conflated. */
+  ai_visibility?: AiVisibility | null;
 }
 
 // One impact-ranked fix in the "do these first" list (CH-06): ranked by weight × severity
