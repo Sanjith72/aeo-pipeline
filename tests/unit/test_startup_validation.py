@@ -90,3 +90,48 @@ class TestWarnings:
         )
         settings.llm.enabled = False
         assert validate_settings() == []
+
+
+# The JWKS URL is exercised only by a REAL login, so a wrong one boots perfectly clean and
+# then 401s every user with an opaque "invalid token". These checks are the boot-time half
+# of that gap (the network half is scripts/check_auth_config.py --live).
+GOOD_JWKS = "https://klnzsbguvitpnixnvsqs.supabase.co/auth/v1/.well-known/jwks.json"
+
+
+class TestJwksConfig:
+    def test_placeholder_jwks_url_is_fatal(self, settings):
+        settings.auth.jwks_url = "https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json"
+        with pytest.raises(StartupValidationError, match="placeholder"):
+            validate_settings()
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "klnzsbguvitpnixnvsqs.supabase.co/auth/v1/.well-known/jwks.json",  # no scheme
+            "http://klnzsbguvitpnixnvsqs.supabase.co/auth/v1/.well-known/jwks.json",  # not https
+            "https:///auth/v1/.well-known/jwks.json",  # no host
+        ],
+    )
+    def test_non_absolute_https_jwks_url_is_fatal(self, settings, url):
+        settings.auth.jwks_url = url
+        with pytest.raises(StartupValidationError, match="absolute https URL"):
+            validate_settings()
+
+    def test_wrong_jwks_path_warns(self, settings):
+        """The dashboard shows several Supabase URLs; pasting the project URL, or dropping
+        the /.well-known/ segment, yields a 404 that reaches users as 'invalid token'."""
+        settings.auth.jwks_url = "https://klnzsbguvitpnixnvsqs.supabase.co/auth/v1/jwks.json"
+        assert any(".well-known" in w for w in validate_settings())
+
+    def test_correct_jwks_url_is_clean(self, settings):
+        settings.auth.jwks_url = GOOD_JWKS
+        settings.llm.enabled = False
+        assert validate_settings() == []
+
+    def test_alg_none_in_the_asymmetric_list_is_fatal(self, settings):
+        """jwt_algorithms was already guarded; jwt_asymmetric_algorithms is the list actually
+        consulted whenever a JWKS URL is set — i.e. on every current Supabase project."""
+        settings.auth.jwks_url = GOOD_JWKS
+        settings.auth.jwt_asymmetric_algorithms = ["ES256", "none"]
+        with pytest.raises(StartupValidationError, match="ASYMMETRIC"):
+            validate_settings()

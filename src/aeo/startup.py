@@ -153,6 +153,37 @@ def _check_auth(s: Settings, fatal: list[str], warnings: list[str], *, serving: 
     bad = [a for a in auth.jwt_algorithms if a.strip().lower() == "none" or a not in _SAFE_JWT_ALGS]
     if bad:
         fatal.append(f"AEO__AUTH__JWT_ALGORITHMS has unsafe/unknown entries: {bad}")
+    # The asymmetric list was never checked, yet it is the list that is actually consulted
+    # whenever a JWKS URL is configured — i.e. on every Supabase project created since JWT
+    # signing keys became the default. 'none' there is the same forgery hole.
+    bad_asym = [
+        a for a in auth.jwt_asymmetric_algorithms
+        if a.strip().lower() == "none" or a not in _SAFE_JWT_ALGS
+    ]
+    if bad_asym:
+        fatal.append(f"AEO__AUTH__JWT_ASYMMETRIC_ALGORITHMS has unsafe/unknown entries: {bad_asym}")
+    # A JWKS URL is only ever exercised by a real login, so a typo'd or half-substituted one
+    # boots perfectly clean and then 401s every single user — the failure mode this whole
+    # deployment already lost hours to. These are shape checks only (no I/O at boot); the
+    # network half lives in scripts/check_auth_config.py --live.
+    if auth.jwks_url:
+        parsed = urlparse(auth.jwks_url)
+        if "<" in auth.jwks_url or ">" in auth.jwks_url:
+            fatal.append(
+                "AEO__AUTH__JWKS_URL still contains a placeholder like <project-ref> — "
+                "substitute your real Supabase project ref"
+            )
+        elif parsed.scheme != "https" or not parsed.netloc:
+            fatal.append(
+                f"AEO__AUTH__JWKS_URL must be an absolute https URL (got {auth.jwks_url!r})"
+            )
+        elif not parsed.path.endswith("/.well-known/jwks.json"):
+            # Supabase serves the key set at exactly one path; anything else 404s, and a 404
+            # is indistinguishable from a forged token by the time it reaches a user.
+            warnings.append(
+                f"AEO__AUTH__JWKS_URL path is {parsed.path!r} — Supabase serves its key set at "
+                "/auth/v1/.well-known/jwks.json; a wrong path 401s every login"
+            )
     # Must mirror api.auth.auth_active(): EITHER credential activates verification. Checking
     # only jwt_secret told correctly-configured JWKS deployments (the Supabase default, which
     # has no shared secret at all) that auth was disabled — a false alarm that trains you to
