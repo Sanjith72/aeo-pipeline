@@ -21,10 +21,18 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # Tests are fully offline (LLM disabled in conftest, no DB/browser), so
-      # no services are needed. Installing with [dev] pulls in pytest + ruff.
+      # Tests are fully offline (LLM disabled in conftest, no DB/browser), so no services
+      # are needed. [api] is NOT optional here despite being an optional extra: test_auth.py
+      # and test_payments.py open with `pytest.importorskip("fastapi")` / `("jwt")`, so
+      # installing only [dev] made the entire auth + payments suite SKIP — silently, with a
+      # green tick. Those are the security-critical suites in this repo.
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[api,dev]"
+
+      # Belt and braces: if this import ever fails, the suites above go back to skipping
+      # quietly. Fail loudly here instead, where the cause is unmistakable.
+      - name: Guard — auth/payments suites must be runnable, not skippable
+        run: python -c "import fastapi, jwt, cryptography; print('auth+payments deps present')"
 
       - name: Lint
         run: ruff check src tests
@@ -45,8 +53,10 @@ jobs:
           src/aeo/storage/db.py
           src/aeo/pipeline/embed_index.py
 
+      # -ra surfaces the skip reasons in the log; a suite that quietly stops running is the
+      # failure mode this job has already had once.
       - name: Test
-        run: pytest -q
+        run: pytest -q -ra
 
   # Exercises the migrations 0001-0009 + DB-gated integration tests against a real
   # Postgres (the offline `test` job skips these). Closes the "first deploy is the

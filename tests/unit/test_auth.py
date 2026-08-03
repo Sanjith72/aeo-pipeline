@@ -200,7 +200,11 @@ def jwks_on(monkeypatch):
         def get_signing_key_from_jwt(self, token):
             header = jwt_mod.get_unverified_header(token)
             if header.get("kid") != jwk["kid"]:
-                raise jwt_mod.PyJWKClientError("no matching kid")
+                # PyJWT's real wording — auth.py tells a genuine kid miss apart from a fetch
+                # failure by it, so an invented message here would hide that logic.
+                raise jwt_mod.PyJWKClientError(
+                    f'Unable to find a signing key that matches: "{header.get("kid")}"'
+                )
             return jwt_mod.PyJWK(jwk)
 
     monkeypatch.setattr(jwt_mod, "PyJWKClient", _FakeClient)
@@ -299,3 +303,112 @@ def test_asymmetric_algs_rejected_without_jwks(auth_on):
     with pytest.raises(Exception) as e:
         auth_on.get_current_user(_req(_es_tok(pem)))
     assert _status(e.value) == 401
+
+
+# ── the negative-kid cache must never confuse "couldn't fetch" with "no such key" ──────
+#
+# _KID_MISS exists to stop a flood of random `kid`s turning every request into an outbound
+# JWKS fetch. It works by refusing a remembered kid WITHOUT touching the network — which
+# makes what gets remembered safety-critical: record a transport failure as a miss and the
+# project's REAL signing key is blacklisted for the whole TTL, converting a momentary
+# Supabase blip into a total login outage that cannot self-heal (every request is refused
+# instantly, so nothing ever retries the fetch that would fix it).
+
+
+@pytest.fixture
+def jwks_flaky(monkeypatch):
+    """Like `jwks_on`, but the fake client can be switched between a transport outage and a
+    genuine unknown kid — the two cases auth.py has to tell apart."""
+    pem, jwk = _es256_keypair()
+    _isolate_from_dotenv(monkeypatch)
+    monkeypatch.setenv("AEO__AUTH__JWKS_URL", JWKS_URL)
+    from aeo.settings import get_settings
+
+    get_settings.cache_clear()
+    from aeo.api import auth as auth_mod
+    from aeo.storage.repos import entitlements as ent
+
+    auth_mod._SEEN_USERS.clear()
+    auth_mod._jwk_client.cache_clear()
+    auth_mod._KID_MISS.clear()
+    monkeypatch.setattr(ent, "ensure_user", lambda *a, **k: None)
+
+    import jwt as jwt_mod
+
+    state = {"outage": False, "lookups": 0}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_signing_key_from_jwt(self, token):
+            state["lookups"] += 1
+            if state["outage"]:
+                # PyJWT 2.8's wording when the key set cannot be RETRIEVED. (2.9+ raises
+                # PyJWKClientConnectionError, a subclass — covered by the same handler.)
+                raise jwt_mod.PyJWKClientError(
+                    'Fail to fetch data from the url, err: "<urlopen error timed out>"'
+                )
+            header = jwt_mod.get_unverified_header(token)
+            if header.get("kid") != jwk["kid"]:
+                raise jwt_mod.PyJWKClientError(
+                    f'Unable to find a signing key that matches: "{header.get("kid")}"'
+                )
+            return jwt_mod.PyJWK(jwk)
+
+    monkeypatch.setattr(jwt_mod, "PyJWKClient", _FakeClient)
+    yield auth_mod, pem, state
+    auth_mod._KID_MISS.clear()
+    auth_mod._jwk_client.cache_clear()
+    get_settings.cache_clear()
+
+
+def test_transient_jwks_outage_does_not_blacklist_the_real_kid(jwks_flaky):
+    """A Supabase blip must cost only the requests it actually hits.
+
+    Regression: `except Exception: _remember_kid_miss(kid)` recorded a *fetch* failure as
+    "this kid does not exist", blacklisting the project's real signing key for the full
+    5-minute TTL. Every login in that window then 401'd instantly — including long after
+    Supabase recovered, because the short-circuit skips the fetch that would have healed it.
+    """
+    auth_mod, pem, state = jwks_flaky
+
+    state["outage"] = True
+    with pytest.raises(Exception) as e:
+        auth_mod.get_current_user(_req(_es_tok(pem)))
+    assert _status(e.value) == 401  # the request that lands during the outage does fail
+
+    assert "test-kid" not in auth_mod._KID_MISS, (
+        "a transport failure was recorded as an unknown kid — the project's real signing "
+        "key is now blacklisted and every login 401s until the TTL expires"
+    )
+
+    # Supabase recovers. The very next login must succeed, with no waiting out a TTL.
+    state["outage"] = False
+    assert auth_mod.get_current_user(_req(_es_tok(pem, email="back@example.com"))).email == (
+        "back@example.com"
+    )
+
+
+def test_genuinely_unknown_kid_is_still_remembered(jwks_flaky):
+    """The other half: narrowing the handler must not disarm the DoS mitigation. A kid the
+    key set actually disowned is still cached, and the repeat is answered from memory."""
+    auth_mod, pem, state = jwks_flaky
+    tok = jwt.encode(
+        {"sub": str(uuid.uuid4()), "aud": "authenticated", "role": "authenticated",
+         "exp": int(time.time()) + 3600},
+        pem, algorithm="ES256", headers={"kid": "attacker-supplied"},
+    )
+    with pytest.raises(Exception) as e:
+        auth_mod.get_current_user(_req(tok))
+    assert _status(e.value) == 401
+    assert "attacker-supplied" in auth_mod._KID_MISS
+
+    lookups = state["lookups"]
+    with pytest.raises(Exception) as e:
+        auth_mod.get_current_user(_req(tok))
+    assert _status(e.value) == 401
+    assert state["lookups"] == lookups, (
+        "the repeat reached the JWKS client — the negative cache is no longer "
+        "short-circuiting, so random kids become unbounded outbound fetches"
+    )

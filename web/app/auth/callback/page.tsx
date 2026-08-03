@@ -39,6 +39,11 @@ function CallbackInner() {
 
   useEffect(() => {
     let cancelled = false;
+    // Whether the sign-in question has been ANSWERED (either way). getSession() and
+    // onAuthStateChange can both report the same session, and this effect can re-run once
+    // when supabase-js strips the `?code=` via history.replaceState (Next patches that to
+    // resync useSearchParams) — so every terminal path is guarded by this, not by `cancelled`.
+    let settled = false;
 
     // Supabase reports a refused/aborted consent as query params, not an exception.
     const denied = params.get("error_description") ?? params.get("error");
@@ -51,7 +56,39 @@ function CallbackInner() {
       return;
     }
 
+    // Don't hang forever on a code that never exchanges (expired/replayed link). Declared
+    // before finish() so finish() can clear it.
+    const timer = setTimeout(() => {
+      if (cancelled || settled) return;
+      settled = true;
+      // The two cases look identical to the user but have completely different causes, and
+      // telling them apart is most of the debugging. A `?code=` still sitting in the URL
+      // means the PKCE exchange itself failed (replayed/expired code, or the code_verifier
+      // was lost — different browser, cleared storage, a redirect through another origin).
+      const stranded = params.get("code");
+      // eslint-disable-next-line no-console -- the only breadcrumb a user can send back
+      console.error(
+        stranded
+          ? "[auth/callback] a PKCE code was present but never exchanged for a session " +
+              "within 15s. Usual causes: the code was already used, or the code_verifier " +
+              "is missing from this browser's storage."
+          : "[auth/callback] no session and no ?code= — the provider redirect did not " +
+              "carry one. Check the Supabase Redirect URLs allowlist for this origin.",
+      );
+      setError(
+        stranded
+          ? "We couldn't complete that sign-in. The link may already have been used — please try again."
+          : "That sign-in didn't come back with a session. Please try again.",
+      );
+    }, 15000);
+
     const finish = async () => {
+      if (settled) return;
+      settled = true;
+      // Stop the clock BEFORE awaiting: provisioning is best-effort and can outlast 15s on a
+      // cold backend. Leaving the timer armed here is what used to show "sign-in didn't
+      // complete" to a user who was, in fact, already signed in.
+      clearTimeout(timer);
       try {
         await api.me();
       } catch {
@@ -62,17 +99,14 @@ function CallbackInner() {
 
     // The exchange may already be done (detectSessionInUrl runs on client construction) or
     // still in flight — cover both: check once, and listen for the SIGNED_IN that follows.
+    // (We deliberately do NOT call exchangeCodeForSession here: detectSessionInUrl already
+    // owns the exchange, and a second attempt would consume an already-spent code and fail.)
     void supabase.auth.getSession().then(({ data }) => {
       if (data.session && !cancelled) void finish();
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
       if (session && !cancelled) void finish();
     });
-
-    // Don't hang forever on a code that never exchanges (expired/replayed link).
-    const timer = setTimeout(() => {
-      if (!cancelled) setError("That sign-in link expired. Please try again.");
-    }, 15000);
 
     return () => {
       cancelled = true;

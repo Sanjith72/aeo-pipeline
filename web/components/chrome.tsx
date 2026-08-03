@@ -177,10 +177,17 @@ export function Hero() {
 function AccountSlot() {
   const { authEnabled, user, openAuth, signOut } = useAuth();
   if (!authEnabled) return null;
+  // Never `hidden` on small screens. This slot is the ONLY way into the account on any
+  // route, so hiding it below 640px doesn't declutter the header — it removes sign-in
+  // entirely on a phone, which is indistinguishable from "sign-in is broken". Shrink
+  // instead: drop the email text (the long part) and keep the controls at every width.
   if (user) {
     return (
-      <div className="hidden items-center gap-2 sm:flex">
-        <span className="max-w-[16ch] truncate text-[12.5px] text-ink-300" title={user.email ?? ""}>
+      <div className="flex items-center gap-2">
+        <span
+          className="hidden max-w-[16ch] truncate text-[12.5px] text-ink-300 sm:inline"
+          title={user.email ?? ""}
+        >
           {user.email}
         </span>
         <button type="button" onClick={() => void signOut()} className="nav-link">
@@ -190,7 +197,7 @@ function AccountSlot() {
     );
   }
   return (
-    <button type="button" onClick={() => openAuth()} className="nav-link hidden sm:block">
+    <button type="button" onClick={() => openAuth()} className="nav-link">
       Sign in
     </button>
   );

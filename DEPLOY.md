@@ -75,6 +75,79 @@ not part of the $0 stack.
 
 ---
 
+## D. Sign-in with Google (Supabase auth) — the part that has no file in this repo
+
+Four things must agree. Three live in a dashboard, so **nothing in this repo can be wrong and
+sign-in still fail**. That is exactly what happened once already: every env var was set
+correctly and Google sign-in silently did nothing, because of step 3.
+
+**1. Google Cloud** — APIs & Services → Credentials → OAuth 2.0 Client ID (Web application).
+Under **Authorized redirect URIs** add exactly:
+
+```
+https://<project-ref>.supabase.co/auth/v1/callback
+```
+
+Note this is a **Supabase** URL, not your site's. Publish the OAuth consent screen
+(Testing → In production); a screen left in *Testing* with 0 test users blocks everyone,
+with an "access blocked" error that reads like a code bug.
+
+**2. Supabase → Authentication → Providers → Google** — enable it, paste the client ID and
+client secret from step 1.
+
+**3. Supabase → Authentication → URL Configuration — the step that gets missed.**
+
+```
+Site URL       https://<your-deployed-origin>
+Redirect URLs  https://<your-deployed-origin>/**
+               http://localhost:3000/**          ← keep for local dev
+```
+
+GoTrue validates the `redirect_to` it was handed against **Redirect URLs**. If your deployed
+`/auth/callback` is not in that list it does **not** error — it silently discards the value
+and sends the user to **Site URL** instead, which defaults to `http://localhost:3000`. So
+after consenting on Google the user lands on a dead localhost address (or, worse, gets
+signed in on their *local dev server*), the production tab never receives a session, and
+there is no error anywhere: no console message, no failed request, no server log. It just
+looks like the button does nothing.
+
+**4. Backend token verification.** Check the project's JWKS endpoint first:
+
+```
+https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json
+```
+
+* Returns **keys** → the project uses asymmetric JWT signing keys. Set
+  `AEO__AUTH__JWKS_URL` to that URL. There is no shared secret to configure, and
+  `AEO__AUTH__JWT_SECRET` will not exist in the dashboard.
+* Returns **`{"keys":[]}`** → legacy shared-secret project. Set `AEO__AUTH__JWT_SECRET`
+  (Settings → API → JWT Secret) instead; a JWKS URL would verify nothing.
+
+**5. The frontend half.** `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` on
+Vercel. These are **inlined at build time**, so setting them changes nothing until you
+redeploy — and the env-var UI showing them set is not evidence. Grep the deployed bundle for
+the project ref; its absence is the proof.
+
+### Verify it, don't assume it
+
+```bash
+python scripts/check_auth_config.py --live --site https://<your-deployed-origin>
+```
+
+`--live` probes the running project: Google enabled, JWKS resolves and carries an algorithm
+the backend accepts, and — the one that catches step 3 — whether
+`<your-deployed-origin>/auth/callback` is really in the Redirect URLs allowlist. It works by
+asking GoTrue to bounce a deliberately **invalid** token and reading the `Location` header:
+an allowlisted URL comes back verbatim, a non-allowlisted one comes back as your Site URL.
+Read-only — no user, session or email is ever created. When the project's env lives on
+Vercel rather than in `web/.env.local`, pass `--supabase-url` / `--anon-key`.
+
+The one thing no probe can confirm is that the backend accepts a *real* user token — that
+needs an actual sign-in. After step 3, sign in once and check the browser calls
+`/api/auth/me` and gets **200**, not 401. A 401 there means step 4 is wrong.
+
+---
+
 ## Environment reference
 
 | Variable | Purpose | Default |
@@ -88,3 +161,6 @@ not part of the $0 stack.
 | `AEO__AGENTS__MODE` | `react` (agentic loop) or `ladder` (fixed sequence) | `react` |
 | `AEO__API__AUTH_KEY` | require `X-API-Key` on `/api/*` (set in any public deploy) | unset (open) |
 | `API_BASE_URL` / `API_KEY` | (web host, runtime) backend URL + key for the server-side proxy | `http://localhost:8000` / unset |
+| `AEO__AUTH__JWKS_URL` | verify Supabase user tokens against the project's public keys — for projects using **asymmetric** JWT signing keys (`https://<ref>.supabase.co/auth/v1/.well-known/jwks.json`) | unset |
+| `AEO__AUTH__JWT_SECRET` | verify user tokens with the **legacy shared secret** instead. Set this *or* `JWKS_URL`, not usually both. Neither → auth is open and nothing is gated | unset |
+| `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | (web host, **build time**) the browser auth client. Unset → no Sign-in button renders and everything stays anonymous. Changing them requires a **redeploy** | unset |

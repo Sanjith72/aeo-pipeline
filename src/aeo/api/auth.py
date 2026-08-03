@@ -36,7 +36,9 @@ local dev needs no Supabase. ``verify_signature=False`` appears NOWHERE.
 
 from __future__ import annotations
 
+import json
 import time
+import urllib.error
 import uuid
 from dataclasses import dataclass
 from functools import lru_cache
@@ -44,6 +46,7 @@ from typing import Any
 
 import jwt
 from fastapi import HTTPException, Request
+from jwt import exceptions as jwt_exceptions
 
 from ..logging import get_logger
 from ..settings import AuthCfg, get_settings
@@ -111,6 +114,38 @@ _KID_MISS_MAX = 512
 _JWKS_FETCH_TIMEOUT_SEC = 5
 
 
+def _is_unknown_kid(exc: BaseException) -> bool:
+    """Did the key set come back fine and simply not contain this ``kid`` (safe to remember),
+    or could the key set not be RETRIEVED at all (must never be remembered)?
+
+    This distinction is load-bearing. ``_remember_kid_miss`` blacklists a ``kid`` for
+    ``_KID_MISS_TTL_SEC``, and ``_kid_recently_missed`` then refuses it *without touching the
+    network*. So recording a fetch failure as a miss blacklists the REAL, VALID signing key:
+    one transient Supabase blip (a timeout, a 502, a DNS hiccup) turns into a full FIVE-MINUTE
+    outage in which every genuine login is rejected with no attempt to recover — and because
+    each rejection is instant, nothing retries the fetch that would have healed it.
+
+    Defaults to False. An unrecognised error is treated as transient, which costs at most the
+    DoS mitigation for that one request; the reverse mistake costs every user their login. The
+    actual attack (a flood of random ``kid``s) always produces PyJWT's "Unable to find a
+    signing key that matches" — the one case we do want to remember — so the mitigation is
+    unaffected.
+    """
+    # Fetch-side failures: urllib (DNS/TLS/refused/timeout), a read timeout, or a body that
+    # is not JSON. None of these say anything about whether the kid exists.
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, json.JSONDecodeError)):
+        return False
+    # PyJWT >= 2.9 gives fetch failures their own class; 2.8 (our floor) does not.
+    conn_error = getattr(jwt_exceptions, "PyJWKClientConnectionError", None)
+    if conn_error is not None and isinstance(exc, conn_error):
+        return False
+    if isinstance(exc, jwt_exceptions.PyJWKClientError):
+        # Stable across PyJWT 2.4→2.10 for the genuine kid-miss; a fetch failure on 2.8
+        # arrives as this type too but with a "Fail to fetch data from the url" message.
+        return "unable to find a signing key" in str(exc).lower()
+    return False
+
+
 def _kid_recently_missed(kid: str) -> bool:
     hit = _KID_MISS.get(kid)
     if hit is None:
@@ -146,13 +181,27 @@ def _verify_key(token: str, cfg: AuthCfg) -> Any:
             raise ValueError("unknown signing key")
         try:
             return _jwk_client(cfg.jwks_url, cfg.jwks_cache_sec).get_signing_key_from_jwt(token).key
-        except Exception:
-            if isinstance(kid, str):
+        except Exception as exc:
+            # ONLY remember a kid the key set actually disowned — never one we simply
+            # couldn't look up (see _is_unknown_kid).
+            if isinstance(kid, str) and _is_unknown_kid(exc):
                 _remember_kid_miss(kid)
             raise
     if cfg.jwt_secret:
         return cfg.jwt_secret
     raise ValueError(f"no verification key configured for alg={alg!r}")
+
+
+def _token_fingerprint(token: str) -> dict[str, Any]:
+    """Non-secret identifying bits of a token, for a log line. The JOSE header is
+    unauthenticated metadata that anyone holding the token can already read, and `alg`/`kid`
+    are exactly what distinguishes "our JWKS doesn't have this key" from "someone is
+    forging". The token, its signature and every claim stay out of the log."""
+    try:
+        header = jwt.get_unverified_header(token)
+        return {"alg": header.get("alg"), "kid": header.get("kid")}
+    except Exception:
+        return {"alg": None, "kid": None, "header": "unparseable"}
 
 
 def _extract_bearer(request: Request) -> str | None:
@@ -262,6 +311,17 @@ def get_current_user(request: Request) -> User:
             headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         ) from exc
     except Exception as exc:
+        # The response body stays deliberately vague (never tell a prober WHY), but the
+        # server log must not be. Without this, a misconfigured JWKS URL and a forged token
+        # are the same opaque "invalid token" — which is precisely how a deployment can 401
+        # every real login with no trace of the cause anywhere. None of these fields are
+        # secret: the header is unauthenticated metadata and the token itself is never logged.
+        log.warning(
+            "jwt_verify_failed",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            **_token_fingerprint(token),
+        )
         raise HTTPException(
             status_code=401, detail="invalid token",
             headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
