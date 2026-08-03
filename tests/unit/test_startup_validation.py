@@ -68,14 +68,30 @@ class TestWarnings:
         assert any("GEMINI_API_KEY" in w for w in warnings)
         assert any("QWEN_API_KEY" in w for w in warnings)
 
-    def test_serving_unauthenticated_warns(self, settings):
+    def test_serving_unauthenticated_is_fatal(self, settings):
+        # Was a WARNING, which is the wrong severity: with neither AEO__API__AUTH_KEY nor
+        # AEO__API__ADMIN_KEY set, require_admin_key used to fall through and leave
+        # POST /api/entitlements/grant ungated — a public deploy that merely FORGOT a
+        # variable handed out free all_packs grants. Refuse to boot instead.
         settings.api.auth_key = None
-        warnings = validate_settings(serving=True)
-        assert any("unauthenticated" in w for w in warnings)
+        settings.api.allow_open = False
+        with pytest.raises(StartupValidationError, match="AEO__API__AUTH_KEY"):
+            validate_settings(serving=True)
 
-    def test_not_serving_does_not_warn_about_auth(self, settings):
+    def test_allow_open_is_the_named_escape_hatch(self, settings):
+        # Local dev (scripts/run.ps1, docker compose) binds to localhost and legitimately
+        # runs with no key — but has to SAY so. Downgraded to a loud warning, never silent.
         settings.api.auth_key = None
-        assert not any("unauthenticated" in w for w in validate_settings())
+        settings.api.allow_open = True
+        warnings = validate_settings(serving=True)
+        assert any("ALLOW_OPEN" in w for w in warnings)
+
+    def test_not_serving_does_not_care_about_auth(self, settings):
+        # Every `aeo` CLI command bootstraps with serving=False; a one-shot crawl exposes
+        # no HTTP surface, so it must never need an API key to run.
+        settings.api.auth_key = None
+        settings.api.allow_open = False
+        assert not any("AUTH_KEY" in w for w in validate_settings())
 
     def test_supabase_direct_host_warns_about_ipv6_and_ssl(self, settings, monkeypatch):
         monkeypatch.delenv("PGSSLMODE", raising=False)

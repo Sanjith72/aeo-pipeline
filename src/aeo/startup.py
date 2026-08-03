@@ -126,11 +126,30 @@ def _check_api(s: Settings, fatal: list[str], warnings: list[str], *, serving: b
         fatal.append("AEO__API__AUTH_KEY is set but blank — unset it or give it a real value")
     if api.rate_limit < 0 or api.rate_window_sec <= 0:
         fatal.append("AEO__API__RATE_LIMIT must be >= 0 and AEO__API__RATE_WINDOW_SEC > 0")
+    # FATAL, not a warning. Serving with no auth_key is not merely "unauthenticated reads":
+    # require_admin_key (api/app.py) fails closed only when auth_key IS set — with NEITHER
+    # key it returns None, so POST /api/entitlements/grant is completely ungated and anyone
+    # who can reach this process mints themselves all_packs. A warning is the wrong severity
+    # for that, because the whole failure mode is an operator not noticing. The escape hatch
+    # has to be NAMED (AEO__API__ALLOW_OPEN=1), so no deployment reaches the open posture by
+    # forgetting a variable — only by asking for it.
     if serving and not api.auth_key:
-        warnings.append(
-            "serving without AEO__API__AUTH_KEY — every /api/* route is unauthenticated; "
-            "set it in any public deployment"
-        )
+        if api.allow_open:
+            warnings.append(
+                "AEO__API__ALLOW_OPEN=1 — running with NO AEO__API__AUTH_KEY: every /api/* "
+                "route is unauthenticated and /api/entitlements/grant is ungated. Correct "
+                "for localhost only; never set this on a public host"
+            )
+        else:
+            fatal.append(
+                "serving without AEO__API__AUTH_KEY — every /api/* route would be "
+                "unauthenticated AND /api/entitlements/grant would be ungated (anyone could "
+                "grant themselves every pack). Set AEO__API__AUTH_KEY, or set "
+                "AEO__API__ALLOW_OPEN=1 if this really is a localhost-only dev server"
+            )
+    # Second-order trap, and the reason the two keys must be documented together: once
+    # auth_key is set, require_admin_key 503s the admin routes until admin_key is ALSO set.
+    # _check_auth warns about that pairing; keep it there so the message stays in one place.
     if serving and api.rate_limit == 0:
         warnings.append(
             "serving without a rate limit (AEO__API__RATE_LIMIT=0) — fine locally, set it "

@@ -1776,8 +1776,20 @@ def require_admin_key(request: Request) -> None:
     ``/api/entitlements/grant`` on it alone let anyone POST themselves ``all_packs`` from the
     devtools console and walk through the entire CH-02a gate and CH-02b paywall for free.
 
-    Fails CLOSED: if no admin key is configured but the service key IS, these routes are
-    disabled (503) rather than open. Fully-open local dev (neither key set) still works."""
+    Fails CLOSED **by default**, in both directions:
+
+      * ``admin_key`` set → the header must match, else 403.
+      * otherwise → 503, *unless* this process was explicitly told it is a wide-open local
+        dev server (``AEO__API__ALLOW_OPEN``).
+
+    That last clause is the hardening. This used to key the refusal off ``auth_key``, so
+    "neither key configured" fell through and returned None — leaving the entitlement-minting
+    route completely ungated. Boot validation now makes that state fatal when serving
+    (startup._check_api), but the guard must not depend on the boot check having run: this
+    module is importable directly by uvicorn, by a test client, or by anything else that
+    skips the lifespan. An authorization boundary that is only enforced when a *different*
+    check ran is not a boundary. Open is now something you ask for by name, never a default
+    you fall into."""
     from ..settings import get_settings
 
     cfg = get_settings().api
@@ -1785,7 +1797,7 @@ def require_admin_key(request: Request) -> None:
         if request.headers.get("x-admin-key") != cfg.admin_key:
             raise HTTPException(status_code=403, detail="admin credential required")
         return
-    if cfg.auth_key:  # deployed posture, no admin credential → refuse rather than expose
+    if cfg.auth_key or not cfg.allow_open:
         raise HTTPException(
             status_code=503,
             detail="admin routes are disabled: set AEO__API__ADMIN_KEY to enable them",

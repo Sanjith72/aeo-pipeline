@@ -65,7 +65,23 @@ credits), with its hard limits stated:
 
 When public, **turn on auth**: set `AEO__API__AUTH_KEY` on the API and the matching
 `API_KEY` on the web host so the proxy sends the `X-API-Key` header on every `/api/*` call.
-Set `AEO__API__RATE_LIMIT` too — startup validation warns when either is missing.
+Set `AEO__API__RATE_LIMIT` too — startup validation warns when it is missing.
+
+`aeo serve` now **refuses to boot** without `AEO__API__AUTH_KEY` (a fatal startup error).
+With neither it nor `AEO__API__ADMIN_KEY` configured, `require_admin_key` has nothing to
+check and `POST /api/entitlements/grant` is completely ungated — anyone who can reach the
+backend's own URL grants themselves every pack. (The proxy denylist in
+`web/app/api/[...path]/route.ts` only covers requests routed through Vercel; the Space's
+public URL bypasses it entirely.) For a localhost-only dev server, name the exception:
+`AEO__API__ALLOW_OPEN=1` — which `scripts/run.ps1` and `docker-compose.yml` set for you.
+
+**Set the two keys together.** This is the second-order trap that makes a deploy look
+healthy while a feature is silently dead: once `AEO__API__AUTH_KEY` is set, the admin routes
+return **503 until `AEO__API__ADMIN_KEY` is set as well**, because the service key is not an
+authorization boundary — the web proxy hands it to every visitor's browser, so it
+authenticates the *proxy*, not the person. Symptom of getting this half-right: manual and
+promo grants fail with a 503 that mentions nothing about payments. Never reuse the same
+value for both. Startup logs a warning naming this exact pairing.
 
 **What about Railway?** `railway.json` ships ready to deploy the same image
 (build = Dockerfile, predeploy `aeo migrate`, start `aeo serve`, healthcheck `/api/health`)
@@ -159,7 +175,9 @@ needs an actual sign-in. After step 3, sign in once and check the browser calls
 | `AEO__LLM__QWEN_API_KEY` | Qwen side (Groq free plan by default) | — |
 | `AEO__LLM__QWEN_FALLBACK_API_KEY` | optional OpenRouter `:free` fallback | — |
 | `AEO__AGENTS__MODE` | `react` (agentic loop) or `ladder` (fixed sequence) | `react` |
-| `AEO__API__AUTH_KEY` | require `X-API-Key` on `/api/*` (set in any public deploy) | unset (open) |
+| `AEO__API__AUTH_KEY` | require `X-API-Key` on `/api/*`. **Required to serve** — `aeo serve` refuses to boot without it (or `ALLOW_OPEN`) | unset → **fatal at boot** |
+| `AEO__API__ADMIN_KEY` | `X-Admin-Key` for the entitlement-MINTING routes. Must differ from `AUTH_KEY`. **Set it whenever you set `AUTH_KEY`** — admin routes 503 until you do | unset (admin routes disabled) |
+| `AEO__API__ALLOW_OPEN` | localhost-only escape hatch: permits serving with no `AUTH_KEY`. **Never set on a public host** | unset |
 | `API_BASE_URL` / `API_KEY` | (web host, runtime) backend URL + key for the server-side proxy | `http://localhost:8000` / unset |
 | `AEO__AUTH__JWKS_URL` | verify Supabase user tokens against the project's public keys — for projects using **asymmetric** JWT signing keys (`https://<ref>.supabase.co/auth/v1/.well-known/jwks.json`) | unset |
 | `AEO__AUTH__JWT_SECRET` | verify user tokens with the **legacy shared secret** instead. Set this *or* `JWKS_URL`, not usually both. Neither → auth is open and nothing is gated | unset |
