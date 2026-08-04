@@ -72,6 +72,36 @@ def _seed_board(client_id: int, *, packs: tuple[int, ...] = (1, 2), owner: str |
             )
 
 
+def _seed_run(client_id: int) -> int:
+    """A crawl run with one crawled page on DOMAIN, so ``runs.domain_for_run()`` resolves.
+
+    Load-bearing, and not obvious: ``_require_ticket_owner`` re-derives the domain FROM THE
+    RUN in order to look up the caller's entitlements. With a placeholder run id there are no
+    crawled pages, ``domain_for_run`` returns None, the grants list is forced empty, and the
+    ``all_packs`` override can never fire — so a test using a fake run id asserts a 403 that
+    happens for the wrong reason and would keep passing even if the override were deleted."""
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO crawl_runs (run_key, label, status) VALUES (%s, %s, 'succeeded') "
+            "ON CONFLICT (run_key) DO UPDATE SET label = EXCLUDED.label RETURNING id",
+            (f"ownership-test-{DOMAIN}", "ticket ownership test"),
+        )
+        run_id = int(cur.fetchone()["id"])
+        # client_id is required: crawled_pages carries a chk_single_owner constraint that
+        # demands exactly one of client_id / competitor_id.
+        cur.execute(
+            "INSERT INTO crawled_pages (run_id, client_id, url, url_normalized) "
+            "VALUES (%s, %s, %s, %s)",
+            (run_id, client_id, f"https://{DOMAIN}/", f"https://{DOMAIN}/"),
+        )
+    return run_id
+
+
+def _drop_run(run_id: int) -> None:
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM crawl_runs WHERE id = %s", (run_id,))  # pages cascade
+
+
 def _owners(client_id: int) -> list[str | None]:
     with transaction() as conn, conn.cursor() as cur:
         cur.execute(
@@ -169,6 +199,7 @@ def test_user_b_cannot_mutate_user_as_board() -> None:
     from aeo.storage.repos import entitlements as ent_repo
 
     client_id = _client_id()
+    run_id = _seed_run(client_id)
     user_a, user_b = _user("a@example.com"), _user("b@example.com")
     try:
         _seed_board(client_id, owner=user_a)
@@ -178,16 +209,24 @@ def test_user_b_cannot_mutate_user_as_board() -> None:
         class _U:
             def __init__(self, uid): self.id = uid
 
+        # Sanity: the run really does resolve to this domain, so user_b's refusal below is
+        # the ownership gate talking and not an empty grants list.
+        from aeo.storage.repos import runs as runs_repo
+
+        assert runs_repo.domain_for_run(run_id) == DOMAIN
+        assert ent_repo.list_for_user_domain(user_b, DOMAIN), "user_b really is entitled here"
+
         # The owner passes.
-        app_mod._require_ticket_owner(_U(user_a), 0, client_id)
+        app_mod._require_ticket_owner(_U(user_a), run_id, client_id)
         # A different entitled user on the same domain does not.
         with pytest.raises(HTTPException) as exc:
-            app_mod._require_ticket_owner(_U(user_b), 0, client_id)
+            app_mod._require_ticket_owner(_U(user_b), run_id, client_id)
         assert exc.value.status_code == 403
         # Neither does an anonymous caller.
         with pytest.raises(HTTPException):
-            app_mod._require_ticket_owner(None, 0, client_id)
+            app_mod._require_ticket_owner(None, run_id, client_id)
     finally:
+        _drop_run(run_id)
         _cleanup(client_id, (user_a, user_b))
 
 
@@ -198,6 +237,7 @@ def test_all_packs_holder_keeps_the_agency_override() -> None:
     from aeo.storage.repos import entitlements as ent_repo
 
     client_id = _client_id()
+    run_id = _seed_run(client_id)
     user_a, agency = _user("a@example.com"), _user("agency@example.com")
     try:
         _seed_board(client_id, owner=user_a)
@@ -206,8 +246,9 @@ def test_all_packs_holder_keeps_the_agency_override() -> None:
         class _U:
             def __init__(self, uid): self.id = uid
 
-        app_mod._require_ticket_owner(_U(agency), 0, client_id)  # must not raise
+        app_mod._require_ticket_owner(_U(agency), run_id, client_id)  # must not raise
     finally:
+        _drop_run(run_id)
         _cleanup(client_id, (user_a, agency))
 
 
