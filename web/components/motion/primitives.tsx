@@ -57,21 +57,31 @@ export function MotionProvider({ children }: { children: ReactNode }) {
 /** The house easing — a confident decelerate used by every entrance. */
 export const EASE_OUT = [0.16, 1, 0.3, 1] as const;
 
-/** Standard entrance: rise + de-blur, like focus arriving. */
+/** Standard entrance: rise + fade.
+ *
+ *  This was "rise + de-blur, like focus arriving" — every section entered from
+ *  `filter: blur(8px)`. It is a nice effect in isolation, but it is also, literally, the
+ *  reported defect: scrolling the homepage blurs the content as it arrives. Removing the
+ *  backdrop-filter from the top bar (item 3.2) fixed content smearing THROUGH the bar and
+ *  left this untouched, and a scroll-position screenshot of production showed text still
+ *  visibly blurred mid-scroll.
+ *
+ *  The rise and the fade carry the entrance on their own, so the motion design survives —
+ *  only the blur goes. (Restoring it is a one-line change if it turns out to be wanted.) */
 export const fadeUp = {
-  hidden: { opacity: 0, y: 24, filter: "blur(8px)" },
+  hidden: { opacity: 0, y: 24 },
   visible: {
     opacity: 1,
     y: 0,
-    filter: "blur(0px)",
     transition: { duration: 0.7, ease: EASE_OUT },
   },
 };
 
-/** The reduced-motion counterpart: a plain fade. MotionConfig only nulls
- *  transform/layout animations, so filter (blur) would otherwise still play —
- *  components pick variants via useFadeUp() so reduced-motion users get
- *  opacity only, with no dependence on framework internals. */
+/** The reduced-motion counterpart: a plain fade, with no rise.
+ *  (This used to exist chiefly because MotionConfig nulls transform/layout animations but
+ *  NOT filter, so the blur played even for reduced-motion users. fadeUp no longer blurs, so
+ *  what this now buys is dropping the 24px translate — still worth having, and still chosen
+ *  via useFadeUp() rather than relying on framework internals.) */
 export const fadeUpReduced = {
   hidden: { opacity: 0 },
   visible: { opacity: 1, transition: { duration: 0.5, ease: EASE_OUT } },
@@ -110,8 +120,9 @@ export function Reveal({
   return (
     <m.div
       className={className}
-      initial={reduced ? { opacity: 0 } : { opacity: 0, y, filter: "blur(8px)" }}
-      whileInView={reduced ? { opacity: 1 } : { opacity: 1, y: 0, filter: "blur(0px)" }}
+      // No blur here either — see fadeUp. Scrolling must not blur the page's own content.
+      initial={reduced ? { opacity: 0 } : { opacity: 0, y }}
+      whileInView={reduced ? { opacity: 1 } : { opacity: 1, y: 0 }}
       viewport={{ once, margin: "0px 0px -64px 0px" }}
       transition={{ duration: reduced ? 0.5 : 0.7, ease: EASE_OUT, delay }}
     >
