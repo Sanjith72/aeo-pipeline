@@ -38,6 +38,7 @@ export function TrackerView({
   cmsType,
   facet,
   packContext,
+  focusFixId,
   visible = true,
 }: {
   domain: string;
@@ -48,6 +49,8 @@ export function TrackerView({
   facet: TrackerFacet;
   /** Pack fixes to fold into this plan (item 3.4). Omitted on the no-domain path. */
   packContext?: PackPlanContext;
+  /** A pack fix to flash, jumped to from the Pages tab (item 3.5). */
+  focusFixId?: string | null;
   // False while the tracker is mounted but hidden behind another results tab — the map
   // defers its celebrations and "opened" analytics until it can actually be seen.
   visible?: boolean;
@@ -92,6 +95,7 @@ export function TrackerView({
               selectedPack={packContext.selectedPack}
               onSelectPack={packContext.onSelectPack}
               onUnlock={packContext.onUnlock}
+              focusFixId={focusFixId}
               shareUrl={tracker.shareUrl}
             />
           )}

@@ -25,7 +25,6 @@ import { DisplayH2, SheetTag } from "@/components/chrome";
 import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { PackCard } from "@/components/PackCard";
-import { PackDetail } from "@/components/PackDetail";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { UnlockModal } from "@/components/auth/UnlockModal";
 import {
@@ -1331,21 +1330,11 @@ export function StudioApp() {
                   UI was removed: /api/tickets/{run}/{pack} is unchanged and is what the plan
                   section reads. */}
               {runId != null && openPack != null && packs.some((p) => p.pack_index === openPack && !p.locked) && (
-                <div className="mt-5 rounded-[18px] border border-white/[0.09] p-5">
-                  <p className="mb-4 text-[13px] leading-[1.6] text-ink-300">
-                    This pack&apos;s fixes are now in <span className="text-ink">Your plan</span>{" "}
-                    below, sorted alongside everything else you need to do.
-                  </p>
-                  {/* v5 CH-04: the five-skill scores behind those fixes, page by page. The
-                      plan says WHAT to do; this says WHY. Item 3.5 moves this to its own
-                      Pages tab — until then it stays here rather than leaving a gap. */}
-                  <h4 className="mb-1 text-[15px] font-semibold text-ink">Page-by-page scores</h4>
-                  <p className="mb-3 max-w-[64ch] text-[13px] leading-[1.6] text-ink-300">
-                    How each page in this pack scores on the five skills, with the
-                    highest-impact fix first.
-                  </p>
-                  <PackDetail runId={runId} packIndex={openPack} />
-                </div>
+                <p className="mt-4 text-[13px] leading-[1.6] text-ink-300">
+                  This pack&apos;s fixes are in <span className="text-ink">Your plan</span>, and
+                  its page-by-page scores are under <span className="text-ink">Pages</span> —
+                  both below.
+                </p>
               )}
             </section>
           )}

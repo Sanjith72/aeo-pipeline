@@ -30,7 +30,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
-import { packPlanPhases, packPlanProgress, type PackPlanTask } from "@/lib/packPlan";
+import { packFixDomId, packPlanPhases, packPlanProgress, type PackPlanTask } from "@/lib/packPlan";
 import { phaseDisplayBlurb, phaseDisplayTitle } from "@/lib/phases";
 import type { PackPreview, SkillPriority, Ticket } from "@/lib/types";
 import { PhaseCardShell, STATUS_META } from "../MilestoneDashboard";
@@ -48,6 +48,7 @@ export function PackPlanSection({
   onSelectPack,
   onUnlock,
   shareUrl,
+  focusFixId,
 }: {
   runId: number;
   packs: PackPreview[];
@@ -58,6 +59,10 @@ export function PackPlanSection({
   onUnlock: (packIndex: number) => void;
   /** The tracker's share link, so a pack task's dev handoff matches the plan's. */
   shareUrl: string | null;
+  /** Anchor of a fix jumped to from the Pages tab — flashed so the user can see
+   *  WHICH row they landed on. State, not a class mutation: the row is React-rendered,
+   *  so a className set by hand is wiped by the next re-render (item 3.5). */
+  focusFixId?: string | null;
 }) {
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
   const [priorities, setPriorities] = useState<SkillPriority[]>([]);
@@ -218,6 +223,7 @@ export function PackPlanSection({
                   <PackTaskRow
                     key={t.task_key}
                     task={t}
+                    focused={packFixDomId(t.skill, t.page_url) === focusFixId}
                     shareUrl={shareUrl}
                     busy={busyKey === t.task_key}
                     onClose={() => act(t.task_key, () => api.closeTicket(runId, t.task_key))}
@@ -278,6 +284,7 @@ function PackTaskRow({
   task,
   shareUrl,
   busy,
+  focused,
   onClose,
   onReopen,
   onRecheck,
@@ -285,6 +292,7 @@ function PackTaskRow({
   task: PackPlanTask;
   shareUrl: string | null;
   busy: boolean;
+  focused?: boolean;
   onClose: () => void;
   onReopen: () => void;
   onRecheck: () => void;
@@ -298,7 +306,12 @@ function PackTaskRow({
       : null;
 
   return (
-    <li className="px-4 py-3">
+    // The cross-link target for the Pages tab. Derived from the SAME helper on both
+    // sides so the anchor cannot drift (item 3.5).
+    <li
+      id={packFixDomId(task.skill, task.page_url)}
+      className={`px-4 py-3 transition-shadow ${focused ? "rounded-lg ring-2 ring-accent/60" : ""}`}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <span className={`font-medium ${done ? "text-ink-300 line-through" : "text-ink"}`}>{task.label}</span>

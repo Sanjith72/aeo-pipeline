@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   PACK_PHASE_ORDER,
   bucketTicket,
+  packFixDomId,
   packPlanPhases,
   packPlanProgress,
   priorityBySkill,
@@ -231,4 +232,35 @@ test("progress counts only VERIFIED work as done", () => {
 
 test("progress on an empty pack is 0, not NaN", () => {
   assert.deepEqual(packPlanProgress([]), { total: 0, verified: 0, in_progress: 0, pct: 0 });
+});
+
+// ── the Pages ↔ Your plan cross-link (item 3.5) ───────────────────────────────────
+
+test("the cross-link anchor is derived identically from both surfaces", () => {
+  // Pages holds SkillPriority.skill + page.url; the plan holds Ticket.skill + page_url.
+  // Both are the same verbatim strings (generate_tickets_from_run takes page_url straight
+  // from detail_for_pack, which is what GET /api/packs/{run}/{pack} returns as page.url),
+  // so one function called from both sides cannot disagree.
+  assert.equal(
+    packFixDomId("messaging", "https://x.com/pricing"),
+    packFixDomId("messaging", "https://x.com/pricing"),
+  );
+  assert.equal(packFixDomId("messaging", "https://x.com/"), "packfix:messaging@https://x.com/");
+});
+
+test("different skills or pages get different anchors", () => {
+  assert.notEqual(
+    packFixDomId("messaging", "https://x.com/"),
+    packFixDomId("conversion", "https://x.com/"),
+  );
+  assert.notEqual(
+    packFixDomId("messaging", "https://x.com/"),
+    packFixDomId("messaging", "https://x.com/pricing"),
+  );
+});
+
+test("a missing skill or page still yields a stable, non-colliding anchor", () => {
+  // Never produce `undefined` in a DOM id, and never let two unknowns collide with a real one.
+  assert.equal(packFixDomId(null, null), "packfix:?@?");
+  assert.equal(packFixDomId(undefined, "https://x.com/"), "packfix:?@https://x.com/");
 });
