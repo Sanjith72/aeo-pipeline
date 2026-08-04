@@ -30,7 +30,7 @@ import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
 import { ArrowRight, Check, Sparkle } from "./ui/icons";
 import { TaskHowTo } from "./TaskHowTo";
 import { StrategyExtras } from "./StrategyExtras";
-import { TrackerView, type TrackerFacet } from "./quest/TrackerView";
+import { TrackerView, type PackPlanContext, type TrackerFacet } from "./quest/TrackerView";
 
 const EFFORT_PILL: Record<string, string> = {
   low: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
@@ -258,6 +258,7 @@ export function ResultsView({
   delivError,
   aiPersonalization,
   cmsType,
+  packContext,
   onGenerateDeliverables,
   onPersonalize,
   personalizing,
@@ -279,6 +280,9 @@ export function ResultsView({
   aiPersonalization: boolean;
   // Detected CMS, threaded down to the milestone dashboard's "I'll do it myself" steps.
   cmsType?: string | null;
+  /** Pack fixes to fold into "Your plan" (Phase 3 item 3.4). Supplied by StudioApp,
+   *  which owns the run and the pack grid; absent on the brief-only path. */
+  packContext?: PackPlanContext;
   onGenerateDeliverables: () => void;
   onPersonalize: () => void;
   personalizing: boolean;
@@ -349,6 +353,7 @@ export function ResultsView({
       domain={domain?.trim() || undefined}
       businessName={businessName}
       cmsType={cmsType}
+      packContext={packContext}
       error={delivError}
       // Salt the local key with the domain so two plans that share a (possibly derived)
       // business name — e.g. a consultant's back-to-back no-site briefs — never load each
@@ -1597,6 +1602,7 @@ function PlanPanel({
   domain,
   businessName,
   cmsType,
+  packContext,
   error,
   storageKey,
   resume,
@@ -1620,7 +1626,8 @@ function PlanPanel({
   domain?: string;
   businessName: string;
   cmsType?: string | null;
-  // The audit's strategic actions, merged (deduped) into the Strategy list.
+  /** Pack fixes to fold into this plan (item 3.4); absent on the no-domain path. */
+  packContext?: PackPlanContext;
   error: string | null;
   storageKey: string;
   // Saved-plan hydration: seeds the no-domain checklist from the persisted /plan/<id> state.
@@ -1705,6 +1712,7 @@ function PlanPanel({
             businessName={businessName}
             cmsType={cmsType}
             facet={facet}
+            packContext={packContext}
             visible={visible}
           />
         ) : (

@@ -9,6 +9,7 @@
 // disagree.
 
 import { useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { api } from "@/lib/api";
 import type { Milestone, MilestoneStatus, MilestoneTask } from "@/lib/types";
 import { manualCopyHint, selectField, useCopyAction } from "@/lib/copy";
@@ -263,6 +264,52 @@ export function DeveloperHandoffPanel({ tracker }: { tracker: QuestTracker }) {
   );
 }
 
+/**
+ * The phase-card chrome — header pill, phase title, verified count, blurb, then a divided
+ * list of rows. Exported because Phase 3 item 3.4 folds a pack's fixes into "Your plan" and
+ * they must look like the plan, not like a second product bolted underneath it. Both
+ * surfaces render through this one definition so the two cannot drift apart visually.
+ *
+ * Rows are `children` rather than a task list: plan tasks and pack tickets carry different
+ * state machines (a ticket has a 4th state, closed_pending_verify, and moves through
+ * actions rather than a free status set), so they own their own row rendering while sharing
+ * the frame around it.
+ */
+export function PhaseCardShell({
+  statusLabel,
+  statusPill,
+  title,
+  blurb,
+  countLabel,
+  index = 0,
+  children,
+}: {
+  statusLabel: string;
+  statusPill: string;
+  title: string;
+  blurb?: string | null;
+  countLabel: string;
+  index?: number;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className="step-in overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100"
+      style={{ animationDelay: `${Math.min(index, 4) * 70}ms` }}
+    >
+      <div className="border-b border-ink/[0.06] bg-paper-200/40 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${statusPill}`}>{statusLabel}</span>
+          <h4 className="font-semibold">{title}</h4>
+          <span className="font-mono text-xs text-ink-300">{countLabel}</span>
+        </div>
+        {blurb && <p className="mt-1 text-xs text-ink-300">{blurb}</p>}
+      </div>
+      <ul className="divide-y divide-ink/[0.06]">{children}</ul>
+    </div>
+  );
+}
+
 function MilestoneCard({
   milestone,
   index,
@@ -277,26 +324,18 @@ function MilestoneCard({
   const meta = STATUS_META[milestone.status];
   const verified = milestone.tasks.filter((t) => t.status === "verified_completed").length;
   return (
-    <div
-      className="step-in overflow-hidden rounded-xl border border-ink/[0.08] bg-paper-100"
-      style={{ animationDelay: `${Math.min(index, 4) * 70}ms` }}
+    <PhaseCardShell
+      statusLabel={meta.label}
+      statusPill={meta.pill}
+      title={phaseDisplayTitle(milestone.milestone_key, milestone.title)}
+      blurb={milestone.blurb}
+      countLabel={`${verified}/${milestone.tasks.length} verified`}
+      index={index}
     >
-      <div className="border-b border-ink/[0.06] bg-paper-200/40 px-4 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${meta.pill}`}>{meta.label}</span>
-          <h4 className="font-semibold">{phaseDisplayTitle(milestone.milestone_key, milestone.title)}</h4>
-          <span className="font-mono text-xs text-ink-300">
-            {verified}/{milestone.tasks.length} verified
-          </span>
-        </div>
-        {milestone.blurb && <p className="mt-1 text-xs text-ink-300">{milestone.blurb}</p>}
-      </div>
-      <ul className="divide-y divide-ink/[0.06]">
-        {milestone.tasks.map((t) => (
-          <TaskRow key={t.task_key} task={t} shareUrl={shareUrl} onSetStatus={onSetStatus} />
-        ))}
-      </ul>
-    </div>
+      {milestone.tasks.map((t) => (
+        <TaskRow key={t.task_key} task={t} shareUrl={shareUrl} onSetStatus={onSetStatus} />
+      ))}
+    </PhaseCardShell>
   );
 }
 

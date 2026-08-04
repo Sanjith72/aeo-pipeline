@@ -14,11 +14,22 @@
 import { useState } from "react";
 
 import { DeveloperHandoffPanel, MilestoneDashboard } from "../MilestoneDashboard";
-import type { StructuredPlan } from "@/lib/types";
+import type { PackPreview, StructuredPlan } from "@/lib/types";
+import { PackPlanSection } from "./PackPlanSection";
 import { QuestMap } from "./QuestMap";
 import { useQuestTracker } from "./useQuestTracker";
 
 export type TrackerFacet = "map" | "strategy";
+
+/** The pack context "Your plan" needs to fold a pack's fixes in (Phase 3 item 3.4). Absent
+ *  on the no-domain / brief-only path, which has no run and therefore no packs. */
+export interface PackPlanContext {
+  runId: number;
+  packs: PackPreview[];
+  selectedPack: number | null;
+  onSelectPack: (packIndex: number) => void;
+  onUnlock: (packIndex: number) => void;
+}
 
 export function TrackerView({
   domain,
@@ -26,6 +37,7 @@ export function TrackerView({
   businessName,
   cmsType,
   facet,
+  packContext,
   visible = true,
 }: {
   domain: string;
@@ -34,6 +46,8 @@ export function TrackerView({
   cmsType?: string | null;
   /** Which results tab is hosting the tracker right now (Roadmap = map, Strategy = list). */
   facet: TrackerFacet;
+  /** Pack fixes to fold into this plan (item 3.4). Omitted on the no-domain path. */
+  packContext?: PackPlanContext;
   // False while the tracker is mounted but hidden behind another results tab — the map
   // defers its celebrations and "opened" analytics until it can actually be seen.
   visible?: boolean;
@@ -66,6 +80,21 @@ export function TrackerView({
             it for you.
           </p>
           <MilestoneDashboard tracker={tracker} />
+          {/* item 3.4 — the selected pack's fixes, in the same phases and the same card
+              chrome as the list above. Deliberately BESIDE the tracker, not inside it:
+              pack tickets are a different server-side family, and mounting a second tracker
+              is what this file's header comment forbids. The tracker keeps ownership of
+              progress, "Check my site now" and the share link, which this section reuses. */}
+          {packContext && (
+            <PackPlanSection
+              runId={packContext.runId}
+              packs={packContext.packs}
+              selectedPack={packContext.selectedPack}
+              onSelectPack={packContext.onSelectPack}
+              onUnlock={packContext.onUnlock}
+              shareUrl={tracker.shareUrl}
+            />
+          )}
           <DeveloperHandoffPanel tracker={tracker} />
         </div>
       )}

@@ -25,7 +25,6 @@ import { DisplayH2, SheetTag } from "@/components/chrome";
 import { AnalysisProgress, PrefillProgress, ResultsView, ScoreRing, triggerDownload } from "@/components/results";
 import { CompetitorPicker } from "@/components/CompetitorPicker";
 import { PackCard } from "@/components/PackCard";
-import { TicketBoard } from "@/components/TicketBoard";
 import { PackDetail } from "@/components/PackDetail";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { UnlockModal } from "@/components/auth/UnlockModal";
@@ -1324,25 +1323,28 @@ export function StudioApp() {
                   />
                 ))}
               </div>
-              {/* v5 CH-08/CH-15: the ticket board for the opened (unlocked) pack. */}
+              {/* The standalone TicketBoard that used to sit here is GONE (Phase 3 item
+                  3.4). It was a second to-do surface with its own layout and its own
+                  progress, sitting under the plan the user was already working. Those same
+                  fixes now render inside "Your plan", bucketed into Quick Wins / Foundation
+                  / Growth & Scale — opening a pack here selects it there. Only the duplicate
+                  UI was removed: /api/tickets/{run}/{pack} is unchanged and is what the plan
+                  section reads. */}
               {runId != null && openPack != null && packs.some((p) => p.pack_index === openPack && !p.locked) && (
-                <div className="mt-5 flex flex-col gap-6 rounded-[18px] border border-white/[0.09] p-5">
-                  <div>
-                    <h4 className="mb-3 text-[15px] font-semibold text-ink">
-                      Pack {String(openPack).padStart(2, "0")} — your fixes
-                    </h4>
-                    <TicketBoard runId={runId} packIndex={openPack} />
-                  </div>
-                  {/* v5 CH-04: the five-skill scores behind those tickets, page by page.
-                      The board says WHAT to do; this says WHY. Same 403 gate. */}
-                  <div>
-                    <h4 className="mb-1 text-[15px] font-semibold text-ink">Page-by-page scores</h4>
-                    <p className="mb-3 max-w-[64ch] text-[13px] leading-[1.6] text-ink-300">
-                      How each page in this pack scores on the five skills, with the
-                      highest-impact fix first.
-                    </p>
-                    <PackDetail runId={runId} packIndex={openPack} />
-                  </div>
+                <div className="mt-5 rounded-[18px] border border-white/[0.09] p-5">
+                  <p className="mb-4 text-[13px] leading-[1.6] text-ink-300">
+                    This pack&apos;s fixes are now in <span className="text-ink">Your plan</span>{" "}
+                    below, sorted alongside everything else you need to do.
+                  </p>
+                  {/* v5 CH-04: the five-skill scores behind those fixes, page by page. The
+                      plan says WHAT to do; this says WHY. Item 3.5 moves this to its own
+                      Pages tab — until then it stays here rather than leaving a gap. */}
+                  <h4 className="mb-1 text-[15px] font-semibold text-ink">Page-by-page scores</h4>
+                  <p className="mb-3 max-w-[64ch] text-[13px] leading-[1.6] text-ink-300">
+                    How each page in this pack scores on the five skills, with the
+                    highest-impact fix first.
+                  </p>
+                  <PackDetail runId={runId} packIndex={openPack} />
                 </div>
               )}
             </section>
@@ -1372,6 +1374,20 @@ export function StudioApp() {
             delivError={delivError}
             aiPersonalization={useLlm}
             cmsType={profileResult?.cms_type ?? null}
+            // item 3.4 — the pack grid lives here, but its fixes render inside
+            // "Your plan". Opening a pack above selects it there, and vice versa, so
+            // the two surfaces always agree on which pack is being worked.
+            packContext={
+              runId != null && packs.length > 0
+                ? {
+                    runId,
+                    packs,
+                    selectedPack: openPack,
+                    onSelectPack: setOpenPack,
+                    onUnlock: handleUnlock,
+                  }
+                : undefined
+            }
             onGenerateDeliverables={generateDeliverables}
             onPersonalize={personalizeFiles}
             personalizing={personalizing}
