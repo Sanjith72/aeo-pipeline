@@ -45,10 +45,19 @@ class TestFatal:
         with pytest.raises(StartupValidationError, match="AEO__LLM__PROVIDER"):
             validate_settings()
 
-    def test_blank_auth_key_is_rejected(self, settings):
-        settings.api.auth_key = "   "
-        with pytest.raises(StartupValidationError, match="AUTH_KEY"):
-            validate_settings()
+    def test_blank_auth_key_still_cannot_boot_a_public_api(self, settings):
+        """`AEO__API__AUTH_KEY=` in a .env now normalises to unset (ApiCfg._blank_is_unset)
+        rather than getting its own fatal about whitespace. The operator who typed it is
+        still stopped — by the check that tells them what to do — and a non-serving CLI
+        command no longer dies over a cosmetically empty line."""
+        from aeo.settings import ApiCfg
+
+        assert ApiCfg(auth_key="   ").auth_key is None
+        settings.api = ApiCfg(auth_key="   ")
+        with pytest.raises(StartupValidationError, match="AEO__API__AUTH_KEY"):
+            validate_settings(serving=True)
+        settings.api = ApiCfg(auth_key="   ")
+        assert validate_settings() == []  # not serving → no HTTP surface → not its problem
 
     def test_all_problems_reported_at_once(self, settings):
         settings.database = DatabaseCfg(url="mysql://x@h/db")
@@ -68,14 +77,43 @@ class TestWarnings:
         assert any("GEMINI_API_KEY" in w for w in warnings)
         assert any("QWEN_API_KEY" in w for w in warnings)
 
-    def test_serving_unauthenticated_warns(self, settings):
+    def test_serving_unauthenticated_is_fatal(self, settings):
+        # Was a WARNING, which is the wrong severity: with neither AEO__API__AUTH_KEY nor
+        # AEO__API__ADMIN_KEY set, require_admin_key used to fall through and leave
+        # POST /api/entitlements/grant ungated — a public deploy that merely FORGOT a
+        # variable handed out free all_packs grants. Refuse to boot instead.
         settings.api.auth_key = None
-        warnings = validate_settings(serving=True)
-        assert any("unauthenticated" in w for w in warnings)
+        settings.api.allow_open = False
+        with pytest.raises(StartupValidationError, match="AEO__API__AUTH_KEY"):
+            validate_settings(serving=True)
 
-    def test_not_serving_does_not_warn_about_auth(self, settings):
+    def test_a_blank_allow_open_reads_as_off_rather_than_exploding(self):
+        """`AEO__API__ALLOW_OPEN=` must resolve to False, not raise. Pydantic cannot coerce
+        "" to a bool, so without the validator a blank line in a .env or an emptied dashboard
+        variable aborts startup with a raw ValidationError — thrown while Settings is being
+        CONSTRUCTED, so validate_settings never runs and none of the actionable messages
+        print. That is precisely how this deployment's Space died on a blank AUTH_KEY: an
+        unhelpful error instead of the one naming the fix. A safety switch must fail safe."""
+        from aeo.settings import ApiCfg
+
+        assert ApiCfg(allow_open="").allow_open is False
+        assert ApiCfg(allow_open="   ").allow_open is False
+        assert ApiCfg(allow_open="1").allow_open is True
+
+    def test_allow_open_is_the_named_escape_hatch(self, settings):
+        # Local dev (scripts/run.ps1, docker compose) binds to localhost and legitimately
+        # runs with no key — but has to SAY so. Downgraded to a loud warning, never silent.
         settings.api.auth_key = None
-        assert not any("unauthenticated" in w for w in validate_settings())
+        settings.api.allow_open = True
+        warnings = validate_settings(serving=True)
+        assert any("ALLOW_OPEN" in w for w in warnings)
+
+    def test_not_serving_does_not_care_about_auth(self, settings):
+        # Every `aeo` CLI command bootstraps with serving=False; a one-shot crawl exposes
+        # no HTTP surface, so it must never need an API key to run.
+        settings.api.auth_key = None
+        settings.api.allow_open = False
+        assert not any("AUTH_KEY" in w for w in validate_settings())
 
     def test_supabase_direct_host_warns_about_ipv6_and_ssl(self, settings, monkeypatch):
         monkeypatch.delenv("PGSSLMODE", raising=False)

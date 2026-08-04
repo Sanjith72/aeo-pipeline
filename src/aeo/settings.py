@@ -333,6 +333,14 @@ class ApiCfg(BaseModel):
     # routes are DISABLED (fail closed), because "open admin route in a deployment" hands out
     # free entitlements. Unset + auth_key unset → fully-open local dev, allowed.
     admin_key: str | None = None
+    # The explicit "yes, I really mean to run this wide open" switch. Serving WITHOUT an
+    # auth_key is a fatal startup error (startup._check_api), because with neither key set
+    # require_admin_key returns None and /api/entitlements/grant is completely ungated —
+    # anyone who can reach the backend's own URL mints themselves all_packs. That is not a
+    # posture any deployment should be able to reach by forgetting a variable, so the only
+    # way to it is naming it: AEO__API__ALLOW_OPEN=1 (scripts/run.ps1 and the compose stack
+    # set it, since both are localhost-only). Never set it on a public host.
+    allow_open: bool = False
     # Browser origins allowed to call the API (the SP-4b web UI runs on another port,
     # so every fetch is cross-origin). Comma-separated via AEO__API__CORS_ORIGINS.
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
@@ -350,6 +358,35 @@ class ApiCfg(BaseModel):
     # single-IP spoofing trick can bypass. 0 = disabled; set it comfortably above expected
     # honest daily volume in any public deployment.
     overview_global_daily_limit: int = 0
+
+    @field_validator("allow_open", mode="before")
+    @classmethod
+    def _blank_is_off(cls, v: Any) -> Any:
+        """`AEO__API__ALLOW_OPEN=` must read as OFF, not explode. Pydantic cannot coerce ""
+        to a bool, so without this a blank line in a .env or a dashboard variable left empty
+        aborts startup with a raw pydantic ValidationError — before validate_settings runs,
+        so none of the actionable messages ever print. Exactly the failure this deployment
+        already hit with a blank AEO__API__AUTH_KEY. Blank means "I did not set this", and
+        for a safety switch that must resolve to the safe side."""
+        if isinstance(v, str) and not v.strip():
+            return False
+        return v
+
+    @field_validator("auth_key", "admin_key", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: Any) -> Any:
+        """Treat an empty/whitespace env value as UNSET — the same rule AuthCfg applies to
+        its credentials, for the same reason: `AEO__API__AUTH_KEY=` in a .env reads as "not
+        configured" to a human, so the config should agree with them.
+
+        This used to be a distinct fatal ("set but blank — unset it or give it a real
+        value"), which made blank and unset behave differently for no benefit. It is not a
+        loosening: serving with no key at all is now itself fatal, so the operator who typed
+        a bare `AEO__API__AUTH_KEY=` still cannot boot a public API — they just get the
+        message that tells them what to do about it instead of one about whitespace."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class AuthCfg(BaseModel):

@@ -35,6 +35,12 @@ if (-not (Test-Path (Join-Path $web "node_modules"))) {
 
 # Env vars set here are inherited by the child windows started below.
 $env:PYTHONPATH = Join-Path $root "src"
+# This stack binds to 127.0.0.1 only, so running with no AEO__API__AUTH_KEY is fine and
+# convenient. Serving without one is a FATAL startup error otherwise (startup._check_api):
+# with neither key set, /api/entitlements/grant is ungated, which must never be reachable
+# by forgetting a variable on a public host. Naming the switch here is the whole point.
+# If .env already sets AEO__API__AUTH_KEY, that wins and this flag simply does nothing.
+if (-not $env:AEO__API__ALLOW_OPEN) { $env:AEO__API__ALLOW_OPEN = "1" }
 if ($NoLlm) { $env:AEO__LLM__ENABLED = "false" }
 
 # Backend API + frontend web, each in its own window (so you see logs / can Ctrl+C).

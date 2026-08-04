@@ -22,8 +22,16 @@ SECRET = "whsec_test_secret_value"
 def _auth_off(monkeypatch) -> None:
     """Degrade user auth to dev mode so these tests exercise the PAYMENT path, not the JWT
     gate. Blanking (not delenv) is required: pydantic-settings reads the .env FILE, so a
-    developer with real auth configured would otherwise get a 401 before the handler runs."""
-    for key in ("AEO__AUTH__JWT_SECRET", "AEO__AUTH__JWKS_URL", "AEO__AUTH__JWT_ISSUER"):
+    developer with real auth configured would otherwise get a 401 before the handler runs.
+
+    AEO__API__AUTH_KEY belongs in this list for exactly the reason the paragraph above
+    gives, and was missing: it drives ``require_api_key``, a SEPARATE gate from the JWT one,
+    which 401s every request that arrives without an ``X-API-Key`` header. These tests send
+    no such header, so on any machine whose .env carries a real service key the five
+    checkout tests failed — while passing in CI, where there is no .env at all. A test whose
+    result depends on whether an untracked file exists reports nothing about the code."""
+    for key in ("AEO__AUTH__JWT_SECRET", "AEO__AUTH__JWKS_URL", "AEO__AUTH__JWT_ISSUER",
+                "AEO__API__AUTH_KEY"):
         monkeypatch.setenv(key, "")
 
 
@@ -360,6 +368,46 @@ def test_grant_is_refused_when_only_the_service_key_is_configured(monkeypatch):
     assert res.status_code == 503, "service key alone must never mint entitlements"
 
 
+def test_grant_is_refused_when_NEITHER_key_is_configured(monkeypatch):
+    """The hole this closes. ``require_admin_key`` used to key its refusal off ``auth_key``,
+    so "neither key set" fell straight through and returned None — leaving the
+    entitlement-minting route completely ungated for anyone who could reach the backend's
+    own URL (the Vercel proxy denylist only covers the proxy). Boot validation now refuses
+    that posture outright, but the guard must fail closed on its own: this module is
+    importable by uvicorn or a test client with no lifespan, and a boundary enforced only
+    when some other check happened to run is not a boundary."""
+    from fastapi.testclient import TestClient
+
+    from aeo.api import app as app_mod
+    from aeo.settings import get_settings
+
+    monkeypatch.setattr(get_settings().api, "auth_key", None)
+    monkeypatch.setattr(get_settings().api, "admin_key", None)
+    # raising=False so this is a BEHAVIOUR diff, not an AttributeError, against a tree
+    # without the new flag: on the old guard the request sailed past into the handler.
+    monkeypatch.setattr(get_settings().api, "allow_open", False, raising=False)
+    res = TestClient(app_mod.app).post("/api/entitlements/grant", json=_grant_body())
+    assert res.status_code == 503, "an unconfigured API must not mint entitlements"
+
+
+def test_grant_stays_open_only_when_open_mode_is_explicitly_named(monkeypatch):
+    """The deliberate local-dev carve-out: fully-open dev keeps working, but only for a
+    process that was TOLD to be open. Reaching 422 (not 503) proves the guard passed and
+    the route body ran — the body then rejects this payload for its own reason, which is
+    all we need here and keeps the test off the database."""
+    from fastapi.testclient import TestClient
+
+    from aeo.api import app as app_mod
+    from aeo.settings import get_settings
+
+    monkeypatch.setattr(get_settings().api, "auth_key", None)
+    monkeypatch.setattr(get_settings().api, "admin_key", None)
+    monkeypatch.setattr(get_settings().api, "allow_open", True)
+    body = {**_grant_body(), "scope": "pack", "pack_index": None}  # scope='pack' needs an index
+    res = TestClient(app_mod.app).post("/api/entitlements/grant", json=body)
+    assert res.status_code == 422, "explicit open mode must not break local dev"
+
+
 def test_grant_requires_the_admin_key_when_configured(monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -455,6 +503,11 @@ def _validate(monkeypatch, **env):
     from aeo.settings import get_settings
     from aeo.startup import StartupValidationError, validate_settings
 
+    # These tests are about the PAYMENTS half of startup validation. Serving with no
+    # AEO__API__AUTH_KEY is independently fatal (an open /api/entitlements/grant), which
+    # would mask every payments assertion below with an unrelated error, so declare the
+    # localhost posture explicitly. Individual tests override it when the key is the subject.
+    monkeypatch.setenv("AEO__API__ALLOW_OPEN", "1")
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     get_settings.cache_clear()
@@ -527,6 +580,9 @@ def test_jwks_only_deployment_is_not_reported_as_auth_disabled(monkeypatch):
 
     monkeypatch.setenv("AEO__AUTH__JWT_SECRET", "")
     monkeypatch.setenv("AEO__AUTH__JWKS_URL", "https://p.supabase.co/auth/v1/.well-known/jwks.json")
+    # This test is about the USER-auth warning; the separate service-key check is fatal when
+    # serving, and would abort the run before any warning could be collected.
+    monkeypatch.setenv("AEO__API__ALLOW_OPEN", "1")
     get_settings.cache_clear()
     from aeo.startup import validate_settings
 

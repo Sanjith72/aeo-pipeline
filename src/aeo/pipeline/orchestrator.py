@@ -432,6 +432,7 @@ class Orchestrator:
         progress: ProgressFn | None = None,
         force_recrawl: bool = False,
         should_cancel: CancelFn | None = None,
+        owner_user_id: str | None = None,
     ) -> dict:
         """The v4 Weekly Audit Loop entrypoint: Site Discovery → Page Prioritization
         → blueprint (generate+pin) → Coverage Diff → crawl/score (content-hash
@@ -448,7 +449,7 @@ class Orchestrator:
         )
         analysis = self.analyze_run(run_summary.run_id, progress=progress)
         site_report_id = self._build_and_persist_site_report(run_summary.run_id, target, domain=domain)
-        self._generate_tickets(run_summary.run_id, domain=domain)
+        self._generate_tickets(run_summary.run_id, domain=domain, owner_user_id=owner_user_id)
         milestones = await self._verify_milestones(run_summary.run_id, target, domain=domain)
         log.info(
             "audit_cycle_complete", run_id=run_summary.run_id, domain=domain,
@@ -462,16 +463,29 @@ class Orchestrator:
             "milestones": milestones,
         }
 
-    def _generate_tickets(self, run_id: int, *, domain: str) -> None:
+    def _generate_tickets(
+        self, run_id: int, *, domain: str, owner_user_id: str | None = None
+    ) -> None:
         """v5 CH-08: turn the run's per-page skill findings into tickets (one milestone per
         pack, one ticket per page×skill). Best-effort + isolated — a failure never aborts
-        the audit. owner_user_id is left unstamped here (no user in the worker context); a
-        logged-in user viewing the tickets stamps it lazily (the ticket read path)."""
+        the audit.
+
+        ``owner_user_id`` is the verified id of whoever started the audit, threaded down from
+        ``POST /api/audit`` (P5). It used to be unconditionally unstamped here on the theory
+        that "a logged-in user viewing the tickets stamps it lazily" — but that lazy stamp
+        fires only when the board does not exist yet, and this function is precisely what
+        makes it exist. So every pipeline-generated board stayed unowned forever, which left
+        ``_require_ticket_owner`` permanently in its unowned-is-open branch and made the P5
+        gate inert in production. Anonymous audits still pass None and stay open by design;
+        the read paths claim those on first authenticated view."""
         try:
             from ..storage.repos import milestones as milestones_repo
 
-            result = milestones_repo.generate_tickets_from_run(run_id)
-            log.info("tickets_generated", run_id=run_id, domain=domain, **result)
+            result = milestones_repo.generate_tickets_from_run(
+                run_id, owner_user_id=owner_user_id
+            )
+            log.info("tickets_generated", run_id=run_id, domain=domain,
+                     owned=bool(owner_user_id), **result)
         except Exception as exc:  # ticket generation is additive — never fatal to the audit
             log.warning("ticket_generation_skipped", run_id=run_id, domain=domain, error=str(exc))
 

@@ -65,7 +65,23 @@ credits), with its hard limits stated:
 
 When public, **turn on auth**: set `AEO__API__AUTH_KEY` on the API and the matching
 `API_KEY` on the web host so the proxy sends the `X-API-Key` header on every `/api/*` call.
-Set `AEO__API__RATE_LIMIT` too — startup validation warns when either is missing.
+Set `AEO__API__RATE_LIMIT` too — startup validation warns when it is missing.
+
+`aeo serve` now **refuses to boot** without `AEO__API__AUTH_KEY` (a fatal startup error).
+With neither it nor `AEO__API__ADMIN_KEY` configured, `require_admin_key` has nothing to
+check and `POST /api/entitlements/grant` is completely ungated — anyone who can reach the
+backend's own URL grants themselves every pack. (The proxy denylist in
+`web/app/api/[...path]/route.ts` only covers requests routed through Vercel; the Space's
+public URL bypasses it entirely.) For a localhost-only dev server, name the exception:
+`AEO__API__ALLOW_OPEN=1` — which `scripts/run.ps1` and `docker-compose.yml` set for you.
+
+**Set the two keys together.** This is the second-order trap that makes a deploy look
+healthy while a feature is silently dead: once `AEO__API__AUTH_KEY` is set, the admin routes
+return **503 until `AEO__API__ADMIN_KEY` is set as well**, because the service key is not an
+authorization boundary — the web proxy hands it to every visitor's browser, so it
+authenticates the *proxy*, not the person. Symptom of getting this half-right: manual and
+promo grants fail with a 503 that mentions nothing about payments. Never reuse the same
+value for both. Startup logs a warning naming this exact pairing.
 
 **What about Railway?** `railway.json` ships ready to deploy the same image
 (build = Dockerfile, predeploy `aeo migrate`, start `aeo serve`, healthcheck `/api/health`)
@@ -146,6 +162,47 @@ The one thing no probe can confirm is that the backend accepts a *real* user tok
 needs an actual sign-in. After step 3, sign in once and check the browser calls
 `/api/auth/me` and gets **200**, not 401. A 401 there means step 4 is wrong.
 
+When it *is* 401, don't guess which of the four possible causes it is — ask:
+
+```bash
+python scripts/check_auth_config.py --token -      # then paste the token; stdin, not argv
+```
+
+This runs the token through the API's own verification path and names the check that
+refused it: expired, issuer mismatch, wrong audience, bad signature, no matching `kid`, or
+"valid but not an end-user". The last one is what you get if you paste the project's **anon**
+key by mistake — it is a real JWT signed with the same secret, so it verifies and is then
+correctly refused. The token, your email and every secret stay out of the output.
+
+Copy the token from devtools → Application → Local Storage → `sb-<ref>-auth-token` →
+`access_token`. They expire in about an hour, so use a fresh one.
+
+### Verifying the P5 ownership backfill (migration 0034)
+
+Migration 0034 stamps `owner_user_id` on pack ticket boards created before ownership was
+threaded through the pipeline. It claims a board only where the evidence is unambiguous —
+exactly one distinct user holds a live `pack`/`all_packs`/`tickets` grant on that domain —
+and leaves anonymous and ambiguous boards unowned rather than guessing, because guessing
+wrong locks the real owner out of their own board.
+
+It runs on the factory rebuild (`aeo migrate` in `scripts/start-api.sh`). Confirm it
+actually applied, rather than assuming:
+
+```sql
+-- 1. Did the migration record itself?
+SELECT version, name, applied_at FROM schema_versions WHERE version = '0034';
+
+-- 2. What did it do? (unowned boards are expected — anonymous ones stay open by design)
+SELECT COUNT(DISTINCT client_id) FILTER (WHERE owner_user_id IS NOT NULL) AS owned,
+       COUNT(DISTINCT client_id) FILTER (WHERE owner_user_id IS NULL)     AS still_unowned
+  FROM implementation_milestones
+ WHERE milestone_key LIKE 'pack:%';
+```
+
+A board left unowned is not a failure: it stays open until the first authenticated read or
+mutation claims it. Zero rows from query 1 means the rebuild did **not** pick up the new
+commit — a plain restart reuses the cached layer. Factory rebuild, then re-check.
+
 ---
 
 ## Environment reference
@@ -159,7 +216,9 @@ needs an actual sign-in. After step 3, sign in once and check the browser calls
 | `AEO__LLM__QWEN_API_KEY` | Qwen side (Groq free plan by default) | — |
 | `AEO__LLM__QWEN_FALLBACK_API_KEY` | optional OpenRouter `:free` fallback | — |
 | `AEO__AGENTS__MODE` | `react` (agentic loop) or `ladder` (fixed sequence) | `react` |
-| `AEO__API__AUTH_KEY` | require `X-API-Key` on `/api/*` (set in any public deploy) | unset (open) |
+| `AEO__API__AUTH_KEY` | require `X-API-Key` on `/api/*`. **Required to serve** — `aeo serve` refuses to boot without it (or `ALLOW_OPEN`) | unset → **fatal at boot** |
+| `AEO__API__ADMIN_KEY` | `X-Admin-Key` for the entitlement-MINTING routes. Must differ from `AUTH_KEY`. **Set it whenever you set `AUTH_KEY`** — admin routes 503 until you do | unset (admin routes disabled) |
+| `AEO__API__ALLOW_OPEN` | localhost-only escape hatch: permits serving with no `AUTH_KEY`. **Never set on a public host** | unset |
 | `API_BASE_URL` / `API_KEY` | (web host, runtime) backend URL + key for the server-side proxy | `http://localhost:8000` / unset |
 | `AEO__AUTH__JWKS_URL` | verify Supabase user tokens against the project's public keys — for projects using **asymmetric** JWT signing keys (`https://<ref>.supabase.co/auth/v1/.well-known/jwks.json`) | unset |
 | `AEO__AUTH__JWT_SECRET` | verify user tokens with the **legacy shared secret** instead. Set this *or* `JWKS_URL`, not usually both. Neither → auth is open and nothing is gated | unset |

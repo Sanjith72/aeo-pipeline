@@ -15,6 +15,11 @@ x-app: &app
     # Postgres is reachable as `db` on the compose network; password from .env.
     DATABASE_URL: postgresql://aeo:${POSTGRES_PASSWORD:-aeo}@db:5432/aeo
     AEO__CONFIG_DIR: /app/config
+    # The compose stack publishes the API on localhost for local development, so booting
+    # with no AEO__API__AUTH_KEY is allowed — but it has to be said out loud, because with
+    # neither key set /api/entitlements/grant is ungated (see startup._check_api). Setting
+    # AEO__API__AUTH_KEY in .env overrides this and gates the API properly.
+    AEO__API__ALLOW_OPEN: ${AEO__API__ALLOW_OPEN:-1}
     # Default: the bundled `--profile llm` ollama container. Override DOCKER_LLM_HOST
     # (e.g. http://host.docker.internal:11434) to reuse an Ollama already on the host.
     AEO__LLM__HOST: ${DOCKER_LLM_HOST:-http://ollama:11434}

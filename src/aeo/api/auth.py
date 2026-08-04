@@ -329,6 +329,15 @@ def get_current_user(request: Request) -> User:
     try:
         user = _user_from_claims(claims)
     except ValueError as exc:
+        # The one 401 branch that still logged nothing. A token can pass every signature and
+        # registered-claim check and still be refused here — and this is the branch the
+        # project's own anon / service_role keys land in, since they are valid JWTs signed
+        # with the same secret. Without a log line, "someone is probing with the public anon
+        # key" and "our issuer pin is wrong" were the same silence. The reason string names
+        # the failed claim only (role / sub shape); no claim VALUE is logged.
+        log.warning(
+            "jwt_not_end_user", reason=str(exc), **_token_fingerprint(token),
+        )
         raise HTTPException(
             status_code=401, detail="not an authenticated end-user",
             headers={"WWW-Authenticate": "Bearer"},
