@@ -110,8 +110,8 @@ export function DisplayH2({
 export function TopBar() {
   // A tinted bar — deliberately NOT frosted glass any more.
   //
-  // This used to carry `backdrop-blur-lg/md backdrop-saturate-150` in both states, on the
-  // reasoning that "the bar is only ~50px tall, so it re-blurs a thin strip, not the whole
+  // This used to carry backdrop-blur (lg scrolled, md at rest) plus a backdrop-saturate, on
+  // the reasoning that "the bar is only ~50px tall, so it re-blurs a thin strip, not the whole
   // viewport — cheap during scroll". Cheap it may have been, but the visible result is the
   // reported defect: a backdrop-filter samples whatever is behind it every frame, so text and
   // images passing underneath during a scroll smear through the bar. That reads as the page
