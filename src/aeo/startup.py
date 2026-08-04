@@ -204,6 +204,46 @@ def _check_auth(s: Settings, fatal: list[str], warnings: list[str], *, serving: 
                 f"AEO__AUTH__JWKS_URL path is {parsed.path!r} — Supabase serves its key set at "
                 "/auth/v1/.well-known/jwks.json; a wrong path 401s every login"
             )
+    # The issuer pin was never validated at all, and a wrong one rejects EVERY token with the
+    # same generic "invalid token" a forged token gets — the most unfalsifiable failure in
+    # this whole config surface. jwt.decode(issuer=...) does an exact string compare, so
+    # `/auth/v1/` vs `/auth/v1` is a total outage with no clue anywhere. Shape checks only
+    # here (no I/O); the "does it match the tokens this project actually mints" half needs
+    # the network and lives in scripts/check_auth_config.py.
+    if auth.jwt_issuer:
+        iss = urlparse(auth.jwt_issuer)
+        if "<" in auth.jwt_issuer or ">" in auth.jwt_issuer:
+            fatal.append(
+                "AEO__AUTH__JWT_ISSUER still contains a placeholder like <project-ref> — "
+                "substitute your real Supabase project ref"
+            )
+        elif iss.scheme != "https" or not iss.netloc:
+            fatal.append(
+                f"AEO__AUTH__JWT_ISSUER must be an absolute https URL (got {auth.jwt_issuer!r})"
+            )
+        elif auth.jwt_issuer.endswith("/"):
+            # Supabase mints `iss` WITHOUT a trailing slash. The compare is exact, so this
+            # single character rejects every login — and it is invisible in a dashboard copy.
+            fatal.append(
+                f"AEO__AUTH__JWT_ISSUER has a trailing slash ({auth.jwt_issuer!r}). Supabase "
+                "issues tokens with iss=https://<ref>.supabase.co/auth/v1 and the comparison "
+                "is exact — every login would 401. Drop the slash"
+            )
+        elif iss.path.rstrip("/") != "/auth/v1":
+            warnings.append(
+                f"AEO__AUTH__JWT_ISSUER path is {iss.path!r} — Supabase issues tokens with "
+                "iss=https://<ref>.supabase.co/auth/v1; anything else rejects every login"
+            )
+        # The two must describe the SAME project, or the keys verify tokens the issuer pin
+        # then refuses. Pointing them at different projects is silent until a real login.
+        if auth.jwks_url:
+            j_host = urlparse(auth.jwks_url).hostname
+            if iss.hostname and j_host and iss.hostname != j_host:
+                warnings.append(
+                    f"AEO__AUTH__JWT_ISSUER host ({iss.hostname}) differs from "
+                    f"AEO__AUTH__JWKS_URL host ({j_host}) — these must be the same Supabase "
+                    "project or every login 401s"
+                )
     # Must mirror api.auth.auth_active(): EITHER credential activates verification. Checking
     # only jwt_secret told correctly-configured JWKS deployments (the Supabase default, which
     # has no shared secret at all) that auth was disabled — a false alarm that trains you to
