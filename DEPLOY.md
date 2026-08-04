@@ -162,6 +162,47 @@ The one thing no probe can confirm is that the backend accepts a *real* user tok
 needs an actual sign-in. After step 3, sign in once and check the browser calls
 `/api/auth/me` and gets **200**, not 401. A 401 there means step 4 is wrong.
 
+When it *is* 401, don't guess which of the four possible causes it is — ask:
+
+```bash
+python scripts/check_auth_config.py --token -      # then paste the token; stdin, not argv
+```
+
+This runs the token through the API's own verification path and names the check that
+refused it: expired, issuer mismatch, wrong audience, bad signature, no matching `kid`, or
+"valid but not an end-user". The last one is what you get if you paste the project's **anon**
+key by mistake — it is a real JWT signed with the same secret, so it verifies and is then
+correctly refused. The token, your email and every secret stay out of the output.
+
+Copy the token from devtools → Application → Local Storage → `sb-<ref>-auth-token` →
+`access_token`. They expire in about an hour, so use a fresh one.
+
+### Verifying the P5 ownership backfill (migration 0034)
+
+Migration 0034 stamps `owner_user_id` on pack ticket boards created before ownership was
+threaded through the pipeline. It claims a board only where the evidence is unambiguous —
+exactly one distinct user holds a live `pack`/`all_packs`/`tickets` grant on that domain —
+and leaves anonymous and ambiguous boards unowned rather than guessing, because guessing
+wrong locks the real owner out of their own board.
+
+It runs on the factory rebuild (`aeo migrate` in `scripts/start-api.sh`). Confirm it
+actually applied, rather than assuming:
+
+```sql
+-- 1. Did the migration record itself?
+SELECT version, name, applied_at FROM schema_versions WHERE version = '0034';
+
+-- 2. What did it do? (unowned boards are expected — anonymous ones stay open by design)
+SELECT COUNT(DISTINCT client_id) FILTER (WHERE owner_user_id IS NOT NULL) AS owned,
+       COUNT(DISTINCT client_id) FILTER (WHERE owner_user_id IS NULL)     AS still_unowned
+  FROM implementation_milestones
+ WHERE milestone_key LIKE 'pack:%';
+```
+
+A board left unowned is not a failure: it stays open until the first authenticated read or
+mutation claims it. Zero rows from query 1 means the rebuild did **not** pick up the new
+commit — a plain restart reuses the cached layer. Factory rebuild, then re-check.
+
 ---
 
 ## Environment reference
