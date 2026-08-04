@@ -40,6 +40,12 @@ function CallbackInner() {
   const [resendState, setResendState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   const [cooldown, setCooldown] = useState(0);
   const lastSentAt = useRef<number | null>(null);
+  // Whether the sign-in question has been ANSWERED, across effect RE-RUNS. supabase-js strips
+  // the `?code=` with history.replaceState once it processes it, Next resyncs
+  // useSearchParams, and this effect runs again with a fresh closure — one that sees no code,
+  // so it would arm the timeout and, 15 seconds later, overwrite a precise error message with
+  // the generic "didn't come back with a session". A ref is the only guard that survives that.
+  const answered = useRef(false);
   const next = safeNext(
     params.get("next"),
     typeof window === "undefined" ? "http://localhost" : window.location.origin,
@@ -47,20 +53,21 @@ function CallbackInner() {
 
   useEffect(() => {
     let cancelled = false;
-    // Whether the sign-in question has been ANSWERED (either way). getSession() and
-    // onAuthStateChange can both report the same session, and this effect can re-run once
-    // when supabase-js strips the `?code=` via history.replaceState (Next patches that to
-    // resync useSearchParams) — so every terminal path is guarded by this, not by `cancelled`.
+    // Within ONE run: getSession() and onAuthStateChange can both report the same session,
+    // so terminal paths guard on this rather than on `cancelled`. Across runs, `answered`
+    // (a ref) is what holds.
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const fail = (f: Failure) => {
-      if (cancelled || settled) return;
+      if (cancelled || settled || answered.current) return;
       settled = true;
+      answered.current = true;
       if (timer) clearTimeout(timer);
       setFailure(f);
     };
 
+    if (answered.current) return;  // a previous run already resolved this sign-in
     if (!authEnabled || !supabase) {
       router.replace(next);
       return;
@@ -80,8 +87,9 @@ function CallbackInner() {
     }
 
     const finish = async () => {
-      if (cancelled || settled) return;
+      if (cancelled || settled || answered.current) return;
       settled = true;
+      answered.current = true;
       // Stop the clock BEFORE awaiting: provisioning is best-effort and can outlast the
       // timeout on a cold backend. Leaving the timer armed here is what used to show
       // "sign-in didn't complete" to a user who was, in fact, already signed in.
