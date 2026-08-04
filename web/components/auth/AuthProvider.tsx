@@ -9,9 +9,18 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { ReactNode } from "react";
 import { api } from "@/lib/api";
 import { authEnabled, supabase, type Session } from "@/lib/supabase";
+import type { AppCapabilities } from "@/lib/types";
 import { AuthModal } from "./AuthModal";
 
 export type AuthUser = { id: string; email: string | null } | null;
+
+/** Until GET /api/config answers, assume everything is available. Optimistic on purpose:
+ *  this is exactly today's behaviour (offer the path, let the 503 explain), so a slow or
+ *  failed probe can never hide a Buy button that actually works. `unknown` marks it so no
+ *  copy claims "not available" on the strength of a guess. */
+const ASSUME_ALL: AppCapabilities = {
+  payments_enabled: true, promo_enabled: true, auth_enabled: true, unknown: true,
+};
 
 interface AuthState {
   authEnabled: boolean;
@@ -19,6 +28,8 @@ interface AuthState {
   loading: boolean;
   authOpen: boolean;
   authReason: string | null;
+  /** What this backend can actually do (v5 CH-02b). Fetched once per mount. */
+  capabilities: AppCapabilities;
   openAuth: (reason?: string) => void;
   closeAuth: () => void;
   signOut: () => Promise<void>;
@@ -31,6 +42,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(authEnabled);
   const [authOpen, setAuthOpen] = useState(false);
   const [authReason, setAuthReason] = useState<string | null>(null);
+  const [capabilities, setCapabilities] = useState<AppCapabilities>(ASSUME_ALL);
+
+  // One probe per mount, regardless of auth: the answer is the same for everyone and the
+  // Buy button's visibility must be decided before the user clicks, not after a 503 toast.
+  // api.getConfig() never throws — it returns ASSUME_ALL-shaped optimistic defaults.
+  useEffect(() => {
+    let cancelled = false;
+    void api.getConfig().then((c) => {
+      if (!cancelled) setCapabilities(c);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!supabase) {
@@ -59,8 +84,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthState>(
-    () => ({ authEnabled, user, loading, authOpen, authReason, openAuth, closeAuth, signOut }),
-    [user, loading, authOpen, authReason, openAuth, closeAuth, signOut],
+    () => ({ authEnabled, user, loading, authOpen, authReason, capabilities, openAuth, closeAuth, signOut }),
+    [user, loading, authOpen, authReason, capabilities, openAuth, closeAuth, signOut],
   );
 
   return (
@@ -78,6 +103,7 @@ export function useAuth(): AuthState {
     // provider isn't mounted (e.g. a stray SSR render) — everything reads as anonymous.
     return {
       authEnabled: false, user: null, loading: false, authOpen: false, authReason: null,
+      capabilities: ASSUME_ALL,
       openAuth: () => {}, closeAuth: () => {}, signOut: async () => {},
     };
   }

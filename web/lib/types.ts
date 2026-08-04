@@ -562,6 +562,21 @@ export interface PackPreview {
   status: "preview" | "unlocked" | "crawled" | "scored" | string;
 }
 
+// GET /api/config — what this INSTANCE can actually do. Booleans only: no keys, no key
+// lengths, no code counts. Exists because the browser previously had NO way to know whether
+// payments or promo codes were configured, so UnlockModal offered a Buy button that 503'd.
+export interface AppCapabilities {
+  /** Stripe credentials AND a return URL are configured — a purchase can complete. */
+  payments_enabled: boolean;
+  /** At least one promo code is configured on this backend. */
+  promo_enabled: boolean;
+  /** User-JWT verification is active (otherwise everything is anonymous/dev). */
+  auth_enabled: boolean;
+  /** Set when the probe FAILED and these values are optimistic defaults rather than facts.
+   *  Callers must not render a definitive "not available" message on an unknown. */
+  unknown?: boolean;
+}
+
 // GET /api/packs/{run_id} — the packs persisted for a deep-audit run (CH-03). Same
 // PackPreview shape as the overview's live preview, so one card renders both.
 export interface PacksResponse {

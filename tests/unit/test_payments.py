@@ -541,16 +541,44 @@ def test_startup_ok_when_both_stripe_credentials_are_set(monkeypatch):
     assert not any("WEBHOOK_SECRET" in w or "PUBLIC_APP_URL" in w for w in warns)
 
 
-def test_startup_warns_when_the_return_url_is_unset(monkeypatch):
-    """Without it the buyer is redirected to the API's own origin — a 404 after paying."""
-    warns, err = _validate(
+def test_startup_is_fatal_when_the_return_url_is_unset(monkeypatch):
+    """Was a WARNING, which is the wrong severity and let a Space boot and sell broken
+    checkouts. Unset, create_pack_checkout falls back to the REQUEST origin — which behind
+    the Next proxy is the BACKEND's host — so Stripe returns the paying customer to
+    <api-host>/studio, a route the API does not serve. The charge succeeds, the webhook
+    grants the pack, and the buyer lands on a 404 owning something they cannot see."""
+    _warns, err = _validate(
         monkeypatch,
         AEO__PAYMENTS__STRIPE_SECRET_KEY="sk_test_123",
         AEO__PAYMENTS__WEBHOOK_SECRET="whsec_123",
         AEO__PAYMENTS__PUBLIC_APP_URL="",
     )
+    assert err is not None
+    assert "PUBLIC_APP_URL" in err
+
+
+def test_startup_rejects_a_return_url_without_a_scheme(monkeypatch):
+    """It is concatenated with success_path, so a bare host builds a relative URL that
+    Stripe rejects — or worse, silently redirects somewhere unintended."""
+    _warns, err = _validate(
+        monkeypatch,
+        AEO__PAYMENTS__STRIPE_SECRET_KEY="sk_test_123",
+        AEO__PAYMENTS__WEBHOOK_SECRET="whsec_123",
+        AEO__PAYMENTS__PUBLIC_APP_URL="aeo-studio-nine.vercel.app",
+    )
+    assert err is not None
+    assert "absolute URL" in err
+
+
+def test_startup_accepts_a_proper_return_url(monkeypatch):
+    warns, err = _validate(
+        monkeypatch,
+        AEO__PAYMENTS__STRIPE_SECRET_KEY="sk_test_123",
+        AEO__PAYMENTS__WEBHOOK_SECRET="whsec_123",
+        AEO__PAYMENTS__PUBLIC_APP_URL="https://aeo-studio-nine.vercel.app",
+    )
     assert err is None
-    assert any("PUBLIC_APP_URL" in w for w in warns)
+    assert not any("PUBLIC_APP_URL" in w for w in warns)
 
 
 def test_startup_is_silent_about_payments_when_stripe_is_unconfigured(monkeypatch):

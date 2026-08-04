@@ -82,12 +82,19 @@ def _form(payload: dict[str, Any], prefix: str = "") -> list[tuple[str, str]]:
 
 
 def create_pack_checkout(
-    *, user_id: str, email: str | None, domain: str, pack_index: int, origin: str
+    *, user_id: str, email: str | None, domain: str, pack_index: int, origin: str,
+    run_id: int | None = None,
 ) -> dict[str, Any]:
     """Create a one-time Checkout Session for one pack and return ``{id, url}``.
 
     ``user_id`` comes from the verified JWT at the call site and is stamped into metadata —
-    that stamp is what the webhook later grants against (invariant 1 above)."""
+    that stamp is what the webhook later grants against (invariant 1 above).
+
+    ``run_id`` is carried purely so the buyer can be put back where they were: the return is
+    a full page load, often in a new tab, so the studio's in-memory run is gone. It rides in
+    the metadata AND on the success_url, so the restore survives a browser that never saw the
+    pre-checkout sessionStorage. It confers no access — the grant is still derived from
+    ``metadata.user_id`` alone."""
     cfg = get_settings().payments
     if not payments_enabled():
         raise PaymentsError("payments are not configured")
@@ -101,9 +108,16 @@ def create_pack_checkout(
     base = (cfg.public_app_url or origin).rstrip("/")
     success = f"{base}{cfg.success_path}"
     cancel = f"{base}{cfg.cancel_path}"
+    # Hand the run and pack back on the return URL so /studio can restore context and open
+    # the pack the buyer just bought, without depending on this browser having the
+    # pre-checkout sessionStorage. success_path already carries a query string, so append.
+    sep = "&" if "?" in cfg.success_path else "?"
+    success = f"{success}{sep}pack={pack_index}" + (f"&run_id={run_id}" if run_id else "")
     # Metadata must be echoed on BOTH the session and the payment intent: some Stripe
     # account configurations deliver only one of the two event shapes.
     metadata = {"user_id": user_id, "domain": domain, "pack_index": str(pack_index)}
+    if run_id is not None:
+        metadata["run_id"] = str(run_id)
 
     line_item: dict[str, Any]
     if cfg.stripe_price_id:

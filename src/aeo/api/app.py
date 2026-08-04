@@ -386,6 +386,16 @@ class CheckoutRequest(BaseModel):
 
     domain: str
     pack_index: int
+    # Which run the buyer was looking at. Purely a way to get them back where they were:
+    # a checkout redirect is a full page load in (possibly) a different tab, so the studio's
+    # in-memory run is gone by the time they return. It rides through Stripe's metadata and
+    # comes back on the success_url, so the restore works even when sessionStorage does not
+    # (different tab, different browser, cleared storage).
+    #
+    # It grants NOTHING and is never trusted: the entitlement is written from
+    # metadata.user_id + domain + pack_index, exactly as before. A forged run_id can only
+    # send the forger to their own studio.
+    run_id: int | None = None
 
 
 class RedeemRequest(BaseModel):
@@ -551,6 +561,42 @@ def health() -> dict[str, Any]:
     except Exception:  # a down DB must not 500 the health check
         db_ok = False
     return {"status": "ok", "db": "ok" if db_ok else "unreachable"}
+
+
+@app.get("/api/config")
+def capabilities() -> dict[str, Any]:
+    """What this INSTANCE can actually do — so the UI stops offering things that will fail.
+
+    The problem this solves: ``UnlockModal`` decided whether to show "Buy Pack N" from
+    ``packIndex > 1`` alone, and the comments in settings.py and payments/stripe.py both
+    claimed "the UI hides it" when payments are unconfigured. That behaviour did not exist —
+    there was no way for the browser to know. The user clicked Buy and got a 503 toast, which
+    reads as a broken product rather than a feature that was never switched on. Same for the
+    promo form when no codes are configured: every code 422s as "invalid or expired", which
+    is indistinguishable from a typo.
+
+    **Booleans only.** No key values, no key lengths, no URLs, no counts — a length is a real
+    hint for an offline attack and a count tells a prober how many codes to guess. Every field
+    here is something a user discovers within one click anyway; this endpoint only lets them
+    discover it BEFORE the click instead of after a failure.
+
+    Deliberately unauthenticated and exempt from nothing: it sits behind the same
+    ``require_api_key`` guard as every other ``/api/*`` route, so on a keyed deployment the
+    proxy still has to present the service key. Anonymous browsers reach it through the proxy,
+    which is exactly who needs it."""
+    from ..payments.stripe import payments_enabled
+    from ..settings import get_settings
+    from .auth import auth_active
+
+    s = get_settings()
+    return {
+        # Can a user actually buy a pack? Requires BOTH Stripe credentials AND the return
+        # URL — without the latter the buyer is charged and returned to a 404, so offering
+        # the button would be worse than hiding it.
+        "payments_enabled": bool(payments_enabled() and s.payments.public_app_url),
+        "promo_enabled": bool(s.auth.promo_code_set),
+        "auth_enabled": auth_active(),
+    }
 
 
 @app.post("/api/plan")
@@ -1941,8 +1987,27 @@ def redeem_promo(req: RedeemRequest, user: User = Depends(get_current_user)) -> 
     from ..settings import get_settings
     from ..storage.repos import entitlements as entitlements_repo
 
-    code = req.code.strip()
-    if not code or code not in get_settings().auth.promo_code_set:
+    # Normalised on BOTH sides — see AuthCfg.promo_code_set. A code arrives retyped off an
+    # email or a slide, often autocapitalised by a phone keyboard, and an exact compare made
+    # `save20` a different code from `SAVE20`.
+    code = req.code.strip().casefold()
+    configured = get_settings().auth.promo_code_set
+    if not code or code not in configured:
+        # The user-facing message stays generic (never confirm to a prober which codes
+        # exist), but the SERVER log must not be ambiguous. "no codes are configured on this
+        # instance" and "that particular code is wrong" need completely different fixes —
+        # one is an env var on the deployed backend, the other is a typo — and they were
+        # indistinguishable from both sides, which is most of why this looked broken.
+        from ..logging import get_logger
+
+        get_logger(__name__).warning(
+            "promo_redeem_rejected",
+            reason="no_codes_configured" if not configured else "unknown_code",
+            # Never log the submitted code itself — it is a bearer credential. Its length is
+            # enough to tell an empty field from a real attempt.
+            submitted_len=len(code),
+            configured_count=len(configured),
+        )
         raise HTTPException(status_code=422, detail="invalid or expired promo code")
     domain = normalize_domain(req.domain) or req.domain.strip().lower()
     if not domain:
@@ -1960,8 +2025,23 @@ def checkout_pack(req: CheckoutRequest, request: Request, user: User = Depends(g
     -unlocked packs 409 rather than charging twice, and Pack 1 is free so it is never sold."""
     from ..payments.stripe import PaymentsError, create_pack_checkout, payments_enabled
     from ..reference.domain_config import normalize_domain
+    from ..settings import get_settings
 
     if not payments_enabled():
+        raise HTTPException(status_code=503, detail="payments are not configured")
+    # Defence in depth behind startup._check_payments, which makes this fatal at boot. The
+    # guard must not depend on that check having run: this module is importable by uvicorn
+    # or a test client with no lifespan, and `enabled` can be flipped at runtime. Refusing to
+    # sell is strictly better than minting a session whose success_url returns the buyer to
+    # the API host's /studio — a 404 after a real charge, with the pack silently granted.
+    if not get_settings().payments.public_app_url:
+        from ..logging import get_logger
+
+        get_logger(__name__).error(
+            "checkout_refused_no_public_app_url",
+            detail="AEO__PAYMENTS__PUBLIC_APP_URL is unset; refusing to sell a pack whose "
+                   "success_url would 404",
+        )
         raise HTTPException(status_code=503, detail="payments are not configured")
     if req.pack_index <= 1:
         raise HTTPException(status_code=422, detail="Pack 1 is free")
@@ -1982,7 +2062,7 @@ def checkout_pack(req: CheckoutRequest, request: Request, user: User = Depends(g
     try:
         session = create_pack_checkout(
             user_id=user.id, email=user.email, domain=domain,
-            pack_index=req.pack_index, origin=origin,
+            pack_index=req.pack_index, origin=origin, run_id=req.run_id,
         )
     except PaymentsError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

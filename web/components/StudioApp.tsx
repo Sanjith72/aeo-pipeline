@@ -29,6 +29,14 @@ import { TicketBoard } from "@/components/TicketBoard";
 import { PackDetail } from "@/components/PackDetail";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { UnlockModal } from "@/components/auth/UnlockModal";
+import {
+  POLL_DELAYS_MS,
+  clearPendingCheckout,
+  isPackUnlocked,
+  readCheckoutOutcome,
+  readPendingCheckout,
+  urlWithoutCheckoutParams,
+} from "@/lib/checkoutReturn";
 import { GamificationStrip } from "@/components/GamificationStrip";
 import { Combobox } from "@/components/ui/Combobox";
 import { LiquidButton } from "@/components/ui/liquid-glass";
@@ -165,6 +173,11 @@ export function StudioApp() {
   // Which pack the unlock dialog is for (v5 CH-02b) — drives the per-pack Stripe checkout.
   const [unlockPack, setUnlockPack] = useState<number | null>(null);
   const [openPack, setOpenPack] = useState<number | null>(null);
+  // v5 CH-02b: the state of a Stripe return, if we are in one. Null = an ordinary visit.
+  const [checkout, setCheckout] = useState<{
+    state: "confirming" | "unlocked" | "pending_grant" | "cancelled" | "unknown_run";
+    packIndex?: number;
+  } | null>(null);
   const { authEnabled, user, openAuth } = useAuth();
   // R2-2 re-crawl: when the homepage was crawled recently, default to reusing that data
   // (fast) and let the user opt into a fresh re-crawl that bypasses the skip gate.
@@ -488,6 +501,108 @@ export function StudioApp() {
     } catch {
       /* best-effort */
     }
+  }
+
+  // ── v5 CH-02b: the checkout RETURN leg ────────────────────────────────────────
+  // Stripe sends the buyer to `/studio?checkout=success`, and NOTHING here read it: they
+  // landed on the studio's normal empty state — no confirmation, no run, no pack. A
+  // successful payment was indistinguishable from a failed one.
+  //
+  // Two things have to happen, in this order:
+  //   1. Restore context. The return is a full page load (often a new tab), so the run is
+  //      gone. It comes back from localStorage, or from the pack/run_id we appended to
+  //      success_url when the storage is not this browser's.
+  //   2. Wait for the GRANT. The entitlement is written by the webhook, not by this
+  //      redirect, and a fast return regularly beats it — so poll with backoff rather than
+  //      reading once and telling a paying customer their pack is still locked.
+  const checkoutHandled = useRef(false);
+  useEffect(() => {
+    if (checkoutHandled.current || typeof window === "undefined") return;
+    const outcome = readCheckoutOutcome(window.location.search);
+    if (outcome.kind === "none") return;
+    checkoutHandled.current = true;
+
+    // Strip the params immediately so a refresh cannot re-trigger the flow.
+    window.history.replaceState(
+      null, "",
+      urlWithoutCheckoutParams(window.location.pathname, window.location.search, window.location.hash),
+    );
+
+    const pending = readPendingCheckout();
+    if (outcome.kind === "cancelled") {
+      clearPendingCheckout();
+      setCheckout({ state: "cancelled" });
+      return;
+    }
+
+    // Prefer the URL (survives a different tab/device) and fall back to storage.
+    const boughtPack = outcome.packIndex ?? pending?.packIndex;
+    const boughtRun = outcome.runId ?? pending?.runId;
+    const boughtDomain = pending?.domain;
+    if (boughtDomain && !domain.trim()) {
+      setDomain(boughtDomain);
+      setHasSite(true);
+    }
+    setCheckout({ state: "confirming", packIndex: boughtPack });
+
+    let cancelled = false;
+    void (async () => {
+      const targetRun = boughtRun ?? runId ?? null;
+      if (targetRun == null) {
+        // Paid, but we cannot tell which run to reload — never pretend otherwise.
+        setCheckout({ state: "unknown_run", packIndex: boughtPack });
+        clearPendingCheckout();
+        return;
+      }
+      setRunId(targetRun);
+      for (let i = 0; i <= POLL_DELAYS_MS.length; i++) {
+        if (cancelled) return;
+        try {
+          const p = await api.getPacks(targetRun);
+          if (cancelled) return;
+          setPacks(p.packs);
+          if (boughtPack == null || isPackUnlocked(p.packs, boughtPack)) {
+            setCheckout({ state: "unlocked", packIndex: boughtPack });
+            if (boughtPack != null) setOpenPack(boughtPack);
+            clearPendingCheckout();
+            return;
+          }
+        } catch {
+          /* keep polling — a transient failure is not an answer */
+        }
+        if (i < POLL_DELAYS_MS.length) {
+          await new Promise((r) => setTimeout(r, POLL_DELAYS_MS[i]));
+        }
+      }
+      // The webhook has not landed inside the window. Say so plainly and offer a retry —
+      // the money is taken and the grant will almost certainly arrive; a silent blank or a
+      // "still locked" pack would both be lies.
+      if (!cancelled) setCheckout({ state: "pending_grant", packIndex: boughtPack });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Runs once on mount; deliberately not re-run when domain/runId change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Re-check entitlements on demand, behind the "Refresh" in the pending-grant notice. */
+  async function recheckCheckout(packIndex?: number) {
+    if (runId == null) return;
+    setCheckout((c) => (c ? { ...c, state: "confirming" } : c));
+    try {
+      const p = await api.getPacks(runId);
+      setPacks(p.packs);
+      if (packIndex == null || isPackUnlocked(p.packs, packIndex)) {
+        setCheckout({ state: "unlocked", packIndex });
+        if (packIndex != null) setOpenPack(packIndex);
+        clearPendingCheckout();
+        return;
+      }
+    } catch {
+      /* fall through to the honest pending state */
+    }
+    setCheckout({ state: "pending_grant", packIndex });
   }
 
   // One-click build from a saved plan's "Build a plan for your site" link. Mirrors the manual
@@ -1124,6 +1239,71 @@ export function StudioApp() {
               </a>
             </div>
           )}
+          {/* v5 CH-02b — the checkout return. Rendered ABOVE the packs so a buyer coming
+              back from Stripe sees an acknowledgement before anything else, instead of the
+              studio's ordinary empty state. Every branch says something true. */}
+          {checkout && (
+            <div
+              role="status"
+              aria-live="polite"
+              className={`mb-6 rounded-xl border p-4 ${
+                checkout.state === "cancelled"
+                  ? "border-white/[0.13] bg-white/[0.03]"
+                  : "border-accent/30 bg-accent/[0.06]"
+              }`}
+            >
+              {checkout.state === "confirming" && (
+                <p className="text-[13.5px] leading-[1.6] text-ink">
+                  Payment received — unlocking
+                  {checkout.packIndex ? ` Pack ${checkout.packIndex}` : " your pack"}…
+                </p>
+              )}
+              {checkout.state === "unlocked" && (
+                <p className="text-[13.5px] leading-[1.6] text-ink">
+                  {checkout.packIndex ? `Pack ${checkout.packIndex} is` : "Your pack is"} unlocked
+                  — thank you. It&apos;s open below.
+                </p>
+              )}
+              {checkout.state === "pending_grant" && (
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="max-w-[60ch] text-[13.5px] leading-[1.6] text-ink">
+                    Your payment went through, but the unlock hasn&apos;t come back from our
+                    payment provider yet. This usually takes a few seconds. Nothing is lost —
+                    your pack will appear here.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void recheckCheckout(checkout.packIndex)}
+                    className="btn-ghost shrink-0 text-[13px]"
+                  >
+                    Check again
+                  </button>
+                </div>
+              )}
+              {checkout.state === "unknown_run" && (
+                <p className="max-w-[64ch] text-[13.5px] leading-[1.6] text-ink">
+                  Payment received — thank you. We couldn&apos;t tell which audit to reopen
+                  from this browser, so run or reopen your site below and the pack will be
+                  unlocked on it.
+                </p>
+              )}
+              {checkout.state === "cancelled" && (
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[13.5px] leading-[1.6] text-ink-300">
+                    Checkout cancelled — you haven&apos;t been charged.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setCheckout(null)}
+                    aria-label="Dismiss"
+                    className="shrink-0 text-ink-300 hover:text-ink"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           {packs.length > 0 && (
             <section className="mb-10" aria-labelledby="studio-packs-h">
               <h3 id="studio-packs-h" className="mb-1 text-[18px] font-semibold tracking-[-0.01em] text-ink">
@@ -1171,6 +1351,7 @@ export function StudioApp() {
             <UnlockModal
               domain={domain.trim()}
               packIndex={unlockPack ?? undefined}
+              runId={runId ?? undefined}
               onUnlocked={() => {
                 setUnlockOpen(false);
                 void refreshPacks();

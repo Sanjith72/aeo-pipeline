@@ -291,11 +291,27 @@ def _check_payments(s: Settings, fatal: list[str], warnings: list[str], *, servi
         )
     if pay.pack_price_cents <= 0 and not pay.stripe_price_id:
         fatal.append("AEO__PAYMENTS__PACK_PRICE_CENTS must be > 0 (or set a STRIPE_PRICE_ID)")
+    # FATAL, not a warning — same reasoning as the webhook secret above, and the same class
+    # of silent money loss. Unset, create_pack_checkout falls back to the REQUEST origin,
+    # which behind the Next proxy is the BACKEND's host. Stripe then returns the paying
+    # customer to <api-host>/studio, a route the API does not serve. The charge succeeds, the
+    # webhook grants the pack, and the buyer lands on a 404 with no evidence they own
+    # anything. A warning let a Space boot happily and sell exactly that.
     if serving and not pay.public_app_url:
-        warnings.append(
-            "AEO__PAYMENTS__PUBLIC_APP_URL is unset — Stripe will return buyers to the API's "
-            "own origin, which serves no /studio. Set it to the web app's public URL"
+        fatal.append(
+            "AEO__PAYMENTS__PUBLIC_APP_URL is unset while payments are enabled — Stripe would "
+            "return paying customers to the API's own origin, which serves no /studio (a 404 "
+            "after a successful charge). Set it to the web app's public URL, e.g. "
+            "https://aeo-studio-nine.vercel.app"
         )
+    elif serving:
+        parsed = urlparse(pay.public_app_url or "")
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            fatal.append(
+                f"AEO__PAYMENTS__PUBLIC_APP_URL must be an absolute URL with a scheme (got "
+                f"{pay.public_app_url!r}) — it is concatenated with success_path to build the "
+                "URL Stripe redirects the buyer to"
+            )
     if serving and pay.stripe_secret_key.startswith("sk_live_") and not s.api.auth_key:
         warnings.append("LIVE Stripe key with no AEO__API__AUTH_KEY — the API is unauthenticated")
 
