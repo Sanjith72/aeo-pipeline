@@ -24,7 +24,7 @@ import type {
   VerifiedOutcome,
 } from "@/lib/types";
 import { DELIVERABLE_LABEL, EFFORT_LABEL, INTENT_LABEL, SCENARIO_LABEL, humanizeToken } from "@/lib/options";
-import { dedupeActionsAgainstPlan } from "@/lib/phases";
+import { strategyExtrasState } from "@/lib/phases";
 import { aeoScore, aeoScoreCeiling, scoreBand, type ScoreTone } from "@/lib/score";
 import { predictedLiftChip, reconcileLabel } from "@/lib/predictedLift";
 import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
@@ -318,6 +318,15 @@ export function ResultsView({
     if (profile?.domain) api.recheckStatus(profile.domain).then(setRecheck).catch(() => {});
   }, [profile?.domain]);
 
+  // v5 / Phase 3 item 3.3 — "Bigger strategic moves" is derived HERE, once, and rendered in
+  // the Overview tab. It used to render in two places (the strategy facet of TrackerView and
+  // PlanPanel's no-domain fallback), each with its own dedupe call; one derivation means the
+  // two paths cannot drift, and nothing can appear in both Overview and Your plan.
+  const extras = useMemo(
+    () => strategyExtrasState(profile?.actions ?? [], deliverables?.plan),
+    [profile?.actions, deliverables?.plan],
+  );
+
   // #6 — the old "reserve the tallest panel height" floor was removed: it left a large dead
   // space below shorter tabs (most visibly "Your plan" before a plan is built). The sticky
   // tab bar keeps the user oriented across switches, so panels now simply size to their own
@@ -428,6 +437,24 @@ export function ResultsView({
               <FixImpact data={recheck} />
               <OpenPlanPointer onOpen={() => setTab("strategy")} />
               <OverviewPanel profile={profile} auditJob={auditJob} />
+              {/* Moved here from Your plan (item 3.3). These are direction-setting moves,
+                  not steps you tick off — they belong beside the score, where the user is
+                  orienting, rather than interrupting the do-this-next list. */}
+              {extras.kind === "ready" && (
+                <div className="mt-6">
+                  <StrategyExtras actions={extras.actions} />
+                </div>
+              )}
+              {extras.kind === "pending" && (
+                <div className="mt-6 rounded-xl border border-dashed border-ink/15 p-5">
+                  <h3 className="text-base font-semibold">Bigger strategic moves</h3>
+                  <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-ink-500">
+                    Your audit surfaced some direction-setting moves. We&apos;re checking which
+                    of them your plan already covers as a concrete task, so you don&apos;t see
+                    the same work twice — this appears as soon as your plan is built.
+                  </p>
+                </div>
+              )}
             </>
           )}
           {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
@@ -1612,12 +1639,9 @@ function PlanPanel({
 }) {
   const [filesOpen, setFilesOpen] = useState(false);
 
-  // The no-domain path has no milestone tracker, so the Roadmap↔Strategy merge happens
-  // here: the audit's big moves minus everything the plan already tracks as a task.
-  const extraActions = useMemo(
-    () => dedupeActionsAgainstPlan(profileActions, deliverables?.plan ?? null),
-    [profileActions, deliverables?.plan],
-  );
+  // "Bigger strategic moves" no longer renders here either (Phase 3 item 3.3) — the
+  // Roadmap↔Strategy merge happens ONCE in ResultsView and shows in the Overview tab, so the
+  // domain and no-domain paths cannot drift into showing different lists.
 
   // Auto-build the plan the moment this panel opens — no "Build my plan" click needed. The
   // build is deterministic + instant, so the user lands straight on the (Quest map) tracker.
@@ -1685,7 +1709,6 @@ function PlanPanel({
             businessName={businessName}
             cmsType={cmsType}
             facet={facet}
-            profileActions={profileActions}
             visible={visible}
           />
         ) : (
@@ -1699,7 +1722,6 @@ function PlanPanel({
               score={resume?.score ?? null}
               visible={visible}
             />
-            {extraActions.length > 0 && <StrategyExtras actions={extraActions} />}
           </div>
         )
       ) : (

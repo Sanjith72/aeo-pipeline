@@ -11,12 +11,10 @@
 // Both facets stay mounted once opened and toggle via `hidden`, so switching tabs never
 // drops presentation state (open phases, expanded how-tos) or re-syncs milestones.
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
-import { dedupeActionsAgainstPlan } from "@/lib/phases";
 import { DeveloperHandoffPanel, MilestoneDashboard } from "../MilestoneDashboard";
-import { StrategyExtras } from "../StrategyExtras";
-import type { StrategyAction, StructuredPlan } from "@/lib/types";
+import type { StructuredPlan } from "@/lib/types";
 import { QuestMap } from "./QuestMap";
 import { useQuestTracker } from "./useQuestTracker";
 
@@ -28,7 +26,6 @@ export function TrackerView({
   businessName,
   cmsType,
   facet,
-  profileActions,
   visible = true,
 }: {
   domain: string;
@@ -37,8 +34,6 @@ export function TrackerView({
   cmsType?: string | null;
   /** Which results tab is hosting the tracker right now (Roadmap = map, Strategy = list). */
   facet: TrackerFacet;
-  /** The audit's strategic actions — deduped against the plan for the Strategy facet. */
-  profileActions?: StrategyAction[];
   // False while the tracker is mounted but hidden behind another results tab — the map
   // defers its celebrations and "opened" analytics until it can actually be seen.
   visible?: boolean;
@@ -52,12 +47,10 @@ export function TrackerView({
   const [mounted, setMounted] = useState<Set<TrackerFacet>>(() => new Set<TrackerFacet>([facet]));
   if (!mounted.has(facet)) setMounted(new Set(mounted).add(facet));
 
-  // The old Roadmap tab's "big moves", minus everything the plan already tracks as a task.
-  const extraActions = useMemo(
-    () => dedupeActionsAgainstPlan(profileActions ?? [], plan),
-    [profileActions, plan],
-  );
-
+  // "Bigger strategic moves" used to render here, below the tracked list. It now lives in the
+  // Overview tab (Phase 3 item 3.3) — it is orientation, not a step you work, so it belongs
+  // beside the score rather than interrupting the do-this-next list. The dedupe against the
+  // plan still runs, once, in ResultsView; it just has one consumer now instead of two.
   return (
     <div>
       {mounted.has("map") && (
@@ -73,7 +66,6 @@ export function TrackerView({
             it for you.
           </p>
           <MilestoneDashboard tracker={tracker} />
-          {extraActions.length > 0 && <StrategyExtras actions={extraActions} />}
           <DeveloperHandoffPanel tracker={tracker} />
         </div>
       )}

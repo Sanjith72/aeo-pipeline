@@ -75,6 +75,41 @@ export function dedupeActionsAgainstPlan(
     .sort((x, y) => x.priority - y.priority);
 }
 
+/**
+ * What the "Bigger strategic moves" panel should render right now.
+ *
+ * Exists because moving that panel to the Overview tab (Phase 3 item 3.3) exposed a trap:
+ * Overview can paint long before the plan is built, and ``dedupeActionsAgainstPlan`` returns
+ * every action UNFILTERED when there are no tasks to compare against (see the early return
+ * above — correct for its own contract, wrong as a render input). Rendering that would show
+ * the raw audit list, and then silently drop entries a few seconds later as the plan arrives
+ * and the dedupe starts biting. The user would watch items vanish with no explanation.
+ *
+ * So the "we cannot dedupe yet" case gets its own state and its own copy, instead of being
+ * quietly rendered as if it were the final answer. Pure, so the rule is unit-tested once
+ * rather than re-derived at each call site.
+ */
+export type StrategyExtrasState =
+  | { kind: "ready"; actions: StrategyAction[] }
+  /** There ARE actions, but no plan yet — deduping is impossible, so say so. */
+  | { kind: "pending" }
+  /** Nothing to show: no actions at all, or none survived the dedupe. */
+  | { kind: "empty" };
+
+export function strategyExtrasState(
+  actions: StrategyAction[] | null | undefined,
+  plan: StructuredPlan | null | undefined,
+): StrategyExtrasState {
+  const all = actions ?? [];
+  if (all.length === 0) return { kind: "empty" };
+  // A plan with zero tasks is indistinguishable from no plan for dedupe purposes, and both
+  // make the filter a no-op — treat them the same rather than showing an unfiltered list.
+  const taskCount = plan?.phases?.flatMap((p) => p.tasks).length ?? 0;
+  if (taskCount === 0) return { kind: "pending" };
+  const deduped = dedupeActionsAgainstPlan(all, plan);
+  return deduped.length === 0 ? { kind: "empty" } : { kind: "ready", actions: deduped };
+}
+
 /** Group deduped actions by their phase, in roadmap order, dropping empty phases. */
 export function groupActionsByPhase(actions: StrategyAction[]): { key: PhaseKey; actions: StrategyAction[] }[] {
   const buckets: Record<PhaseKey, StrategyAction[]> = { week_1: [], week_2_4: [], later: [] };
