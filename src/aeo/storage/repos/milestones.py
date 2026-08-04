@@ -503,10 +503,16 @@ def generate_tickets_from_run(run_id: int, *, owner_user_id: str | None = None) 
             packs += 1
 
             live_keys: list[str] = []
+            # Which pages this run actually RE-SCORED, and which are in the pack at all. The
+            # prune below needs both to tell "this finding is gone" from "we never looked".
+            pages_in_pack: list[str] = []
+            scored_pages: list[str] = []
             for page in skill_scores_repo.detail_for_pack(run_id, pack_index):
                 detail = page.get("detail")
+                pages_in_pack.append(page["url"])
                 if not detail:  # unscored page → no baseline → skip (a later re-gen creates it)
                     continue
+                scored_pages.append(page["url"])
                 page_url = page["url"]
                 url_norm = normalize(page_url)
                 path = _url_path(page_url)
@@ -547,13 +553,36 @@ def generate_tickets_from_run(run_id: int, *, owner_user_id: str | None = None) 
             # marked done). NEVER delete closed_pending_verify or verified_completed tickets
             # — they hold the pinned baseline→current before/after record and the pack's
             # completion signal; deleting a verified ticket would destroy the CH-15 delta and
-            # re-lock an earned pack on the next audit. (An empty live_keys correctly clears
-            # all remaining phantom pending work while preserving verified history.)
-            cur.execute(
-                "DELETE FROM milestone_tasks WHERE milestone_id = %s "
-                "AND status IN ('pending', 'in_progress') AND NOT (task_key = ANY(%s))",
-                (milestone_id, live_keys),
-            )
+            # re-lock an earned pack on the next audit.
+            #
+            # DATA LOSS FIXED HERE. This used to prune on `task_key NOT IN live_keys` alone,
+            # with a comment claiming "an empty live_keys correctly clears all remaining
+            # phantom pending work". That is only true if the pages were actually looked at.
+            # Re-auditing an UNCHANGED site fingerprint-skips its pages, so they come back
+            # with no skill detail, contribute nothing to live_keys — and every open fix on
+            # them was silently deleted. A customer who re-ran their audit lost the work
+            # they had not finished yet. Observed on a real re-run: run N produced detail for
+            # a page, run N+1 skipped it, and all three of its pending tickets vanished.
+            #
+            # Absence is only evidence when we actually re-scored the page. So prune a
+            # pending ticket only if EITHER:
+            #   * its page was re-scored this run and the finding is genuinely gone, or
+            #   * its page has left the pack entirely (it is no longer ours to track).
+            # A ticket on a page that is still in the pack but was not re-scored is left
+            # alone. A NULL page_url matches neither arm (SQL NULL comparison yields NULL),
+            # so legacy rows we cannot attribute are kept — losing a user's work is far
+            # worse than carrying a stale row until the next real re-score.
+            #
+            # And if the run re-scored NOTHING in this pack, it learned nothing: skip the
+            # prune entirely rather than reason from an empty set.
+            if scored_pages:
+                cur.execute(
+                    "DELETE FROM milestone_tasks WHERE milestone_id = %s "
+                    "AND status IN ('pending', 'in_progress') "
+                    "AND NOT (task_key = ANY(%s)) "
+                    "AND (page_url = ANY(%s) OR NOT (page_url = ANY(%s)))",
+                    (milestone_id, live_keys, scored_pages, pages_in_pack),
+                )
         _recompute_statuses(cur, client_id)
     return {"tickets": tickets, "packs": packs}
 
