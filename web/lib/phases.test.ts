@@ -11,6 +11,7 @@ import {
   groupActionsByPhase,
   phaseDisplayTitle,
   phaseForAction,
+  strategyExtrasState,
 } from "./phases.ts";
 import type { PlanTask, StrategyAction, StructuredPlan } from "./types.ts";
 
@@ -95,4 +96,50 @@ test("groupActionsByPhase orders Quick Wins → Foundation → Growth & Scale an
   assert.deepEqual(groups.map((g) => g.key), ["week_1", "later"]);
   assert.equal(phaseDisplayTitle(groups[0].key, "x"), "Quick Wins");
   assert.equal(phaseDisplayTitle(groups[1].key, "x"), "Growth & Scale");
+});
+
+// ── strategyExtrasState (Phase 3 item 3.3) ────────────────────────────────────────
+// "Bigger strategic moves" now renders in the Overview tab, which can paint long before
+// the plan is built. dedupeActionsAgainstPlan returns every action UNFILTERED when there
+// are no tasks to compare against — correct for its own contract, wrong as a render input,
+// because the user would see the raw audit list and then watch entries silently vanish as
+// the plan arrives and the dedupe starts biting.
+
+test("pending while there is no plan to dedupe against", () => {
+  const actions = [action({ title: "Add a pricing page" })];
+  assert.equal(strategyExtrasState(actions, null).kind, "pending");
+  assert.equal(strategyExtrasState(actions, undefined).kind, "pending");
+});
+
+test("a plan with zero tasks is also pending, not an unfiltered list", () => {
+  // Indistinguishable from "no plan" for dedupe purposes — the filter is a no-op either
+  // way, so showing the list would be just as misleading.
+  assert.equal(strategyExtrasState([action({})], plan([])).kind, "pending");
+});
+
+test("ready once the plan exists, carrying the DEDUPED actions", () => {
+  const actions = [
+    action({ title: "Create an FAQ resource", related_slugs: ["/faq"] }),
+    action({ title: "Publish an original research report", priority: 2 }),
+  ];
+  const state = strategyExtrasState(actions, plan([task({ id: "page:/faq" })]));
+  assert.equal(state.kind, "ready");
+  assert.deepEqual(
+    state.kind === "ready" ? state.actions.map((a) => a.title) : [],
+    ["Publish an original research report"],
+    "the action the plan already tracks must not appear in Overview as well",
+  );
+});
+
+test("empty when there are no actions at all, regardless of plan", () => {
+  assert.equal(strategyExtrasState([], null).kind, "empty");
+  assert.equal(strategyExtrasState([], plan([task({})])).kind, "empty");
+  assert.equal(strategyExtrasState(null, null).kind, "empty");
+  assert.equal(strategyExtrasState(undefined, undefined).kind, "empty");
+});
+
+test("empty when the plan already covers everything", () => {
+  // Nothing survives the dedupe -> render nothing, rather than an empty titled card.
+  const actions = [action({ title: "Create an FAQ resource", related_slugs: ["/faq"] })];
+  assert.equal(strategyExtrasState(actions, plan([task({ id: "page:/faq" })])).kind, "empty");
 });
