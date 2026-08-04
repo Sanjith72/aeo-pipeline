@@ -19,7 +19,6 @@ import type {
   RecheckStatusResponse,
   SiteProfile,
   SitemapNode,
-  StrategyAction,
   StructuredPlan,
   VerifiedOutcome,
 } from "@/lib/types";
@@ -350,7 +349,6 @@ export function ResultsView({
       domain={domain?.trim() || undefined}
       businessName={businessName}
       cmsType={cmsType}
-      profileActions={profile?.actions ?? []}
       error={delivError}
       // Salt the local key with the domain so two plans that share a (possibly derived)
       // business name — e.g. a consultant's back-to-back no-site briefs — never load each
@@ -1599,7 +1597,6 @@ function PlanPanel({
   domain,
   businessName,
   cmsType,
-  profileActions,
   error,
   storageKey,
   resume,
@@ -1624,7 +1621,6 @@ function PlanPanel({
   businessName: string;
   cmsType?: string | null;
   // The audit's strategic actions, merged (deduped) into the Strategy list.
-  profileActions: StrategyAction[];
   error: string | null;
   storageKey: string;
   // Saved-plan hydration: seeds the no-domain checklist from the persisted /plan/<id> state.
