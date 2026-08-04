@@ -108,11 +108,23 @@ export function DisplayH2({
 }
 
 export function TopBar() {
-  // A frosted-glass bar: translucent + backdrop-blur in BOTH states so it always reads as glass over
-  // the dark hero, just deepening its tint and blur once content scrolls beneath it. The bright hairline
-  // border is the glass edge; the accent line along the bottom tracks reading progress — a spring chases
-  // the scroll position so it lands with weight instead of sticking to the thumb. (Blur is kept moderate:
-  // the bar is only ~50px tall, so it re-blurs a thin strip, not the whole viewport — cheap during scroll.)
+  // A tinted bar — deliberately NOT frosted glass any more.
+  //
+  // This used to carry `backdrop-blur-lg/md backdrop-saturate-150` in both states, on the
+  // reasoning that "the bar is only ~50px tall, so it re-blurs a thin strip, not the whole
+  // viewport — cheap during scroll". Cheap it may have been, but the visible result is the
+  // reported defect: a backdrop-filter samples whatever is behind it every frame, so text and
+  // images passing underneath during a scroll smear through the bar. That reads as the page
+  // blurring as you scroll down, which is exactly what it is.
+  //
+  // The fix is opacity instead of blur: once scrolled, the bar is essentially SOLID, so
+  // content passing beneath is hidden rather than smeared. Unscrolled it stays a light tint so
+  // the hero still reads through at the top of the page, where nothing is passing under it yet
+  // and there is nothing to smear. The glass EDGE is preserved — the hairline border and the
+  // reading-progress line below are untouched, so the bar keeps its shape and weight.
+  //
+  // Modal backdrops (AuthModal, UnlockModal, CheckpointModal, TaskDetailPanel) keep their
+  // blur on purpose: they sit over frozen content, so nothing moves beneath them to smear.
   const scrolled = useScrolled();
   const { scrollYProgress } = useScroll();
   const progress = useSpring(scrollYProgress, { stiffness: 140, damping: 28, restDelta: 0.001 });
@@ -120,8 +132,8 @@ export function TopBar() {
     <header
       className={`sticky top-0 z-40 border-b transition-all duration-300 ${
         scrolled
-          ? "border-white/10 bg-paper/50 shadow-card backdrop-blur-lg backdrop-saturate-150"
-          : "border-white/[0.08] bg-white/[0.05] backdrop-blur-md backdrop-saturate-150"
+          ? "border-white/10 bg-paper/95 shadow-card"
+          : "border-white/[0.08] bg-paper/30"
       }`}
     >
       <m.span
@@ -152,11 +164,13 @@ export function TopBar() {
           <a href="/agents" className="nav-link hidden sm:block">
             Agent Review
           </a>
+          {/* The "Get started" CTA that used to sit here is gone (Phase 3 item 3.1). Users
+              enter through the hero's "Analyze my site" field instead, which starts the real
+              flow with their domain already captured — a header link to a bare /studio asked
+              them to type it a second time. /studio is still reachable from HowItWorks ("Get
+              your real report") and the FAQ ("Still wondering? Get your free plan"), so no
+              route is orphaned. */}
           <AccountSlot />
-          <Link href="/studio" className="btn-primary group !px-4 !py-2 text-[13px]">
-            Get started
-            <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" width={13} height={13} />
-          </Link>
         </nav>
       </div>
     </header>
