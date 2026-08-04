@@ -30,6 +30,25 @@ import type { MilestoneStatus, SkillKey, SkillPriority, Ticket, TicketStatus } f
  */
 export const PACK_PHASE_ORDER: readonly PhaseKey[] = ["week_1", "week_2_4", "later"];
 
+/**
+ * The DOM id that ties one page×skill fix to its row in "Your plan" (Phase 3 item 3.5).
+ *
+ * The Pages tab lists a page's fixes and must link to the SAME task in Your plan, but the two
+ * surfaces read different endpoints: Pages has SkillPriority (skill + the page's url) while
+ * the plan has a Ticket whose task_key is `skill:<skill>@<url_normalized>` — normalised
+ * SERVER-side, by a Python helper this bundle has no equivalent of. Reimplementing that
+ * normalisation in TypeScript would be a second source of truth that silently rots the day
+ * the server's changes.
+ *
+ * So the anchor is derived from the two fields both sides already hold verbatim. They really
+ * are the same string: `generate_tickets_from_run` takes `page_url` straight from
+ * `detail_for_pack`, which is exactly what `GET /api/packs/{run}/{pack}` returns as
+ * `page.url`. One function, called from both, so they cannot disagree.
+ */
+export function packFixDomId(skill: string | null | undefined, pageUrl: string | null | undefined): string {
+  return `packfix:${skill ?? "?"}@${pageUrl ?? "?"}`;
+}
+
 /** A pack ticket wearing the plan's clothes. Keeps the ticket-only fields the plan has no
  *  equivalent for (the 4th status, the before/after scores) rather than flattening them
  *  away — the UI needs "Verifying…" to be distinguishable from "done". */

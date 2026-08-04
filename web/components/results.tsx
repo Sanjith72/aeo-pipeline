@@ -5,7 +5,7 @@
 // language here. The centerpiece is the interactive, phased plan (#10/#13): work it in
 // the app, check things off, with both an AI prompt and a human how-to per task.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import type {
@@ -30,6 +30,7 @@ import { CountUp, Tally, useReducedMotion } from "./motion/primitives";
 import { ArrowRight, Check, Sparkle } from "./ui/icons";
 import { TaskHowTo } from "./TaskHowTo";
 import { StrategyExtras } from "./StrategyExtras";
+import { PagesPanel } from "./PagesPanel";
 import { TrackerView, type PackPlanContext, type TrackerFacet } from "./quest/TrackerView";
 
 const EFFORT_PILL: Record<string, string> = {
@@ -41,7 +42,7 @@ const EFFORT_PILL: Record<string, string> = {
 // Phase rank for sorting the "Today" tray (earliest phase first).
 const PHASE_RANK: Record<string, number> = { week_1: 0, week_2_4: 1, later: 2 };
 
-type TabId = "overview" | "blueprint" | "actions" | "strategy" | "kit";
+type TabId = "overview" | "blueprint" | "actions" | "strategy" | "pages" | "kit";
 
 // ── canonical AEO score ring (Spec #1) ──────────────────────────────────────────
 
@@ -305,6 +306,9 @@ export function ResultsView({
     // the plan reads as one section, not two views of it (the quest map stays in the code
     // for a later retention slice; leading with the actionable list also honors CH-11f).
     ...(profile ? [{ id: "strategy" as const, label: "Your plan" }] : []),
+    // item 3.5 — page-by-page scores, their own tab rather than a wall under the pack
+    // grid. Only offered when there is actually a pack to show pages for.
+    ...(packContext ? [{ id: "pages" as const, label: "Pages" }] : []),
     // Bare-plan fallback (no profile → no Overview/Strategy tabs) keeps the plan reachable.
     ...(profile ? [] : [{ id: "kit" as const, label: "Your plan" }]),
   ];
@@ -316,6 +320,8 @@ export function ResultsView({
   // (criterion-honest). Surface any confirmed-implemented outcomes for this domain in the
   // overview. Best-effort — the API resolves to an empty set on any miss, so this never
   // breaks the results view.
+  /** Which pack fix to flash after a jump from the Pages tab (item 3.5). */
+  const [focusFix, setFocusFix] = useState<string | null>(null);
   const [recheck, setRecheck] = useState<RecheckStatusResponse>({ verified: [], pending: [], count: 0 });
   useEffect(() => {
     if (profile?.domain) api.recheckStatus(profile.domain).then(setRecheck).catch(() => {});
@@ -329,6 +335,31 @@ export function ResultsView({
     () => strategyExtrasState(profile?.actions ?? [], deliverables?.plan),
     [profile?.actions, deliverables?.plan],
   );
+
+  /** item 3.5 — take a fix in the Pages tab to the SAME task in Your plan.
+   *
+   *  Both surfaces derive the anchor from lib/packPlan.packFixDomId(skill, page_url), so
+   *  they cannot disagree about which row is meant. The plan panel is always mounted (just
+   *  hidden behind `hidden`), but a hidden element has no layout and cannot be scrolled to —
+   *  hence the rAF: switch the tab, let the browser lay the panel out, then scroll. It also
+   *  flashes the row, because scrolling someone to a list and leaving them to find the line
+   *  again is barely better than not moving at all. */
+  const openFixInPlan = useCallback((domId: string) => {
+    setTab("strategy");
+    // The highlight is STATE, not a className mutation. Adding the class imperatively looked
+    // fine and then vanished: the row is React-rendered, so the very re-render caused by
+    // switching tabs resets className and wipes it. Scrolling survives (the DOM owns scroll
+    // position); a ring does not.
+    setFocusFix(domId);
+    window.setTimeout(() => setFocusFix((cur) => (cur === domId ? null : cur)), 2400);
+    // The plan panel is always mounted but `hidden`, and a hidden element has no layout to
+    // scroll to — so wait for the tab switch to paint before scrolling.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document.getElementById(domId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+  }, []);
 
   // #6 — the old "reserve the tallest panel height" floor was removed: it left a large dead
   // space below shorter tabs (most visibly "Your plan" before a plan is built). The sticky
@@ -354,6 +385,7 @@ export function ResultsView({
       businessName={businessName}
       cmsType={cmsType}
       packContext={packContext}
+      focusFixId={focusFix}
       error={delivError}
       // Salt the local key with the domain so two plans that share a (possibly derived)
       // business name — e.g. a consultant's back-to-back no-site briefs — never load each
@@ -459,6 +491,16 @@ export function ResultsView({
                 </div>
               )}
             </>
+          )}
+          {tab === "pages" && packContext && (
+            <PagesPanel
+              runId={packContext.runId}
+              packs={packContext.packs}
+              selectedPack={packContext.selectedPack}
+              onSelectPack={packContext.onSelectPack}
+              onUnlock={packContext.onUnlock}
+              onOpenFixInPlan={openFixInPlan}
+            />
           )}
           {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
           {/* "actions" (Roadmap), "strategy", and "kit" are fully served by the
@@ -1603,6 +1645,7 @@ function PlanPanel({
   businessName,
   cmsType,
   packContext,
+  focusFixId,
   error,
   storageKey,
   resume,
@@ -1628,6 +1671,7 @@ function PlanPanel({
   cmsType?: string | null;
   /** Pack fixes to fold into this plan (item 3.4); absent on the no-domain path. */
   packContext?: PackPlanContext;
+  focusFixId?: string | null;
   error: string | null;
   storageKey: string;
   // Saved-plan hydration: seeds the no-domain checklist from the persisted /plan/<id> state.
@@ -1713,6 +1757,7 @@ function PlanPanel({
             cmsType={cmsType}
             facet={facet}
             packContext={packContext}
+            focusFixId={focusFixId}
             visible={visible}
           />
         ) : (
