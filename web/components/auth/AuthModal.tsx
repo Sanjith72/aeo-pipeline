@@ -8,8 +8,9 @@
 // .input, .btn-primary, label-mono). Rendered once at AuthProvider level; only mounted when
 // Supabase is configured.
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { classifySignUpFailure, resendCooldownRemaining } from "@/lib/authCallback";
 import { currentAccessToken, signInWithGoogle, supabase } from "@/lib/supabase";
 import { useAuth } from "./AuthProvider";
 
@@ -29,6 +30,44 @@ export function AuthModal() {
   const [googleBusy, setGoogleBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // "we sent you a confirmation mail" is its own state, not a notice string: it is the only
+  // state that can offer a resend, and it must read differently from a failure. Previously
+  // both were the same grey line, so "check your email" and "that didn't work" were
+  // indistinguishable at a glance.
+  const [awaitingConfirm, setAwaitingConfirm] = useState<string | null>(null);
+  const [resending, setResending] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+  const lastSentAt = useRef<number | null>(null);
+
+  // Tick the resend cooldown down. Supabase rate-limits confirmation mail to roughly one
+  // per minute, so a button that can be hammered only produces errors the user cannot act on.
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const id = setInterval(
+      () => setCooldown(resendCooldownRemaining(lastSentAt.current, Date.now())),
+      1000,
+    );
+    return () => clearInterval(id);
+  }, [cooldown]);
+
+  const resendConfirmation = useCallback(async () => {
+    if (!supabase || !awaitingConfirm || cooldown > 0) return;
+    setResending(true);
+    setError(null);
+    const { error: err } = await supabase.auth.resend({
+      type: "signup",
+      email: awaitingConfirm,
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=/studio` },
+    });
+    setResending(false);
+    if (err) {
+      setError(classifySignUpFailure(err.message).message);
+      return;
+    }
+    lastSentAt.current = Date.now();
+    setCooldown(resendCooldownRemaining(lastSentAt.current, Date.now()));
+    setNotice("Sent — check your inbox (and your spam folder).");
+  }, [awaitingConfirm, cooldown]);
 
   if (!authOpen) return null;
 
@@ -52,11 +91,20 @@ export function AuthModal() {
     setNotice(null);
     try {
       if (mode === "signup") {
-        const { data, error: err } = await supabase.auth.signUp({ email, password });
+        const { data, error: err } = await supabase.auth.signUp({
+          email,
+          password,
+          // Without this, `{{ .RedirectTo }}` is empty in the confirmation template and
+          // GoTrue falls back to the project's bare Site URL — so the link lands on the
+          // homepage instead of the callback that can actually complete the sign-in.
+          options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=/studio` },
+        });
         if (err) throw err;
         if (!data.session) {
-          setNotice("Check your email to confirm your account, then sign in.");
-          setMode("signin");
+          // Confirmation required. Stay on this screen with a resend affordance rather than
+          // flipping to sign-in — the user cannot sign in yet, and being dropped on a form
+          // that will reject them is what made this read as a failure.
+          setAwaitingConfirm(email);
           return;
         }
       } else {
@@ -73,7 +121,11 @@ export function AuthModal() {
       }
       closeAuth();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // Was the raw exception string, so the most common and most fixable case —
+      // "User already registered" — read like an internal error instead of "you already
+      // have an account, sign in".
+      const raw = err instanceof Error ? err.message : String(err);
+      setError(classifySignUpFailure(raw).message);
     } finally {
       setBusy(false);
     }
@@ -90,12 +142,51 @@ export function AuthModal() {
       <div className="card w-full max-w-[400px] p-6" onClick={(e) => e.stopPropagation()}>
         <div className="mb-1 flex items-baseline justify-between">
           <h2 className="text-[19px] font-semibold text-ink">
-            {mode === "signin" ? "Sign in" : "Create your account"}
+            {awaitingConfirm ? "Confirm your email" : mode === "signin" ? "Sign in" : "Create your account"}
           </h2>
           <button type="button" onClick={closeAuth} aria-label="Close" className="text-ink-300 hover:text-ink">
             ✕
           </button>
         </div>
+        {awaitingConfirm ? (
+          <>
+            <p className="mb-4 text-[13.5px] leading-[1.5] text-ink-500">
+              We sent a confirmation link to <strong className="text-ink">{awaitingConfirm}</strong>.
+              Open it and you&apos;ll be signed in automatically.
+            </p>
+            <p className="mb-4 text-[13px] leading-[1.5] text-ink-300">
+              Links are single-use, and email security scanners sometimes open them before you
+              do. If yours doesn&apos;t work, send a fresh one.
+            </p>
+            {error && <p className="mb-3 text-[13px] text-red-400">{error}</p>}
+            {notice && (
+              <p className="mb-3 text-[13px] text-accent" role="status">
+                {notice}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => void resendConfirmation()}
+              disabled={resending || cooldown > 0}
+              className="btn-primary w-full justify-center disabled:opacity-60"
+            >
+              {resending ? "Sending…" : cooldown > 0 ? `Resend (${cooldown}s)` : "Resend the link"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAwaitingConfirm(null);
+                setMode("signin");
+                setError(null);
+                setNotice(null);
+              }}
+              className="mt-4 text-[13px] text-ink-300 underline-offset-2 hover:text-ink hover:underline"
+            >
+              Back to sign in
+            </button>
+          </>
+        ) : (
+          <>
         {authReason && REASON_COPY[authReason] && (
           <p className="mb-4 text-[13.5px] leading-[1.5] text-ink-500">{REASON_COPY[authReason]}</p>
         )}
@@ -156,6 +247,8 @@ export function AuthModal() {
         >
           {mode === "signin" ? "New here? Create an account" : "Already have an account? Sign in"}
         </button>
+          </>
+        )}
       </div>
     </div>
   );
