@@ -122,8 +122,9 @@ def _check_agents(s: Settings, fatal: list[str]) -> None:
 
 def _check_api(s: Settings, fatal: list[str], warnings: list[str], *, serving: bool) -> None:
     api = s.api
-    if api.auth_key is not None and not api.auth_key.strip():
-        fatal.append("AEO__API__AUTH_KEY is set but blank — unset it or give it a real value")
+    # A blank AEO__API__AUTH_KEY no longer needs its own fatal: ApiCfg normalises it to None
+    # (matching AuthCfg), and the serving check below then reports it as the missing key it
+    # actually is, with an actionable message instead of one about whitespace.
     if api.rate_limit < 0 or api.rate_window_sec <= 0:
         fatal.append("AEO__API__RATE_LIMIT must be >= 0 and AEO__API__RATE_WINDOW_SEC > 0")
     # FATAL, not a warning. Serving with no auth_key is not merely "unauthenticated reads":

@@ -359,6 +359,22 @@ class ApiCfg(BaseModel):
     # honest daily volume in any public deployment.
     overview_global_daily_limit: int = 0
 
+    @field_validator("auth_key", "admin_key", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: Any) -> Any:
+        """Treat an empty/whitespace env value as UNSET — the same rule AuthCfg applies to
+        its credentials, for the same reason: `AEO__API__AUTH_KEY=` in a .env reads as "not
+        configured" to a human, so the config should agree with them.
+
+        This used to be a distinct fatal ("set but blank — unset it or give it a real
+        value"), which made blank and unset behave differently for no benefit. It is not a
+        loosening: serving with no key at all is now itself fatal, so the operator who typed
+        a bare `AEO__API__AUTH_KEY=` still cannot boot a public API — they just get the
+        message that tells them what to do about it instead of one about whitespace."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
 
 class AuthCfg(BaseModel):
     # v5 CH-07 Supabase-JWT user auth — a SEPARATE credential/boundary from ApiCfg.auth_key

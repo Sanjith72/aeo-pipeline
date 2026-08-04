@@ -196,7 +196,8 @@ async def execute_audit(
 
 
 def spawn_audit(
-    job_id: str, *, domain: str, name: str, force_recrawl: bool = False
+    job_id: str, *, domain: str, name: str, force_recrawl: bool = False,
+    owner_user_id: str | None = None,
 ) -> threading.Thread:
     """Run an audit on a dedicated daemon thread (with its own event loop) so a long
     crawl/score/analyze never blocks the API's event loop — keeping ``/api/audit/{id}``
@@ -204,7 +205,9 @@ def spawn_audit(
     ``default_audit_runner`` at call time so it stays monkeypatchable in tests.
 
     ``force_recrawl`` bypasses the fingerprint skip gate for this run; the audit also
-    polls ``Job.cancelled`` between pages so the client can abandon it (R2-2)."""
+    polls ``Job.cancelled`` between pages so the client can abandon it (R2-2).
+    ``owner_user_id`` is the verified id of whoever started the audit (P5) — it reaches
+    ticket generation so the resulting board is owned rather than anonymous."""
     base_runner = default_audit_runner
 
     def _should_cancel() -> bool:
@@ -213,7 +216,8 @@ def spawn_audit(
 
     async def runner(d: str, n: str, progress: ProgressFn | None) -> dict[str, Any]:
         return await base_runner(
-            d, n, progress, force_recrawl=force_recrawl, should_cancel=_should_cancel
+            d, n, progress, force_recrawl=force_recrawl, should_cancel=_should_cancel,
+            owner_user_id=owner_user_id,
         )
 
     def _run() -> None:
@@ -231,6 +235,7 @@ async def default_audit_runner(
     *,
     force_recrawl: bool = False,
     should_cancel: Callable[[], bool] | None = None,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     """The real deep audit: register the client target, then run the v4 weekly audit cycle
     (discover → blueprint → coverage → crawl → score → analyze → site report). Needs a live
@@ -250,6 +255,7 @@ async def default_audit_runner(
     return await Orchestrator(llm=get_bulk_client()).audit_cycle(
         domain, target=target, progress=progress,
         force_recrawl=force_recrawl, should_cancel=should_cancel,
+        owner_user_id=owner_user_id,
     )
 
 

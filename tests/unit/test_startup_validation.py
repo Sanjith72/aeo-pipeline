@@ -45,10 +45,19 @@ class TestFatal:
         with pytest.raises(StartupValidationError, match="AEO__LLM__PROVIDER"):
             validate_settings()
 
-    def test_blank_auth_key_is_rejected(self, settings):
-        settings.api.auth_key = "   "
-        with pytest.raises(StartupValidationError, match="AUTH_KEY"):
-            validate_settings()
+    def test_blank_auth_key_still_cannot_boot_a_public_api(self, settings):
+        """`AEO__API__AUTH_KEY=` in a .env now normalises to unset (ApiCfg._blank_is_unset)
+        rather than getting its own fatal about whitespace. The operator who typed it is
+        still stopped — by the check that tells them what to do — and a non-serving CLI
+        command no longer dies over a cosmetically empty line."""
+        from aeo.settings import ApiCfg
+
+        assert ApiCfg(auth_key="   ").auth_key is None
+        settings.api = ApiCfg(auth_key="   ")
+        with pytest.raises(StartupValidationError, match="AEO__API__AUTH_KEY"):
+            validate_settings(serving=True)
+        settings.api = ApiCfg(auth_key="   ")
+        assert validate_settings() == []  # not serving → no HTTP surface → not its problem
 
     def test_all_problems_reported_at_once(self, settings):
         settings.database = DatabaseCfg(url="mysql://x@h/db")

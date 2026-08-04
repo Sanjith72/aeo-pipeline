@@ -16,6 +16,23 @@ import os
 # scorer reaches for Ollama (which would otherwise hang on its 120s timeout).
 os.environ["AEO__LLM__ENABLED"] = "false"
 
+# Same trick, same timing, for the DEPLOYMENT-only credentials. pydantic-settings reads the
+# repo's .env file, so a developer who has real values there gets a different test suite
+# from CI, which has no .env at all: `require_api_key` 401s every TestClient request that
+# carries no X-API-Key header, and the JWT gate rejects the fabricated users these tests
+# inject. That is how ~20 tests across test_tickets.py and test_payments.py could fail on a
+# working machine while main stayed green — a suite whose result depends on an untracked
+# file is reporting on the file, not the code.
+#
+# Blank rather than delete: an empty value reads as "unset" everywhere (ApiCfg treats it as
+# falsy, AuthCfg has an explicit blank-is-unset validator) and, unlike `del`, it also
+# overrides whatever the .env would otherwise supply. Tests that need a key set it themselves.
+os.environ["AEO__API__AUTH_KEY"] = ""
+os.environ["AEO__API__ADMIN_KEY"] = ""
+os.environ["AEO__AUTH__JWT_SECRET"] = ""
+os.environ["AEO__AUTH__JWKS_URL"] = ""
+os.environ["AEO__AUTH__JWT_ISSUER"] = ""
+
 from pathlib import Path
 
 import pytest

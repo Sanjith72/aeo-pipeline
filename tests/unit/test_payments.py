@@ -503,6 +503,11 @@ def _validate(monkeypatch, **env):
     from aeo.settings import get_settings
     from aeo.startup import StartupValidationError, validate_settings
 
+    # These tests are about the PAYMENTS half of startup validation. Serving with no
+    # AEO__API__AUTH_KEY is independently fatal (an open /api/entitlements/grant), which
+    # would mask every payments assertion below with an unrelated error, so declare the
+    # localhost posture explicitly. Individual tests override it when the key is the subject.
+    monkeypatch.setenv("AEO__API__ALLOW_OPEN", "1")
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     get_settings.cache_clear()
@@ -575,6 +580,9 @@ def test_jwks_only_deployment_is_not_reported_as_auth_disabled(monkeypatch):
 
     monkeypatch.setenv("AEO__AUTH__JWT_SECRET", "")
     monkeypatch.setenv("AEO__AUTH__JWKS_URL", "https://p.supabase.co/auth/v1/.well-known/jwks.json")
+    # This test is about the USER-auth warning; the separate service-key check is fatal when
+    # serving, and would abort the run before any warning could be collected.
+    monkeypatch.setenv("AEO__API__ALLOW_OPEN", "1")
     get_settings.cache_clear()
     from aeo.startup import validate_settings
 
