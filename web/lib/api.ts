@@ -6,6 +6,7 @@ import type {
   AgentRunDetail,
   AgentRunSummary,
   AgentStreamMessage,
+  AppCapabilities,
   AuditJob,
   BriefPlan,
   BriefRequest,
@@ -249,8 +250,23 @@ export const api = {
   /** Start Stripe Checkout for one pack (v5 CH-02b, flat price per pack). Returns the
    *  hosted checkout URL to redirect to. The BUYER is never sent — the server takes it
    *  from the verified JWT. 503 = payments unconfigured, 409 = already unlocked. */
-  checkoutPack(domain: string, packIndex: number): Promise<{ checkout_url: string; session_id: string }> {
-    return postJson("/api/checkout/pack", { domain, pack_index: packIndex });
+  checkoutPack(domain: string, packIndex: number, runId?: number): Promise<{ checkout_url: string; session_id: string }> {
+    return postJson("/api/checkout/pack", { domain, pack_index: packIndex, run_id: runId });
+  },
+
+  /** What this INSTANCE can do, so the UI never offers a path that will 503. Booleans only —
+   *  no keys, no lengths, no counts. Unauthenticated; safe to call before sign-in.
+   *  Never throws: a failed probe degrades to "assume everything is on", which restores
+   *  exactly today's behaviour (offer it, let the 503 backstop explain) rather than hiding
+   *  a working Buy button because one fetch blipped. */
+  async getConfig(): Promise<AppCapabilities> {
+    try {
+      const res = await fetch(`${BASE}/api/config`, { headers: headers() });
+      if (!res.ok) throw new Error(`API ${res.status}`);
+      return (await res.json()) as AppCapabilities;
+    } catch {
+      return { payments_enabled: true, promo_enabled: true, auth_enabled: true, unknown: true };
+    }
   },
 
   // ── auth (v5 CH-07) ────────────────────────────────────────────────────────

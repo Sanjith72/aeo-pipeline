@@ -440,7 +440,15 @@ class AuthCfg(BaseModel):
 
     @property
     def promo_code_set(self) -> frozenset[str]:
-        return frozenset(c.strip() for c in self.promo_codes.split(",") if c.strip())
+        """Configured promo codes, normalised for COMPARISON: stripped and casefolded.
+
+        Codes reach us off a launch email, a slide, or a conference badge, retyped by hand
+        and frequently autocapitalised by a phone keyboard. Comparing them exactly meant
+        ``save20``, ``SAVE20 `` and ``Save20`` were three different codes, two of which
+        returned "invalid or expired" — wording that tells the user the code is dead when
+        the code is fine. Callers MUST normalise the submitted code the same way
+        (``redeem_promo`` does); this property is the single definition of that rule."""
+        return frozenset(c.strip().casefold() for c in self.promo_codes.split(",") if c.strip())
 
 
 class PaymentsCfg(BaseModel):
