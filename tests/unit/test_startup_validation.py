@@ -87,6 +87,19 @@ class TestWarnings:
         with pytest.raises(StartupValidationError, match="AEO__API__AUTH_KEY"):
             validate_settings(serving=True)
 
+    def test_a_blank_allow_open_reads_as_off_rather_than_exploding(self):
+        """`AEO__API__ALLOW_OPEN=` must resolve to False, not raise. Pydantic cannot coerce
+        "" to a bool, so without the validator a blank line in a .env or an emptied dashboard
+        variable aborts startup with a raw ValidationError — thrown while Settings is being
+        CONSTRUCTED, so validate_settings never runs and none of the actionable messages
+        print. That is precisely how this deployment's Space died on a blank AUTH_KEY: an
+        unhelpful error instead of the one naming the fix. A safety switch must fail safe."""
+        from aeo.settings import ApiCfg
+
+        assert ApiCfg(allow_open="").allow_open is False
+        assert ApiCfg(allow_open="   ").allow_open is False
+        assert ApiCfg(allow_open="1").allow_open is True
+
     def test_allow_open_is_the_named_escape_hatch(self, settings):
         # Local dev (scripts/run.ps1, docker compose) binds to localhost and legitimately
         # runs with no key — but has to SAY so. Downgraded to a loud warning, never silent.

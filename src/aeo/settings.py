@@ -359,6 +359,19 @@ class ApiCfg(BaseModel):
     # honest daily volume in any public deployment.
     overview_global_daily_limit: int = 0
 
+    @field_validator("allow_open", mode="before")
+    @classmethod
+    def _blank_is_off(cls, v: Any) -> Any:
+        """`AEO__API__ALLOW_OPEN=` must read as OFF, not explode. Pydantic cannot coerce ""
+        to a bool, so without this a blank line in a .env or a dashboard variable left empty
+        aborts startup with a raw pydantic ValidationError — before validate_settings runs,
+        so none of the actionable messages ever print. Exactly the failure this deployment
+        already hit with a blank AEO__API__AUTH_KEY. Blank means "I did not set this", and
+        for a safety switch that must resolve to the safe side."""
+        if isinstance(v, str) and not v.strip():
+            return False
+        return v
+
     @field_validator("auth_key", "admin_key", mode="before")
     @classmethod
     def _blank_is_unset(cls, v: Any) -> Any:
