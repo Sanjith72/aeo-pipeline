@@ -285,9 +285,10 @@ def claims(monkeypatch):
 
 
 def test_authenticated_read_claims_an_unowned_board(tickets_api, claims, monkeypatch):
-    """The route the UI actually calls. web/lib/api.ts::getPackTickets is the only ticket
-    reader wired up (TicketBoard.tsx); getTickets has no caller at all — so claiming solely
-    on the run-wide route would have left every real board unowned while looking correct."""
+    """The route the UI reads a pack's fixes from (web/lib/api.ts::getPackTickets ←
+    quest/PackPlanSection.tsx). The run-wide route is fetched only for its
+    locked_ticket_count, so claiming solely there would leave a board unowned for any user
+    whose plan never needed that count."""
     client, app_mod = tickets_api
     _as_user(monkeypatch, app_mod, "user-a")
     try:

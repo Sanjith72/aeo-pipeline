@@ -67,6 +67,9 @@ export function PackPlanSection({
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
   const [priorities, setPriorities] = useState<SkillPriority[]>([]);
   const [locked, setLocked] = useState(false);
+  /** How many fixes sit behind packs this viewer has not unlocked. `null` = we don't know
+   *  (the probe failed) — which must render as nothing, never as "0 more fixes". */
+  const [lockedFixCount, setLockedFixCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -116,6 +119,34 @@ export function PackPlanSection({
     };
   }, [runId, selectedPack, load]);
 
+  // Phase 4 item 4.1 — how much is behind the paywall, from the server's own count.
+  //
+  // `GET /api/tickets/{run}` filters its response to the viewer's unlocked packs and reports
+  // `locked_ticket_count` for the rest, precisely so a UI can say "N more fixes" without the
+  // findings themselves ever reaching the browser. Nothing consumed it: the count was
+  // computed on every request and thrown away, and `api.getTickets` had no caller at all.
+  // The pack selector below is where a user meets the paywall, so this is its natural home.
+  //
+  // Re-runs when the LOCKED SET changes, not just on runId: unlocking a pack must drop the
+  // count. Deliberately best-effort — a failure leaves the count unknown and renders nothing
+  // rather than breaking the plan over a decoration. (This request also claims an unowned
+  // board for a signed-in viewer, which is the P5 behaviour the route is built for.)
+  const lockedKey = packs.filter((p) => p.locked).map((p) => p.pack_index).join(",");
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getTickets(runId)
+      .then((res) => {
+        if (!cancelled) setLockedFixCount(res.locked_ticket_count ?? 0);
+      })
+      .catch(() => {
+        if (!cancelled) setLockedFixCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runId, lockedKey]);
+
   // Poll only while something is actually awaiting its crawl, and stop the moment nothing
   // is — an always-on interval on a results page is a needless request every 5s forever.
   const anyVerifying = tickets?.some((t) => t.status === "closed_pending_verify") ?? false;
@@ -152,7 +183,12 @@ export function PackPlanSection({
 
   return (
     <div className="space-y-4">
-      <PackSelector packs={packs} selected={selectedPack} onSelect={onSelectPack} />
+      <PackSelector
+        packs={packs}
+        selected={selectedPack}
+        onSelect={onSelectPack}
+        lockedFixCount={lockedFixCount}
+      />
 
       {selectedPack == null ? (
         <p className="rounded-xl border border-dashed border-ink/15 p-5 text-sm text-ink-500">
@@ -247,10 +283,13 @@ function PackSelector({
   packs,
   selected,
   onSelect,
+  lockedFixCount,
 }: {
   packs: PackPreview[];
   selected: number | null;
   onSelect: (packIndex: number) => void;
+  /** Server-counted fixes behind locked packs; `null` when unknown — render nothing then. */
+  lockedFixCount: number | null;
 }) {
   return (
     <div className="card p-4">
@@ -276,6 +315,16 @@ function PackSelector({
           );
         })}
       </div>
+      {/* The count the server already computes for exactly this sentence. Shown only when
+          there IS something behind the lock and we actually know how much — "0 more fixes"
+          and a confident number we failed to fetch are both worse than silence. */}
+      {lockedFixCount != null && lockedFixCount > 0 && (
+        <p className="mt-2.5 text-[12.5px] text-ink-500">
+          <span aria-hidden>🔒</span> {lockedFixCount} more fix
+          {lockedFixCount === 1 ? "" : "es"} {lockedFixCount === 1 ? "is" : "are"} in locked
+          packs. Pick one above to see what it covers.
+        </p>
+      )}
     </div>
   );
 }

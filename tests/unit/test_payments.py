@@ -431,14 +431,18 @@ def test_grant_requires_the_admin_key_when_configured(monkeypatch):
 
 def test_proxy_denylist_blocks_the_grant_path():
     """Second layer: the Next proxy must not forward the admin route at all."""
-    import re
     from pathlib import Path
 
     src = Path("web/app/api/[...path]/route.ts").read_text(encoding="utf-8")
     assert "BLOCKED_PATHS" in src
     assert "entitlements/grant" in src
-    # the guard must run BEFORE the target URL is built
-    assert re.search(r"BLOCKED_PATHS\.has\([^)]*\)[\s\S]{0,200}?const target", src)
+    # The guard must run BEFORE the target URL is built. Asserted as ORDER, not as a
+    # character-distance window: the window version broke the moment another early-return
+    # (the no-backend-configured 503) was added between the two, reporting a security
+    # regression that had not happened.
+    guard = src.index("BLOCKED_PATHS.has(")
+    target = src.index("const target")
+    assert guard < target, "the denylist must be checked before the backend URL is built"
 
 
 def test_payments_disabled_without_a_webhook_secret(monkeypatch):

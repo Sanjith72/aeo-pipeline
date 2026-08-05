@@ -3,9 +3,19 @@
 # AEO Studio web (Next.js) — slim standalone runtime image.
 #   docker build -t aeo-web .
 #
-# The API is reached ONLY through the server-side proxy (app/api/[...path]/route.ts),
-# configured at RUNTIME with API_BASE_URL (+ API_KEY, injected server-side — nothing
-# secret ships to the browser). No build args needed.
+# Two different lifetimes, and mixing them up is the classic failure here:
+#
+#   RUNTIME  API_BASE_URL, API_KEY — the API is reached ONLY through the server-side proxy
+#            (app/api/[...path]/route.ts), which injects the key server-side, so nothing
+#            secret ships to the browser. Pass these as `environment:`; they are read on
+#            every request, so changing one needs a restart, not a rebuild.
+#
+#   BUILD    NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY — `next build` INLINES
+#            NEXT_PUBLIC_* into the bundle, so these must be present as build args below.
+#            Passing them as `environment:` does nothing at all (see the ARG block).
+#
+# So build args ARE needed — for the Supabase pair only. docker-compose.yml passes each
+# variable in the right place.
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
