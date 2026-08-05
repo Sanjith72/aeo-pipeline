@@ -20,6 +20,7 @@ import {
   useSpring,
 } from "@/components/motion/primitives";
 import { FAQ_ITEMS } from "@/lib/faq";
+import { HERO_DOMAIN_INPUT_ID, focusHeroInputWhenReady } from "@/lib/heroFocus";
 import { useAuth } from "./auth/AuthProvider";
 import { HorizonHero } from "./ui/horizon-hero";
 import { useScrolled } from "./ui/hooks";
@@ -167,9 +168,10 @@ export function TopBar() {
           {/* The "Get started" CTA that used to sit here is gone (Phase 3 item 3.1). Users
               enter through the hero's "Analyze my site" field instead, which starts the real
               flow with their domain already captured — a header link to a bare /studio asked
-              them to type it a second time. /studio is still reachable from HowItWorks ("Get
-              your real report") and the FAQ ("Still wondering? Get your free plan"), so no
-              route is orphaned. */}
+              them to type it a second time. The sample report's "Get your real report" now
+              scrolls back to that same field for the same reason, so the FAQ's "Still
+              wondering? Get your free plan" is the one remaining link into /studio and the
+              route is not orphaned. */}
           <AccountSlot />
         </nav>
       </div>
@@ -253,6 +255,50 @@ function Meter({ value, label }: { value: number; label: string }) {
   );
 }
 
+/** The CTA under the sample report: back up to the hero's "yourwebsite.com" field.
+ *
+ *  It used to be a <Link href="/studio">. That sent a visitor who had just been shown what a
+ *  report looks like to a different page with none of that context, where the first thing
+ *  asked of them is the domain the landing page already has a field for. The promise of the
+ *  button is "get your real report", and the one control that starts a real report is the
+ *  hero form at the top of this same page — so that is where it goes now.
+ *
+ *  A button, not an anchor: there is no destination document, and #hash navigation would jump
+ *  instantly past the hero's scroll-driven flythrough instead of rewinding through it.
+ *  /studio itself is not orphaned — the FAQ's "Still wondering? Get your free plan" links
+ *  there for anyone who wants the wizard directly.
+ *
+ *  Moving focus is not decoration: without it the page scrolls away underneath a keyboard
+ *  user while their focus stays on the (now off-screen) button, and the field they were sent
+ *  to has to be hunted for. See lib/heroFocus.ts for why the focus has to wait for the
+ *  scroll. */
+function BackToHeroFormButton({ children }: { children: ReactNode }) {
+  const reduced = useReducedMotion();
+  return (
+    <button
+      type="button"
+      className="btn-primary group inline-flex"
+      onClick={() => {
+        window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
+        focusHeroInputWhenReady<HTMLElement>({
+          find: () => document.getElementById(HERO_DOMAIN_INPUT_ID),
+          // The hero parks its inactive beats at visibility:hidden, which the input inherits,
+          // and a hidden input silently refuses focus. preventScroll so a landed focus never
+          // cuts the smooth scroll short by yanking the field into view itself.
+          tryFocus: (el) => {
+            el.focus({ preventScroll: true });
+            return document.activeElement === el;
+          },
+          now: () => performance.now(),
+          schedule: (cb) => window.requestAnimationFrame(cb),
+        });
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 // CH-11c — a real result PREVIEW near the hero, so a first-time visitor sees the deliverable
 // (a scored report + ranked fixes) before committing. Static; no API call, no image.
 export function ReportPreview() {
@@ -295,10 +341,10 @@ export function ReportPreview() {
           </div>
         </Reveal>
         <div className="mt-7 text-center">
-          <Link href="/studio" className="btn-primary group inline-flex">
+          <BackToHeroFormButton>
             Get your real report
             <ArrowRight className="transition-transform duration-200 group-hover:translate-x-0.5" width={13} height={13} />
-          </Link>
+          </BackToHeroFormButton>
         </div>
       </div>
     </section>
