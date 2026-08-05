@@ -19,6 +19,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { EASE_OUT, m } from "@/components/motion/primitives";
 import { ArrowRight } from "@/components/ui/icons";
 import { LiquidButton } from "@/components/ui/liquid-glass";
+import { HERO_DOMAIN_INPUT_ID } from "@/lib/heroFocus";
 import type { CamTarget } from "@/components/ui/horizon-cosmos";
 
 const HorizonCosmos = dynamic(
@@ -309,6 +310,9 @@ function HeroUrlForm() {
         }}
       >
         <input
+          // Stable id so "Get your real report" further down the page can scroll back here
+          // and land the cursor in this exact field (lib/heroFocus.ts).
+          id={HERO_DOMAIN_INPUT_ID}
           type="text"
           inputMode="url"
           autoComplete="url"
