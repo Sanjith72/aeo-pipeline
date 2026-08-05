@@ -44,8 +44,26 @@ Optional add-ons (off by default): `--profile llm up -d ollama` (local LLM),
 migrations run automatically and the DB is bundled.
 
 Images: backend = the repo `Dockerfile` (`pip install ".[api]"` + Chromium for crawling);
-web = `web/Dockerfile` (Next.js standalone). `NEXT_PUBLIC_API_BASE` is baked into the web image
-at build time, so it defaults to the browser-reachable `http://localhost:8000`.
+web = `web/Dockerfile` (Next.js standalone).
+
+**How the web image reaches the API.** The browser never calls the backend directly — every
+`/api/*` request goes to the Next.js server-side proxy (`web/app/api/[...path]/route.ts`),
+which forwards it and injects the `X-API-Key` header. So the two variables that matter are
+read at **runtime**, not baked in:
+
+| Variable | When | Set in compose as |
+|---|---|---|
+| `API_BASE_URL` | runtime | `environment:` → `http://api:8000` (the in-network service) |
+| `API_KEY` | runtime | `environment:` → the same value as `AEO__API__AUTH_KEY` |
+| `NEXT_PUBLIC_SUPABASE_URL` | **build** | `build.args:` — inlined by `next build` |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | **build** | `build.args:` — inlined by `next build` |
+
+The Supabase pair is the exception, and the reason `web/Dockerfile` takes build args at all:
+`NEXT_PUBLIC_*` values are substituted into the bundle during `next build` and are **not**
+read from the environment at runtime. Passing them as `environment:` does nothing — the image
+ships with auth disabled (no Sign-in button, every pack gate open to the anonymous tier).
+`docker-compose.yml` already passes each one in the right place; copy that split if you build
+the image yourself.
 
 ---
 
@@ -82,6 +100,16 @@ authorization boundary — the web proxy hands it to every visitor's browser, so
 authenticates the *proxy*, not the person. Symptom of getting this half-right: manual and
 promo grants fail with a 503 that mentions nothing about payments. Never reuse the same
 value for both. Startup logs a warning naming this exact pairing.
+
+**Vercel env scopes — the thing that breaks every preview deployment.** Vercel scopes each
+variable to Production / Preview / Development independently, and the "Production" default in
+the UI is a trap: with `API_BASE_URL` and `API_KEY` set for Production only, every `/api/*`
+call on a preview build falls back to `http://localhost:8000` *inside the serverless function*
+and fails. Re-add both with **all three boxes ticked** (Settings → Environment Variables), and
+do the same for the Supabase pair — those are build-time inlined, so they additionally need a
+**redeploy**, not just a save. The proxy now detects this exact state and answers **503** with
+the variable named, plus one server-side log line in Vercel's function logs, instead of the old
+generic 502 that looked like a backend outage.
 
 **What about Railway?** `railway.json` ships ready to deploy the same image
 (build = Dockerfile, predeploy `aeo migrate`, start `aeo serve`, healthcheck `/api/health`)
@@ -205,21 +233,118 @@ commit — a plain restart reuses the cached layer. Factory rebuild, then re-che
 
 ---
 
+## E. Payments (Stripe Checkout) — and the two ways to half-configure it
+
+Pricing is a **flat price per pack**. Buying one grants exactly `scope='pack', pack_index=N`
+— the same entitlement a promo code or a manual grant produces, so payment is a new *source*,
+not a new access model. Leave it unconfigured and the buy path 503s while promo and manual
+grants keep working; `GET /api/config` reports `payments_enabled:false` so the UI hides the
+Buy button instead of offering one that fails.
+
+**1. Stripe Dashboard → Developers → API keys** — copy the **Secret key**
+(`sk_test_…` while testing, `sk_live_…` when real) → `AEO__PAYMENTS__STRIPE_SECRET_KEY`.
+
+**2. Developers → Webhooks → Add endpoint.**
+
+```
+URL      https://<your-api-host>/api/webhooks/stripe
+Events   checkout.session.completed
+         checkout.session.async_payment_succeeded
+```
+
+**Both events, not one.** Cards settle instantly and arrive on the first. Delayed methods
+(ACH / SEPA / Bacs) arrive **unpaid** on the first and only pay on the second — subscribe to
+`completed` alone and those customers are charged and never granted their pack, silently.
+Copy the endpoint's **signing secret** (`whsec_…`) → `AEO__PAYMENTS__WEBHOOK_SECRET`. It is
+the only credential on that route, which is exempt from the `X-API-Key` guard because Stripe
+cannot send one. The webhook is the **only** thing that turns money into an entitlement.
+
+**3. `AEO__PAYMENTS__PUBLIC_APP_URL`** — the public **web app** origin, e.g.
+`https://aeo-studio-nine.vercel.app`.
+
+### The two half-configurations, and why both are fatal at boot
+
+Neither of these looks broken from a dashboard, which is why startup validation
+(`src/aeo/startup.py::_check_payments`) refuses to serve rather than warn:
+
+| Half-configuration | What the customer experiences |
+|---|---|
+| Secret key set, **webhook secret missing** | Checkout succeeds and the card is charged. Every webhook delivery fails signature verification, so no entitlement is ever written, and Stripe gives up retrying after ~3 days. Money taken, nothing delivered, no error anywhere in your logs. |
+| Payments on, **`PUBLIC_APP_URL` missing** | `create_pack_checkout` falls back to the request origin — which behind the Next.js proxy is the **backend's** host. Stripe returns the paying buyer to `<api-host>/studio`, a route the API does not serve. A 404 immediately after a successful charge. |
+
+So the key and the webhook secret must be set **together**, and `PUBLIC_APP_URL` must be set
+whenever payments are on. A Space missing any of them will now fail to boot with the reason
+named in its startup log, instead of booting happily and selling something it cannot deliver.
+
+### Test it end to end before going live
+
+1. Use a **test-mode** secret key and the test endpoint's own `whsec_…`.
+2. Buy a pack with card `4242 4242 4242 4242`, any future expiry, any CVC.
+3. Locally, skip the public URL entirely:
+   `stripe listen --forward-to localhost:8000/api/webhooks/stripe` — it prints a `whsec_…` of
+   its own; use that as `WEBHOOK_SECRET` while testing.
+4. Replay without paying again: `stripe trigger checkout.session.completed`.
+5. Confirm the grant landed: the buyer returns to `/studio?checkout=success`, the studio polls
+   entitlements until the (asynchronous) webhook grant appears, and the bought pack opens
+   unlocked. A pack still locked after ~20s means the webhook never arrived — check
+   **Stripe → Developers → Webhooks → the endpoint → Recent deliveries**, not the app.
+
+---
+
 ## Environment reference
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `DATABASE_URL` | Postgres connection (deep audit + reports); query params like `?sslmode=require` are honored | `postgresql://aeo:aeo@localhost:5432/aeo` |
-| `AEO__LLM__ENABLED` | use the LLM (else deterministic) | `true` |
-| `AEO__LLM__PROVIDER` | `hybrid` (Gemini+Qwen router) \| `gemini` \| `qwen` \| `ollama` \| `cloud` | `ollama` |
-| `AEO__LLM__GEMINI_API_KEY` | Gemini side of the hybrid router (AI Studio key, no-billing project) | — |
-| `AEO__LLM__QWEN_API_KEY` | Qwen side (Groq free plan by default) | — |
-| `AEO__LLM__QWEN_FALLBACK_API_KEY` | optional OpenRouter `:free` fallback | — |
-| `AEO__AGENTS__MODE` | `react` (agentic loop) or `ladder` (fixed sequence) | `react` |
-| `AEO__API__AUTH_KEY` | require `X-API-Key` on `/api/*`. **Required to serve** — `aeo serve` refuses to boot without it (or `ALLOW_OPEN`) | unset → **fatal at boot** |
-| `AEO__API__ADMIN_KEY` | `X-Admin-Key` for the entitlement-MINTING routes. Must differ from `AUTH_KEY`. **Set it whenever you set `AUTH_KEY`** — admin routes 503 until you do | unset (admin routes disabled) |
-| `AEO__API__ALLOW_OPEN` | localhost-only escape hatch: permits serving with no `AUTH_KEY`. **Never set on a public host** | unset |
-| `API_BASE_URL` / `API_KEY` | (web host, runtime) backend URL + key for the server-side proxy | `http://localhost:8000` / unset |
-| `AEO__AUTH__JWKS_URL` | verify Supabase user tokens against the project's public keys — for projects using **asymmetric** JWT signing keys (`https://<ref>.supabase.co/auth/v1/.well-known/jwks.json`) | unset |
-| `AEO__AUTH__JWT_SECRET` | verify user tokens with the **legacy shared secret** instead. Set this *or* `JWKS_URL`, not usually both. Neither → auth is open and nothing is gated | unset |
-| `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | (web host, **build time**) the browser auth client. Unset → no Sign-in button renders and everything stays anonymous. Changing them requires a **redeploy** | unset |
+Cross-checked against `src/aeo/settings.py` and `.env.example`. "Required" means *required for
+a public deployment* — the local dev defaults are deliberately permissive.
+
+### Core
+
+| Variable | Req? | Purpose | Default |
+|---|---|---|---|
+| `DATABASE_URL` | **yes** | Postgres connection (deep audit + reports); query params like `?sslmode=require` are honored. The Space's disk is ephemeral, so this is where ALL state lives | `postgresql://aeo:aeo@localhost:5432/aeo` |
+| `AEO__LLM__ENABLED` | no | use the LLM (else deterministic) | `true` |
+| `AEO__LLM__PROVIDER` | no | `hybrid` (Gemini+Qwen router) \| `gemini` \| `qwen` \| `ollama` \| `cloud` | `ollama` |
+| `AEO__LLM__GEMINI_API_KEY` | for `hybrid` | Gemini side of the hybrid router (AI Studio key, no-billing project) | — |
+| `AEO__LLM__QWEN_API_KEY` | for `hybrid` | Qwen side (Groq free plan by default) | — |
+| `AEO__LLM__QWEN_FALLBACK_API_KEY` | no | optional OpenRouter `:free` fallback | — |
+| `AEO__AGENTS__MODE` | no | `react` (agentic loop) or `ladder` (fixed sequence) | `react` |
+
+### API surface
+
+| Variable | Req? | Purpose | Default |
+|---|---|---|---|
+| `AEO__API__AUTH_KEY` | **yes** | require `X-API-Key` on `/api/*`. `aeo serve` refuses to boot without it (or `ALLOW_OPEN`) | unset → **fatal at boot** |
+| `AEO__API__ADMIN_KEY` | **with `AUTH_KEY`** | `X-Admin-Key` for the entitlement-MINTING routes. Must differ from `AUTH_KEY` — admin routes 503 until you set it | unset (admin routes disabled) |
+| `AEO__API__ALLOW_OPEN` | no | localhost-only escape hatch: permits serving with no `AUTH_KEY`. **Never set on a public host** | unset |
+| `AEO__API__CORS_ORIGINS` | **yes** | comma-separated browser origins allowed to call the API. Must list your deployed web origin | `http://localhost:3000,http://127.0.0.1:3000` |
+| `AEO__API__RATE_LIMIT` / `AEO__API__RATE_WINDOW_SEC` | recommended | per-IP `/api/*` throttle. `0` disables it; startup **warns** on a public deploy without it | `0` / `60` |
+| `AEO__API__OVERVIEW_DAILY_LIMIT` | recommended | fresh (non-cached) overview builds per IP per day — the expensive path. `0` disables | `0` |
+| `AEO__API__OVERVIEW_GLOBAL_DAILY_LIMIT` | recommended | global ceiling on fresh overview builds; the backstop the per-IP cap cannot provide, since `X-Forwarded-For` is spoofable | `0` |
+
+### User auth (Supabase JWT) — a separate boundary from `AUTH_KEY`
+
+| Variable | Req? | Purpose | Default |
+|---|---|---|---|
+| `AEO__AUTH__JWKS_URL` | one of the two | verify user tokens against the project's public keys — for **asymmetric** projects, the current Supabase default (`https://<ref>.supabase.co/auth/v1/.well-known/jwks.json`) | unset |
+| `AEO__AUTH__JWT_SECRET` | one of the two | verify with the **legacy shared secret** instead. Neither set → auth is open and nothing is gated | unset |
+| `AEO__AUTH__JWT_ISSUER` | recommended | pin `https://<ref>.supabase.co/auth/v1` so a token minted for another project is refused. **No trailing slash** — the compare is exact and one slash 401s every login (fatal at boot) | unset |
+| `AEO__AUTH__PROMO_CODES` | for promos | comma-separated codes redeeming to an `all_packs` grant. Empty → every code is a 422. Works with or without Stripe | `""` |
+
+### Payments (Stripe) — see section E
+
+| Variable | Req? | Purpose | Default |
+|---|---|---|---|
+| `AEO__PAYMENTS__STRIPE_SECRET_KEY` | for payments | `sk_live_…` / `sk_test_…`. Never `NEXT_PUBLIC_*` | unset (payments off) |
+| `AEO__PAYMENTS__WEBHOOK_SECRET` | **with the key** | `whsec_…` from the endpoint. The only credential on `/api/webhooks/stripe`, and the only thing that turns money into an entitlement. Key without it → **fatal at boot** | unset |
+| `AEO__PAYMENTS__PUBLIC_APP_URL` | **with payments** | the public WEB origin Stripe returns the buyer to. Unset while payments are on → **fatal at boot** (otherwise buyers land on the API's own 404) | unset |
+| `AEO__PAYMENTS__PACK_PRICE_CENTS` | no | flat price for one pack, minor units (`4900` = $49.00). Must be > 0 unless a Price id is set | `4900` |
+| `AEO__PAYMENTS__CURRENCY` | no | ISO currency for the inline price | `usd` |
+| `AEO__PAYMENTS__STRIPE_PRICE_ID` | no | dashboard-managed Price instead of the inline amount (tax / multi-currency); overrides the two rows above | unset |
+
+### Web host (Vercel) — not in the backend `.env`
+
+| Variable | Req? | When | Purpose |
+|---|---|---|---|
+| `API_BASE_URL` | **yes** | **runtime** | backend origin for the server-side proxy. Must be set in **Production + Preview + Development** — Production-only is why preview deployments cannot reach the API |
+| `API_KEY` | **yes** | **runtime** | the value of `AEO__API__AUTH_KEY`; the proxy injects it as `X-API-Key`. Same three scopes |
+| `NEXT_PUBLIC_SUPABASE_URL` | for auth | **build** | the browser auth client. Inlined by `next build` — changing it needs a **redeploy**, saving it does nothing |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | for auth | **build** | as above. Unset → no Sign-in button and everything stays anonymous |

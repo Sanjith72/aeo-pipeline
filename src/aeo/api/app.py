@@ -1231,7 +1231,11 @@ def get_tickets(run_id: int, user: User | None = Depends(get_optional_user)) -> 
 
     A signed-in viewer CLAIMS an unowned board here (P5). The stamp on lazy generation below
     was never enough on its own: it fires only when the board does not exist yet, and in
-    production the pipeline has already generated it (unowned) long before anyone looks."""
+    production the pipeline has already generated it (unowned) long before anyone looks.
+
+    ``locked_ticket_count`` is consumed: PackPlanSection's pack selector renders "N more
+    fixes are in locked packs" from it (``api.getTickets``). Until Phase 4 nothing read it,
+    and this docstring promised a UI that did not exist."""
     from ..storage.repos import milestones as milestones_repo
     from ..storage.repos import runs as runs_repo
     from ..storage.repos import targets as targets_repo
@@ -1264,10 +1268,11 @@ def get_pack_tickets(
     """The v5 tickets for one pack of a run. Gated exactly like the pack detail (CH-02a):
     a locked pack is a 403, never a filtered-empty 200.
 
-    This is the route the UI actually calls (``api.getPackTickets`` ← TicketBoard.tsx); the
-    run-wide ``GET /api/tickets/{run_id}`` above has no caller in web/ at all. So this is
-    where a real user's board gets claimed, and claiming ONLY on the run-wide route would
-    have left ownership unstamped for every board in production despite looking correct."""
+    This is the route the UI reads a pack's fixes from (``api.getPackTickets`` ←
+    quest/PackPlanSection.tsx). The run-wide route above is fetched only for its
+    ``locked_ticket_count``, so a user working their plan may never hit it — which is why
+    this route claims the board too. Claiming ONLY on the run-wide route would have left
+    ownership unstamped for every board in production despite looking correct."""
     from ..storage.repos import milestones as milestones_repo
 
     client_id, _ = _ticket_client(run_id)

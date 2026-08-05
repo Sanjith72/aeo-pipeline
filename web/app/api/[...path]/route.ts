@@ -6,8 +6,52 @@ import { type NextRequest, NextResponse } from "next/server";
 // filter, not real auth. Both vars below are server-only (NOT NEXT_PUBLIC):
 //   API_BASE_URL  — the backend origin (e.g. http://api:8000 locally, the Railway URL in prod)
 //   API_KEY       — forwarded as X-API-Key (matches the backend's AEO__API__AUTH_KEY)
-const BACKEND = (process.env.API_BASE_URL ?? "http://localhost:8000").replace(/\/+$/, "");
+const BACKEND = (process.env.API_BASE_URL?.trim() || "http://localhost:8000").replace(/\/+$/, "");
 const API_KEY = process.env.API_KEY ?? "";
+
+// ── "this deployment has no backend" (Phase 4 item 4.4) ────────────────────────────────
+//
+// API_BASE_URL and API_KEY are Production-scope only on this Vercel project, so on a PREVIEW
+// deployment neither exists and BACKEND silently falls back to http://localhost:8000 — a
+// port on the serverless function itself, where nothing is listening. Every /api/* call then
+// takes the retry path (three attempts, ~1s of backoff) and returns the generic
+// "temporarily unreachable" 502, which is a lie: nothing is temporary and no amount of trying
+// again will help. It reads exactly like a backend outage, which is how this cost real
+// debugging time.
+//
+// So: name it. A localhost target on a DEPLOYED Vercel runtime is a configuration error with
+// certainty — there is no localhost backend for a Vercel function to reach, ever. Gated on
+// VERCEL_ENV being production/preview rather than on VERCEL alone, because `vercel dev` also
+// sets VERCEL=1 and there localhost is exactly right. Everywhere else (docker-compose,
+// `next start` on a box that really does run the API on :8000) is left alone.
+const VERCEL_ENV = process.env.VERCEL_ENV ?? "";
+const IS_DEPLOYED = VERCEL_ENV === "production" || VERCEL_ENV === "preview";
+const TARGET_IS_LOCALHOST = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(BACKEND);
+const NO_BACKEND_CONFIGURED = IS_DEPLOYED && TARGET_IS_LOCALHOST;
+
+/** One-shot server-side log lines: a per-request log on a broken preview is just noise. */
+let warnedNoBackend = false;
+let warnedNoKey = false;
+
+function warnOnce(): void {
+  if (NO_BACKEND_CONFIGURED && !warnedNoBackend) {
+    warnedNoBackend = true;
+    console.error(
+      `[api-proxy] MISCONFIGURED: API_BASE_URL is unset on this ${VERCEL_ENV} deployment, so ` +
+        "every /api/* call would target localhost inside the function. Set API_BASE_URL (and " +
+        "API_KEY) in Vercel → Settings → Environment Variables with Production + Preview + " +
+        "Development all ticked — Production-only scoping is what breaks preview deployments. " +
+        "See DEPLOY.md → Environment reference → Web host.",
+    );
+  }
+  if (IS_DEPLOYED && !NO_BACKEND_CONFIGURED && !API_KEY && !warnedNoKey) {
+    warnedNoKey = true;
+    console.warn(
+      `[api-proxy] API_KEY is empty on this ${VERCEL_ENV} deployment. If the backend has ` +
+        "AEO__API__AUTH_KEY set (it must, in any public deploy), every proxied call will 401.",
+    );
+  }
+}
 
 export const dynamic = "force-dynamic"; // never cache proxied API responses
 export const maxDuration = 300; // allow slow backend calls (e.g. deliverables); capped by the Vercel plan
@@ -37,6 +81,21 @@ async function proxy(req: NextRequest, path: string[]): Promise<Response> {
   const joined = path.join("/");
   if (BLOCKED_PATHS.has(joined)) {
     return NextResponse.json({ detail: "not found" }, { status: 404 });
+  }
+  warnOnce();
+  // 503, not the 502 three failed fetches would produce: this is a permanent configuration
+  // fault, not an unreachable backend, and retrying cannot fix it. The message names the
+  // variable so the fix is obvious from the network tab alone — the backend ORIGIN is still
+  // never echoed, which is the whole point of this file existing.
+  if (NO_BACKEND_CONFIGURED) {
+    return NextResponse.json(
+      {
+        detail:
+          "This deployment has no backend configured (API_BASE_URL is not set for this " +
+          "environment). See DEPLOY.md → Environment reference → Web host.",
+      },
+      { status: 503 },
+    );
   }
   const target = `${BACKEND}/api/${joined}${req.nextUrl.search}`;
 
