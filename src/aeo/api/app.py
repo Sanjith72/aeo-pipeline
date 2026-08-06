@@ -553,6 +553,16 @@ def _framework_and_llm(
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
+    """Liveness + which code is aboard.
+
+    ``build`` is the content hash of the installed ``aeo`` package (src/aeo/build.py). It is
+    here because backend deploys are a MANUAL Hugging Face factory rebuild and a plain
+    restart silently keeps the old layer — so "is production running my commit?" had no
+    answer. Compare it against ``python -c "from aeo.build import build_id; print(build_id())"``
+    on the commit you believe you shipped; equal means yes, different means the rebuild did
+    not take. Not a secret: it reveals no configuration and cannot be reversed into source.
+    """
+    from ..build import build_id
     from ..storage.db import health_check  # lazy: never connect at import
 
     db_ok = False
@@ -560,7 +570,7 @@ def health() -> dict[str, Any]:
         db_ok = health_check()
     except Exception:  # a down DB must not 500 the health check
         db_ok = False
-    return {"status": "ok", "db": "ok" if db_ok else "unreachable"}
+    return {"status": "ok", "db": "ok" if db_ok else "unreachable", "build": build_id()}
 
 
 @app.get("/api/config")
