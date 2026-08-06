@@ -101,6 +101,22 @@ authenticates the *proxy*, not the person. Symptom of getting this half-right: m
 promo grants fail with a 503 that mentions nothing about payments. Never reuse the same
 value for both. Startup logs a warning naming this exact pairing.
 
+**Check the safety net is real, not just configured.** Supabase Free has no automated
+backups, so `keepalive.yml`'s weekly `pg_dump` is the only one — and a workflow that silently
+stops producing artifacts looks identical to one that never ran. Verify the artifact exists
+and has a plausible size (the job fails any dump under 4 KB, but nothing checks it kept
+running):
+
+```bash
+gh run list --workflow=keepalive.yml -L 30                # pings every 8h, backup Mondays
+gh api repos/<owner>/<repo>/actions/runs/<run-id>/artifacts \
+  --jq '.artifacts[] | "\(.name) \(.size_in_bytes) bytes expired=\(.expired)"'
+```
+
+Artifacts expire after 90 days, so download anything you actually want to keep. Verified
+2026-08-06: `KEEPALIVE_URL` and `BACKUP_DATABASE_URL` are both set, pings are green, and the
+most recent dump is ~21 MB.
+
 **Vercel env scopes — the thing that breaks every preview deployment.** Vercel scopes each
 variable to Production / Preview / Development independently, and the "Production" default in
 the UI is a trap: with `API_BASE_URL` and `API_KEY` set for Production only, every `/api/*`
@@ -230,6 +246,102 @@ SELECT COUNT(DISTINCT client_id) FILTER (WHERE owner_user_id IS NOT NULL) AS own
 A board left unowned is not a failure: it stays open until the first authenticated read or
 mutation claims it. Zero rows from query 1 means the rebuild did **not** pick up the new
 commit — a plain restart reuses the cached layer. Factory rebuild, then re-check.
+
+### Is the Space running the code I think it is?
+
+For a long time this had no answer. `/api/health` returned `{"status":"ok","db":"ok"}` whether
+or not a rebuild had taken, and the Spaces API's `runtime.sha` is the **wrapper repo's**
+commit — the wrapper clones this repo at build time, so its SHA moves for unrelated reasons
+and stands still when this repo changes. A backend fix whose only signature is an internal SQL
+clause was therefore unfalsifiable.
+
+`/api/health` now reports a `build` field: a content hash of the installed `aeo` package
+(`src/aeo/build.py`). It needs nothing from any dashboard and a stale layer cannot fake it —
+if the running bytes differ, the hash differs.
+
+```bash
+aeo build-id                                              # the commit you believe you shipped
+curl -s https://sanjith12-aeo-api.hf.space/api/health      # what is actually running
+```
+
+Equal → the rebuild took. Different → it did not, whatever the dashboard says. It is an
+equality check, not a version: it does not order, and a bigger value means nothing.
+`scripts/smoke_prod.py` does this comparison for you.
+
+---
+
+## D-bis. The deploy runbook — the exact order, every time
+
+There is **no continuous deployment in this repo.** `.github/workflows/ci.yml` runs tests,
+typechecks, and pushes an image to GHCR; it deploys nothing. `keepalive.yml` pings and backs
+up. So a merged fix has changed nothing for your users until you walk this list.
+
+### 0. Before you merge
+
+```bash
+pytest -q                        # backend
+npm --prefix web run build       # web: this type-checks and lints internally
+```
+
+> `npm --prefix web run lint` does **not** work — there is no ESLint config in the repo, so
+> it drops into an interactive setup prompt. `next build` is the real gate.
+
+### 1. Note what you are shipping
+
+```bash
+aeo build-id        # e.g. a6cfd76bd371 — remember this, step 5 checks for it
+```
+
+### 2. Merge to `main` and push
+
+Vercel picks this up on its own and redeploys the **frontend**. Nothing else does.
+
+### 3. Migrations
+
+`aeo migrate` runs at container boot via `scripts/start-api.sh`, so migrations apply during
+step 4's rebuild — they do **not** apply on a merge. If this deploy added one, say so out
+loud, and confirm it afterwards rather than assuming (step 6).
+
+### 4. Backend: **FACTORY REBUILD** the Space — the step that gets forgotten
+
+`Sanjith12/aeo-api` → Settings → **Factory rebuild**. A plain **Restart** reuses the cached
+layer and keeps the OLD code while looking completely successful. This is how a fixed backend
+bug survives into production.
+
+### 5. Verify — against production, never localhost
+
+```bash
+python scripts/smoke_prod.py --base https://sanjith12-aeo-api.hf.space \
+                             --site https://aeo-studio-nine.vercel.app
+```
+
+It checks health + DB, that the deployed **build id matches the commit you shipped**, that
+the service key is enforced, that `POST /api/entitlements/grant` is not reachable on the
+Space's own URL, that the Stripe webhook rejects an unsigned POST with 400, that ticket
+mutations need a key, and that the web origin's proxy actually reaches the backend. It is
+read-only: no user, no charge, no entitlement, and the one expensive check (a fresh overview)
+only runs with `--overview-domain`.
+
+**If the build id does not match, the rebuild did not take.** Rebuild again — do not debug the
+old code.
+
+### 6. Confirm the migration actually applied
+
+Against the production database (the `schema_versions` query under "Verifying the P5
+ownership backfill" below shows the pattern). Zero rows for the version you expect means
+step 4 did not pick up the new commit.
+
+### 7. Rollback
+
+```bash
+git revert -m 1 <the merge commit>   # then push
+```
+
+Vercel redeploys the frontend automatically; the Space needs **another factory rebuild** to
+go back. Migrations do **not** roll back — they are forward-only, so a revert that undoes
+application code leaves the schema ahead. Check the reverted migration is additive
+(a new table/column is harmless to leave) before relying on a revert alone. Env changes
+revert by hand in whichever dashboard you changed.
 
 ---
 

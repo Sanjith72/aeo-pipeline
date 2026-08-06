@@ -111,6 +111,24 @@ def migrate() -> None:
     typer.echo("applied: " + ", ".join(applied) if applied else "migrations up to date")
 
 
+@app.command(name="build-id")
+def build_id_cmd() -> None:
+    """Print this checkout's build id — the same value ``/api/health`` reports.
+
+    Deploys to the Hugging Face Space are a MANUAL factory rebuild, and a plain restart
+    silently keeps the old code, so this is how you tell which one happened:
+
+        aeo build-id                              # what you believe you shipped
+        curl -s https://<api-host>/api/health     # what is actually running
+
+    Equal → the rebuild took. Different → it did not, whatever the dashboard shows.
+    Needs no DB and no config, so it works in a bare checkout.
+    """
+    from .build import build_id
+
+    typer.echo(build_id())
+
+
 @app.command()
 def targets() -> None:
     """List configured clients and competitors."""
