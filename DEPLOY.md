@@ -311,9 +311,17 @@ bug survives into production.
 ### 5. Verify — against production, never localhost
 
 ```bash
-python scripts/smoke_prod.py --base https://sanjith12-aeo-api.hf.space \
-                             --site https://aeo-studio-nine.vercel.app
+# NOTE the interpreter: it must be one that can `import aeo` — i.e. the project venv
+# (.venv/Scripts/python.exe on Windows), not a bare system python. A python without the
+# package cannot compute this checkout's build id, so the build-id comparison does not run.
+.venv/Scripts/python.exe scripts/smoke_prod.py \
+    --base https://sanjith12-aeo-api.hf.space \
+    --site https://aeo-studio-nine.vercel.app
 ```
+
+A clean run reads **`8/9 passed, 1 SKIPPED`** — the skip being the opt-in overview check.
+Always read the `DID NOT RUN` block: a skipped check proves nothing, and it is counted in the
+denominator precisely so a partial run cannot read as a complete one.
 
 It checks health + DB, that the deployed **build id matches the commit you shipped**, that
 the service key is enforced, that `POST /api/entitlements/grant` is not reachable on the
