@@ -50,6 +50,9 @@ class Result:
 @dataclass
 class Report:
     results: list[Result] = field(default_factory=list)
+    #: (name, why) for every check that did NOT run. Tracked, not just printed, because the
+    #: denominator has to know about them — see `summarise`.
+    skipped: list[tuple[str, str]] = field(default_factory=list)
 
     def add(self, r: Result) -> Result:
         self.results.append(r)
@@ -59,6 +62,40 @@ class Report:
         if r.caveat:
             print(f"       NOT proved: {r.caveat}")
         return r
+
+    def skip(self, name: str, why: str) -> None:
+        self.skipped.append((name, why))
+        print(f"[SKIP] {name}: {why}")
+
+    def summarise(self) -> int:
+        """Print the tally and return the exit code.
+
+        A skipped check is reported in the DENOMINATOR, never quietly dropped from it. This
+        used to print "7/7 passed" and "all good" on a run where the build-id comparison had
+        silently not happened — the single check the whole script exists for — because `aeo`
+        was not importable from the interpreter it was invoked with. A tally that counts only
+        the checks that ran is a false green, which is the exact failure this script is
+        supposed to catch in others.
+        """
+        failed = [r for r in self.results if not r.ok]
+        total = len(self.results) + len(self.skipped)
+        print(f"\n{len(self.results) - len(failed)}/{total} passed"
+              f"{f', {len(failed)} failed' if failed else ''}"
+              f"{f', {len(self.skipped)} SKIPPED' if self.skipped else ''}")
+        if failed:
+            print("\nFAILED:")
+            for r in failed:
+                print(f"  - {r.name}: {r.detail}")
+        if self.skipped:
+            print("\nDID NOT RUN (so this run proves nothing about them):")
+            for name, why in self.skipped:
+                print(f"  - {name}: {why}")
+        if failed:
+            return 1
+        print("\nEverything that ran, passed. Still unproved by any automated check: a real"
+              "\nGoogle sign-in, a real Stripe purchase, and cross-user ticket ownership --"
+              "\nall three need a human with credentials.")
+        return 0
 
 
 def request(
@@ -307,8 +344,17 @@ def main() -> int:
     base = args.base.rstrip("/")
     site = args.site.rstrip("/")
 
+    print(f"smoke: backend {base}\n       web     {site}\n")
+    rep = Report()
+
+    # Resolve the expected build id BEFORE anything else, and record a SKIP if we cannot.
+    # `aeo` is importable only from an interpreter that has this package installed — run the
+    # script with the project venv's python (.venv/Scripts/python.exe on Windows), not a bare
+    # system python, or this check quietly does not happen.
     expect: str | None = None
-    if not args.skip_build_check:
+    if args.skip_build_check:
+        rep.skip("deployed build id", "--skip-build-check was passed")
+    else:
         expect = args.expect_build
         if expect is None:
             try:
@@ -316,11 +362,13 @@ def main() -> int:
 
                 expect = build_id()
             except Exception:
-                print("note: aeo is not importable here -- skipping the build-id comparison.")
-                print("      install with `pip install -e .` or pass --expect-build.\n")
+                rep.skip(
+                    "deployed build id",
+                    "`aeo` is not importable from this interpreter, so there is nothing to "
+                    "compare against -- WHICH CODE IS DEPLOYED IS THEREFORE UNKNOWN. Re-run "
+                    "with the project venv's python, or pass --expect-build <id>",
+                )
 
-    print(f"smoke: backend {base}\n       web     {site}\n")
-    rep = Report()
     check_health(rep, base, expect)
     check_api_is_gated(rep, base)
     check_grant_route_not_public(rep, base)
@@ -331,18 +379,9 @@ def main() -> int:
     if args.overview_domain:
         check_overview(rep, site, args.overview_domain)
     else:
-        print("[SKIP] anonymous pack gating: needs --overview-domain (spends crawl + LLM budget)")
+        rep.skip("anonymous pack gating", "needs --overview-domain (spends crawl + LLM budget)")
 
-    failed = [r for r in rep.results if not r.ok]
-    print(f"\n{len(rep.results) - len(failed)}/{len(rep.results)} passed")
-    if failed:
-        print("\nFAILED:")
-        for r in failed:
-            print(f"  - {r.name}: {r.detail}")
-        return 1
-    print("all good -- and note what is still unproved: a real Google sign-in, a real Stripe")
-    print("purchase, and cross-user ticket ownership all need a human with credentials.")
-    return 0
+    return rep.summarise()
 
 
 if __name__ == "__main__":
