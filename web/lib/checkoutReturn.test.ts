@@ -18,6 +18,7 @@ import {
   readCheckoutOutcome,
   readPendingCheckout,
   rememberPendingCheckout,
+  unlockedDestination,
   urlWithoutCheckoutParams,
 } from "./checkoutReturn.ts";
 
@@ -175,4 +176,31 @@ test("stripping preserves every unrelated param and the hash", () => {
 test("stripping is a no-op on an ordinary URL", () => {
   assert.equal(urlWithoutCheckoutParams("/studio", "?domain=example.com"), "/studio?domain=example.com");
   assert.equal(urlWithoutCheckoutParams("/studio", ""), "/studio");
+});
+
+// ── where the acknowledgement points (the "it's open below" lie) ────────────────────
+//
+// The notice claimed the pack was "open below" while living inside StudioApp's
+// `view === "results"` branch, which a Stripe return never reaches — so it rendered nowhere
+// at all. Moved out, it can be on screen in the wizard too, where "below" is false.
+
+test("with the pack grid on screen, below is the honest answer", () => {
+  assert.deepEqual(unlockedDestination({ packsVisible: true }), { kind: "below" });
+  // Even with a plan id available, on-screen beats a navigation.
+  assert.deepEqual(unlockedDestination({ packsVisible: true, planId: "abc" }), { kind: "below" });
+});
+
+test("off the results view, a saved plan is where the pack actually lives", () => {
+  assert.deepEqual(unlockedDestination({ packsVisible: false, planId: "abc123" }), {
+    kind: "plan",
+    href: "/plan/abc123",
+  });
+});
+
+test("with nowhere to point, say unknown rather than invent a destination", () => {
+  assert.deepEqual(unlockedDestination({ packsVisible: false }), { kind: "unknown" });
+  assert.deepEqual(unlockedDestination({ packsVisible: false, planId: null }), { kind: "unknown" });
+  assert.deepEqual(unlockedDestination({ packsVisible: false, planId: "" }), { kind: "unknown" });
+  // Whitespace is not an id — a "/plan/ " link would 404 on a paying customer.
+  assert.deepEqual(unlockedDestination({ packsVisible: false, planId: "   " }), { kind: "unknown" });
 });

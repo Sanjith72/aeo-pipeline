@@ -111,6 +111,14 @@ export type FailureKind =
   | "rate_limited"
   /** The redirect target is not in Supabase's allowlist — an operator fix, not a user one. */
   | "not_allowlisted"
+  /** The user (or the provider) declined the sign-in. Nothing is broken; they said no. */
+  | "declined"
+  /** A PKCE code arrived but this browser holds no code_verifier for it — the link was
+   *  opened somewhere other than where it was started, or storage was cleared. Resending
+   *  does NOT help; opening it in the original browser does. */
+  | "verifier_missing"
+  /** Nothing resolved in time. Distinct from "spent": we genuinely do not know. */
+  | "timeout"
   /** Anything else. */
   | "unknown";
 
@@ -148,8 +156,38 @@ export function classifyAuthFailure(raw: string | null | undefined, code?: strin
       canResend: false,
     };
   }
-  if (s.includes("expired") || s.includes("invalid") || s.includes("otp_expired") ||
-      s.includes("token not found") || s.includes("already been used") || s.includes("used")) {
+  if (s.includes("rate limit") || s.includes("too many") || s.includes("over_email_send_rate")) {
+    return {
+      kind: "rate_limited",
+      title: "Too many emails for now",
+      message: "Supabase is rate-limiting confirmation emails. Wait a minute, then try again.",
+      canResend: false,
+    };
+  }
+  // BEFORE the expired/spent branch, deliberately. A non-allowlisted redirect surfaces as
+  // `error=invalid_request`, which the old ordering swallowed as "your link expired" — so the
+  // user was told to resend an email while the actual fix was a Supabase Redirect URLs
+  // change. That is precisely the "three different fixes, one symptom" trap DEPLOY.md warns
+  // about, reproduced in the UI.
+  if (s.includes("redirect") && (s.includes("allow") || s.includes("not valid") || s.includes("invalid"))) {
+    return {
+      kind: "not_allowlisted",
+      title: "This site isn't allowed to complete sign-in",
+      message:
+        "The sign-in service rejected this address as a return destination. This is a " +
+        "configuration problem on our side, not something you can fix — please let us know.",
+      canResend: false,
+    };
+  }
+  // Matching here is on LINK-SPECIFIC phrases only. It used to include a bare `"used"`, which
+  // matches the substring inside "ref-used", and a bare `"invalid"`, which matches Supabase's
+  // generic `invalid_request` / "Requested path is invalid". Both routed unrelated provider
+  // errors into "that link has expired" — verified in production, where a refused Google
+  // consent rendered the email-expiry copy with a Resend button that could not possibly help.
+  if (s.includes("expired") || s.includes("otp_expired") || s.includes("token not found") ||
+      s.includes("token_not_found") || s.includes("already been used") ||
+      s.includes("already used") || s.includes("email link is invalid") ||
+      s.includes("link is invalid") || s.includes("invalid or has expired")) {
     return {
       kind: "spent",
       title: "That link has expired",
@@ -159,21 +197,22 @@ export function classifyAuthFailure(raw: string | null | undefined, code?: strin
       canResend: true,
     };
   }
-  if (s.includes("rate limit") || s.includes("too many") || s.includes("over_email_send_rate")) {
+  // AFTER "spent", and the order is load-bearing in the opposite direction to what it looks
+  // like. `access_denied` is Google's code for a refused consent — but Supabase ALSO wraps an
+  // expired confirmation link in it:
+  //     #error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired
+  // Putting this branch first (as the first draft of this fix did) would have relabelled every
+  // expired email link as "Sign-in was cancelled" and dropped the Resend button that is the
+  // actual remedy — trading one misclassification for a worse one. Expiry evidence is
+  // specific, so it gets to answer first; this branch takes what is left.
+  if (s.includes("access_denied") || s.includes("consent") || s.includes("denied") ||
+      s.includes("cancelled") || s.includes("canceled")) {
     return {
-      kind: "rate_limited",
-      title: "Too many emails for now",
-      message: "Supabase is rate-limiting confirmation emails. Wait a minute, then try again.",
-      canResend: false,
-    };
-  }
-  if (s.includes("redirect") && (s.includes("allow") || s.includes("not valid"))) {
-    return {
-      kind: "not_allowlisted",
-      title: "This site isn't allowed to complete sign-in",
+      kind: "declined",
+      title: "Sign-in was cancelled",
       message:
-        "The sign-in service rejected this address as a return destination. This is a " +
-        "configuration problem on our side, not something you can fix — please let us know.",
+        "You didn't finish signing in with that provider. Nothing has gone wrong — start " +
+        "again whenever you're ready.",
       canResend: false,
     };
   }
@@ -223,4 +262,49 @@ export function resendCooldownRemaining(
   if (lastSentAtMs === null) return 0;
   const elapsed = Math.floor((nowMs - lastSentAtMs) / 1000);
   return Math.max(0, cooldownSec - elapsed);
+}
+
+// ── the two PKCE outcomes that used to be indistinguishable ─────────────────────────
+//
+// The callback called `classifyAuthFailure("The sign-in link has expired or was already
+// used.")` — the SAME hardcoded string — from two genuinely different places: the
+// INITIAL_SESSION fast path (a code arrived, initialization produced no session) and the 15s
+// timeout (nothing resolved at all). Byte-identical argument, so the user saw byte-identical
+// copy. The real reason went to console.error, where no user will ever look. The item this
+// closes asked that failures surface a REAL reason; "not just a timeout" was achieved, but
+// "a reason" was not.
+//
+// These two are not the same event and must not read the same:
+//
+//  * verifier_missing — the PKCE code_verifier lives in THIS browser's storage. If the link
+//    is opened in a different browser, on a different device, or after storage was cleared,
+//    the code cannot be exchanged no matter how fresh it is. Resending is useless; opening
+//    the link where it was started is the fix. Calling this "expired" sends the user round a
+//    loop that cannot terminate.
+//  * timeout — we genuinely do not know. Say so rather than asserting a cause.
+
+/** A PKCE code was present but produced no session: already spent, or no verifier here. */
+export function verifierMissingFailure(): Failure {
+  return {
+    kind: "verifier_missing",
+    title: "This link needs the browser you started in",
+    message:
+      "Sign-in links carry a secret that stays in the browser that requested them, so they " +
+      "can't be completed somewhere else — a different browser or device, a private window, " +
+      "or after clearing site data. Open the link in the browser where you started, or just " +
+      "sign in again here. (If you already used this link once, that also uses it up.)",
+    canResend: true,
+  };
+}
+
+/** Nothing resolved inside the window. An honest "we don't know", not a guessed cause. */
+export function timeoutFailure(): Failure {
+  return {
+    kind: "timeout",
+    title: "Sign-in didn't finish in time",
+    message:
+      "We didn't hear back from the sign-in service. That's usually a network hiccup rather " +
+      "than a problem with your account — please try signing in again.",
+    canResend: false,
+  };
 }

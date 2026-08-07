@@ -33,8 +33,10 @@ import {
   isPackUnlocked,
   readCheckoutOutcome,
   readPendingCheckout,
+  unlockedDestination,
   urlWithoutCheckoutParams,
 } from "@/lib/checkoutReturn";
+import type { UnlockedDestination } from "@/lib/checkoutReturn";
 import { GamificationStrip } from "@/components/GamificationStrip";
 import { Combobox } from "@/components/ui/Combobox";
 import { LiquidButton } from "@/components/ui/liquid-glass";
@@ -1204,7 +1206,30 @@ export function StudioApp() {
         )}
       </div>
 
-      {view === "wizard" && resume && !prefilling && (
+      {/* v5 CH-02b — the checkout return, rendered in EITHER view.
+          It used to live inside the `view === "results"` branch below, and nothing on the
+          Stripe return path sets `view`. A return is a fresh page load, so `view` was its
+          initial "wizard" and this notice rendered into a subtree that was not on screen:
+          the buyer paid, was redirected, and saw the wizard at step 01 with no
+          acknowledgement — the precise symptom this notice exists to prevent. It is a
+          statement about their ACCOUNT, not about a results page, so it is no longer gated
+          on one. Every branch says something true. */}
+      {checkout && (
+        <CheckoutNotice
+          checkout={checkout}
+          destination={unlockedDestination({
+            packsVisible: view === "results" && packs.length > 0,
+            planId: planStateId ?? resume?.id ?? null,
+          })}
+          onRecheck={() => void recheckCheckout(checkout.packIndex)}
+          onDismiss={() => setCheckout(null)}
+        />
+      )}
+
+      {/* Suppressed while a checkout notice is up: that notice already carries the link to
+          their plan, and two stacked "welcome back" banners bury the thing they just paid
+          for. */}
+      {view === "wizard" && resume && !prefilling && !checkout && (
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/[0.06] p-4 animate-fade-up">
           <p className="text-sm text-ink-500">
             Welcome back — you have a saved plan for{" "}
@@ -1235,71 +1260,6 @@ export function StudioApp() {
               <a href={`/plan/${planStateId}`} className="btn-ghost shrink-0 text-[13px]">
                 Open shareable link →
               </a>
-            </div>
-          )}
-          {/* v5 CH-02b — the checkout return. Rendered ABOVE the packs so a buyer coming
-              back from Stripe sees an acknowledgement before anything else, instead of the
-              studio's ordinary empty state. Every branch says something true. */}
-          {checkout && (
-            <div
-              role="status"
-              aria-live="polite"
-              className={`mb-6 rounded-xl border p-4 ${
-                checkout.state === "cancelled"
-                  ? "border-white/[0.13] bg-white/[0.03]"
-                  : "border-accent/30 bg-accent/[0.06]"
-              }`}
-            >
-              {checkout.state === "confirming" && (
-                <p className="text-[13.5px] leading-[1.6] text-ink">
-                  Payment received — unlocking
-                  {checkout.packIndex ? ` Pack ${checkout.packIndex}` : " your pack"}…
-                </p>
-              )}
-              {checkout.state === "unlocked" && (
-                <p className="text-[13.5px] leading-[1.6] text-ink">
-                  {checkout.packIndex ? `Pack ${checkout.packIndex} is` : "Your pack is"} unlocked
-                  — thank you. It&apos;s open below.
-                </p>
-              )}
-              {checkout.state === "pending_grant" && (
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="max-w-[60ch] text-[13.5px] leading-[1.6] text-ink">
-                    Your payment went through, but the unlock hasn&apos;t come back from our
-                    payment provider yet. This usually takes a few seconds. Nothing is lost —
-                    your pack will appear here.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => void recheckCheckout(checkout.packIndex)}
-                    className="btn-ghost shrink-0 text-[13px]"
-                  >
-                    Check again
-                  </button>
-                </div>
-              )}
-              {checkout.state === "unknown_run" && (
-                <p className="max-w-[64ch] text-[13.5px] leading-[1.6] text-ink">
-                  Payment received — thank you. We couldn&apos;t tell which audit to reopen
-                  from this browser, so run or reopen your site below and the pack will be
-                  unlocked on it.
-                </p>
-              )}
-              {checkout.state === "cancelled" && (
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-[13.5px] leading-[1.6] text-ink-300">
-                    Checkout cancelled — you haven&apos;t been charged.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setCheckout(null)}
-                    aria-label="Dismiss"
-                    className="shrink-0 text-ink-300 hover:text-ink"
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
             </div>
           )}
           {packs.length > 0 && (
@@ -1596,6 +1556,94 @@ export function StudioApp() {
 }
 
 // ── wizard pieces ───────────────────────────────────────────────────────────
+
+/** The Stripe return acknowledgement. Renders in the wizard AND the results view, because a
+ *  checkout return is a fresh page load that lands in the wizard — see the comment at its
+ *  call site, and the block comment in lib/checkoutReturn.ts for the defect this fixes.
+ *
+ *  The copy is written so no branch can become a lie depending on where it renders: it says
+ *  "below" only when the pack grid is genuinely on screen, links to the buyer's saved plan
+ *  when it is not, and admits it does not know when there is no plan to point at. */
+function CheckoutNotice({
+  checkout,
+  destination,
+  onRecheck,
+  onDismiss,
+}: {
+  checkout: { state: string; packIndex?: number };
+  destination: UnlockedDestination;
+  onRecheck: () => void;
+  onDismiss: () => void;
+}) {
+  const pack = checkout.packIndex ? `Pack ${checkout.packIndex}` : "your pack";
+  const Pack = checkout.packIndex ? `Pack ${checkout.packIndex}` : "Your pack";
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`mb-6 rounded-xl border p-4 ${
+        checkout.state === "cancelled"
+          ? "border-white/[0.13] bg-white/[0.03]"
+          : "border-accent/30 bg-accent/[0.06]"
+      }`}
+    >
+      {checkout.state === "confirming" && (
+        <p className="text-[13.5px] leading-[1.6] text-ink">Payment received — unlocking {pack}…</p>
+      )}
+      {checkout.state === "unlocked" && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="max-w-[64ch] text-[13.5px] leading-[1.6] text-ink">
+            {Pack} is unlocked — thank you.{" "}
+            {destination.kind === "below"
+              ? "It’s open below."
+              : destination.kind === "plan"
+                ? "Its fixes are waiting in your plan."
+                : "It’s on your account — it will be there the next time you open your plan."}
+          </p>
+          {destination.kind === "plan" && (
+            <a href={destination.href} className="btn-primary shrink-0 !py-1.5 text-[13px]">
+              Open your plan →
+            </a>
+          )}
+        </div>
+      )}
+      {checkout.state === "pending_grant" && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="max-w-[60ch] text-[13.5px] leading-[1.6] text-ink">
+            Your payment went through, but the unlock hasn&apos;t come back from our payment
+            provider yet. This usually takes a few seconds. Nothing is lost — {pack} is paid
+            for and will appear on your plan.
+          </p>
+          <button type="button" onClick={onRecheck} className="btn-ghost shrink-0 text-[13px]">
+            Check again
+          </button>
+        </div>
+      )}
+      {checkout.state === "unknown_run" && (
+        <p className="max-w-[64ch] text-[13.5px] leading-[1.6] text-ink">
+          Payment received — thank you. We couldn&apos;t tell which audit to reopen from this
+          browser, so reopen your site below and {pack} will be unlocked on it. You will not be
+          charged again.
+        </p>
+      )}
+      {checkout.state === "cancelled" && (
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[13.5px] leading-[1.6] text-ink-300">
+            Checkout cancelled — you haven&apos;t been charged.
+          </p>
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Dismiss"
+            className="shrink-0 text-ink-300 hover:text-ink"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ErrorNote({ message }: { message: string }) {
   return (

@@ -19,6 +19,8 @@ import {
   readCallback,
   resendCooldownRemaining,
   safeNext,
+  timeoutFailure,
+  verifierMissingFailure,
 } from "./authCallback.ts";
 
 const ORIGIN = "https://aeo-studio-nine.vercel.app";
@@ -210,4 +212,95 @@ test("the cooldown never goes negative", () => {
 test("the default cooldown is at least Supabase's own one-per-minute limit", () => {
   // A shorter window only produces a rate-limit error the user cannot act on.
   assert.ok(RESEND_COOLDOWN_SEC >= 60);
+});
+
+// ── unsound substring matching (found by the Phase 6 pass, reproduced in production) ──
+//
+// The `spent` branch matched a bare "used" and a bare "invalid". "refused" CONTAINS "used",
+// and Supabase's generic `invalid_request` contains "invalid" — so unrelated provider errors
+// were rendered as "That link has expired", complete with a Resend button that could not
+// possibly help. Verified live against the deployed origin before this fix.
+
+test("a refused Google consent is not an expired link", () => {
+  // The exact production URL: ?error=access_denied&error_code=provider_email_needs_verification
+  // &error_description=Consent+was+refused+by+the+user  -> used to render the email-expiry copy
+  // purely because "refused" contains "used".
+  const f = classifyAuthFailure("Consent was refused by the user", "access_denied");
+  assert.equal(f.kind, "declined");
+  assert.equal(f.canResend, false, "resending an email cannot fix a cancelled consent");
+  assert.doesNotMatch(f.title.toLowerCase(), /expired/);
+});
+
+test('the bare substring "used" no longer routes to spent', () => {
+  for (const raw of ["Consent was refused", "the request was refused", "unused parameter"]) {
+    assert.notEqual(classifyAuthFailure(raw).kind, "spent", raw);
+  }
+});
+
+test("a non-allowlisted redirect is reported as a configuration problem, not an expiry", () => {
+  // This is the "three different fixes, one symptom" trap: telling the user to resend an
+  // email when the real fix is Supabase -> URL Configuration -> Redirect URLs.
+  const f = classifyAuthFailure("Requested path is invalid", "invalid_request");
+  assert.notEqual(f.kind, "spent");
+  const g = classifyAuthFailure("redirect_to is not allowed", "invalid_request");
+  assert.equal(g.kind, "not_allowlisted");
+  assert.equal(g.canResend, false);
+});
+
+test("genuine expiry still classifies as spent, with a resend offered", () => {
+  for (const [raw, code] of [
+    ["Email link is invalid or has expired", "otp_expired"],
+    ["Token has expired or is invalid", null],
+    ["This link has already been used", null],
+    ["token not found", null],
+  ] as [string, string | null][]) {
+    const f = classifyAuthFailure(raw, code);
+    assert.equal(f.kind, "spent", raw);
+    assert.equal(f.canResend, true, raw);
+  }
+});
+
+test("rate limiting still wins over everything it could be confused with", () => {
+  assert.equal(classifyAuthFailure("email rate limit exceeded").kind, "rate_limited");
+  assert.equal(classifyAuthFailure("For security purposes, too many requests").kind, "rate_limited");
+});
+
+// ── the two PKCE outcomes that used to render identical copy ────────────────────────
+
+test("a missing code_verifier reads differently from a timeout", () => {
+  const v = verifierMissingFailure();
+  const t = timeoutFailure();
+  assert.notEqual(v.kind, t.kind);
+  assert.notEqual(v.title, t.title, "the two must not render the same headline");
+  assert.notEqual(v.message, t.message);
+});
+
+test("the verifier-missing copy names the actual fix: the original browser", () => {
+  const v = verifierMissingFailure();
+  assert.match(v.message.toLowerCase(), /browser/);
+  assert.equal(v.kind, "verifier_missing");
+});
+
+test("the timeout copy does not assert a cause it has not established", () => {
+  const t = timeoutFailure();
+  assert.equal(t.kind, "timeout");
+  assert.doesNotMatch(t.title.toLowerCase(), /expired|already used/);
+  assert.doesNotMatch(t.message.toLowerCase(), /expired|already used/);
+  assert.equal(t.canResend, false, "there is no email to resend on a PKCE timeout");
+});
+
+test("Supabase's expired-link shape is an expiry, even though it says access_denied", () => {
+  // The real fragment Supabase redirects an aged-out confirmation link to:
+  //   #error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired
+  // An earlier draft of the `declined` branch matched `access_denied` first and relabelled
+  // this "Sign-in was cancelled", removing the Resend button that actually fixes it.
+  const f = classifyAuthFailure("Email link is invalid or has expired", "otp_expired");
+  assert.equal(f.kind, "spent");
+  assert.equal(f.canResend, true);
+
+  const viaError = classifyAuthFailure(
+    "Email link is invalid or has expired",
+    "access_denied otp_expired",
+  );
+  assert.equal(viaError.kind, "spent", "access_denied must not outrank explicit expiry evidence");
 });

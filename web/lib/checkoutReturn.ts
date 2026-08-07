@@ -163,3 +163,41 @@ export function urlWithoutCheckoutParams(pathname: string, search: string, hash 
   const rest = q.toString();
   return `${pathname}${rest ? `?${rest}` : ""}${hash}`;
 }
+
+// ── where the acknowledgement points ───────────────────────────────────────────────
+//
+// The notice above was written assuming the buyer lands on the results view, and its copy
+// says "It's open below." It was rendered inside StudioApp's `view === "results"` branch —
+// and NOTHING on the checkout return path sets `view`. A Stripe return is a fresh page load,
+// so `view` is its initial "wizard", and every branch of the notice (confirming, unlocked,
+// pending_grant, unknown_run, cancelled) rendered into a subtree that was not on screen.
+//
+// The buyer therefore paid, was redirected, and saw the studio wizard at step 01 with no
+// acknowledgement of any kind — the exact symptom the checkout-return work was written to
+// fix. Worse, the query params are stripped before that, so a refresh cannot re-trigger the
+// flow, and the obvious next action (fill in the wizard, press "Build my plan") starts a
+// SECOND audit and spends another crawl+LLM slot.
+//
+// So the notice moves out of the results branch and renders in either view. Which means the
+// copy can no longer assume the pack grid is on screen — hence this: say "below" only when
+// it really is below, otherwise point at the saved plan, and when there is neither, say that
+// plainly rather than gesturing at something the buyer cannot see.
+
+export type UnlockedDestination =
+  /** The pack grid is on screen right now — "it's open below" is literally true. */
+  | { kind: "below" }
+  /** Not on screen, but this browser has a saved plan the pack belongs to. */
+  | { kind: "plan"; href: string }
+  /** Neither. The grant is real; we just cannot show them where. Do not invent a link. */
+  | { kind: "unknown" };
+
+export function unlockedDestination(opts: {
+  /** Is the pack grid actually rendered right now? */
+  packsVisible: boolean;
+  /** A persisted plan id for this buyer, from the current run or a prior session. */
+  planId?: string | null;
+}): UnlockedDestination {
+  if (opts.packsVisible) return { kind: "below" };
+  const id = (opts.planId ?? "").trim();
+  return id ? { kind: "plan", href: `/plan/${id}` } : { kind: "unknown" };
+}
