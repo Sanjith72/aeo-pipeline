@@ -13,6 +13,7 @@ import type {
   BriefPlan,
   BundleAsset,
   DeliverablesResponse,
+  PackPreview,
   PendingFix,
   PlanStateResponse,
   PlanTask,
@@ -32,6 +33,9 @@ import { TaskHowTo } from "./TaskHowTo";
 import { StrategyExtras } from "./StrategyExtras";
 import { PagesPanel } from "./PagesPanel";
 import { TrackerView, type PackPlanContext, type TrackerFacet } from "./quest/TrackerView";
+import { useAuth } from "./auth/AuthProvider";
+import { UnlockModal } from "./auth/UnlockModal";
+import { clearPendingUnlock, readPendingUnlock, rememberPendingUnlock } from "@/lib/pendingUnlock";
 
 const EFFORT_PILL: Record<string, string> = {
   low: "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30",
@@ -1934,6 +1938,72 @@ export function triggerDownload(blob: Blob, filename: string) {
 // and Strategy list carry live, crawl-verified progress); a brief-only plan seeds the local
 // checklist from the saved done_task_ids and mirrors changes back to this link.
 export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
+  // The Pages tab was missing on every resumed plan, and the cause was not that the data was
+  // unavailable — it was that nobody asked for it. `results.tsx` gates the Pages tab on
+  // `packContext`, this view passed none, and `PlanStateResponse.run_id` (types.ts) has been
+  // carrying the run id the whole time. So "Resume your plan" showed Overview + Your plan and
+  // silently dropped the third tab.
+  //
+  // That matters more than a missing tab: the packs, their locked/unlocked state, and the
+  // per-page fixes are the paid half of the product, and a bookmarked /plan/<id> is exactly
+  // how a returning customer comes back to them.
+  const { user, openAuth } = useAuth();
+  const [packs, setPacks] = useState<PackPreview[]>([]);
+  const [selectedPack, setSelectedPack] = useState<number | null>(null);
+  const [unlockPack, setUnlockPack] = useState<number | null>(null);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+
+  const loadPacks = useCallback(async () => {
+    if (state.run_id == null) return;
+    try {
+      const res = await api.getPacks(state.run_id);
+      setPacks(res.packs);
+      // Open the first pack by default so the tab has content rather than a picker and a
+      // blank right-hand pane.
+      setSelectedPack((cur) => cur ?? res.packs[0]?.pack_index ?? null);
+    } catch {
+      // Best-effort: a resumed plan without packs still renders Overview and Your plan. The
+      // Pages tab simply does not appear, which is the honest outcome — better than a tab
+      // that opens onto an error.
+    }
+  }, [state.run_id]);
+
+  useEffect(() => {
+    void loadPacks();
+  }, [loadPacks]);
+
+  // Same rule as the studio: anonymous → sign in first, and the pack that was clicked is
+  // REMEMBERED across that sign-in (lib/pendingUnlock.ts) rather than discarded.
+  const handleUnlock = useCallback(
+    (packIndex?: number) => {
+      if (!user) {
+        rememberPendingUnlock({
+          domain: state.domain ?? "",
+          packIndex: packIndex ?? null,
+          runId: state.run_id ?? undefined,
+          planStateId: state.id,
+        });
+        openAuth("unlock-pack");
+        return;
+      }
+      setUnlockPack(packIndex ?? null);
+      setUnlockOpen(true);
+    },
+    [openAuth, state.domain, state.id, state.run_id, user],
+  );
+
+  // Resume the unlock the moment sign-in completes — both the in-page email/password flow
+  // (this component never unmounts) and the OAuth round-trip that lands back on /plan/<id>.
+  useEffect(() => {
+    if (!user) return;
+    const pending = readPendingUnlock();
+    if (!pending || pending.planStateId !== state.id) return;
+    clearPendingUnlock();
+    if (pending.packIndex != null) setSelectedPack(pending.packIndex);
+    setUnlockPack(pending.packIndex);
+    setUnlockOpen(true);
+  }, [state.id, user]);
+
   // Hydrate the plan panel from the saved state — no rebuild needed to see your plan.
   // (Downloadable assets aren't persisted; "Rebuild my plan" regenerates them.)
   const [deliverables, setDeliverables] = useState<DeliverablesResponse | null>(() =>
@@ -2017,9 +2087,34 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
         onEdit={() => {
           window.location.href = "/studio";
         }}
+        // The Pages tab is gated on this. Passing it is the whole fix: `run_id` was always
+        // on the saved state, nobody ever asked the server for the packs behind it.
+        packContext={
+          state.run_id != null && packs.length > 0
+            ? {
+                runId: state.run_id,
+                packs,
+                selectedPack,
+                onSelectPack: setSelectedPack,
+                onUnlock: handleUnlock,
+              }
+            : undefined
+        }
         resume={{ planStateId: state.id, initialDone: state.done_task_ids, score: state.score_snapshot }}
         resumed
       />
+      {unlockOpen && (state.domain ?? "").trim() && (
+        <UnlockModal
+          domain={(state.domain ?? "").trim()}
+          packIndex={unlockPack ?? undefined}
+          runId={state.run_id ?? undefined}
+          onUnlocked={() => {
+            setUnlockOpen(false);
+            void loadPacks();
+          }}
+          onClose={() => setUnlockOpen(false)}
+        />
+      )}
     </section>
   );
 }
