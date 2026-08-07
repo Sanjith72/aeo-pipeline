@@ -331,6 +331,52 @@ Against the production database (the `schema_versions` query under "Verifying th
 ownership backfill" below shows the pattern). Zero rows for the version you expect means
 step 4 did not pick up the new commit.
 
+### 6-bis. When the rebuild FAILS — read this before you click it
+
+**A failed factory rebuild takes production down.** The rebuild replaces the running
+container; if the build errors, the Space lands in `stage: BUILD_ERROR` with *nothing*
+serving, and there is no "redeploy the last good image" button. The only way back is a build
+that succeeds. So a rebuild is not a safe no-op — budget for the site being down until the
+build is green, and prefer not to click it just before you stop for the day.
+
+**The most likely reason it fails has nothing to do with your code.** The Space's Dockerfile
+clones this PRIVATE repo at build time with a `GH_TOKEN` BuildKit secret. GitHub PATs expire.
+`--mount=type=secret,id=GH_TOKEN,required=true` guarantees the secret **exists**, not that it
+is **valid** — so an expired token sails past `required=true` and dies in the clone:
+
+```
+remote: Invalid username or token. Password authentication is not supported for Git operations.
+fatal: Authentication failed for 'https://github.com/<owner>/<repo>.git/'
+--> ERROR: process "/bin/sh -c git clone ..." did not complete successfully: exit code: 128
+```
+
+Happened 2026-08-06, one month after the Space was created, and it cost a production outage.
+
+**Do NOT diagnose this from the Space's `errorMessage`.** The HF API and the UI banner show a
+buildkit CACHE-MISS report — every step listed as "cache miss", which is simply what a factory
+rebuild does — followed by `Job failed with exit code: 1`. It names no failing step and reads
+like a code problem. Read the real log instead (`huggingface_hub` is already a dependency):
+
+```bash
+python -c "from huggingface_hub import fetch_space_logs; \
+  [print(l, end='') for l in fetch_space_logs('Sanjith12/aeo-api', build=True, token='hf_...')]"
+```
+
+The endpoint is `/api/spaces/<id>/logs/build`; it 401s anonymously, so it needs the **owner's**
+HF token. The Space UI's Logs → Build → "View raw logs" shows the same thing.
+
+If the trailing counter is all you have, it is decodable: BuildKit marks a FAILED vertex as
+completed (`solver/jobs.go::notifyStarted` sets `Completed` unconditionally, then records
+`Error`), so `user_completed:N` means N vertices finished and the last of them is the one that
+failed — not "N succeeded". `user_completed:6` of 8 pointed at step 4, the clone.
+
+**Fix:** mint a fresh token (fine-grained, Contents: Read-only on this repo, with a calendared
+expiry), replace `GH_TOKEN` in Space Settings → Variables and secrets, and rebuild.
+
+**Early warning:** `keepalive.yml`'s 8-hourly ping is what tells you the Space is down — it
+went red within hours of the outage above. Treat a failed keepalive run as an outage alarm,
+not as cron flakiness.
+
 ### 7. Rollback
 
 ```bash
