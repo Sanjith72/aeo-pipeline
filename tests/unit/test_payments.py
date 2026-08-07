@@ -439,19 +439,32 @@ def test_grant_requires_the_admin_key_when_configured(monkeypatch):
 
 
 def test_proxy_denylist_blocks_the_grant_path():
-    """Second layer: the Next proxy must not forward the admin route at all."""
+    """Second layer: the Next proxy must not forward the admin route at all.
+
+    The rule itself now lives in web/lib/proxyPath.ts with its own unit tests (run by
+    `npm --prefix web test`), because a literal path check inside the route handler could not
+    be exercised without a Next request harness — and that is exactly where it broke: the
+    denylist compared `path.join("/")` while fetch()'s URL parser stripped dot-segments from
+    the forwarded URL, so `entitlements/./grant` passed the check and reached the backend as
+    `entitlements/grant`. This test keeps the WIRING honest: the route must consult that
+    module, and must do so before it builds the target URL."""
     from pathlib import Path
 
+    rule = Path("web/lib/proxyPath.ts").read_text(encoding="utf-8")
+    assert "entitlements/grant" in rule, "the minting route must still be denylisted"
+    # Dot-segments must be refused outright rather than normalised-then-checked, so the string
+    # that is checked is the string that is sent.
+    assert '"."' in rule and '".."' in rule, "dot-segments must be refused by the rule"
+
     src = Path("web/app/api/[...path]/route.ts").read_text(encoding="utf-8")
-    assert "BLOCKED_PATHS" in src
-    assert "entitlements/grant" in src
+    assert "resolveProxyPath" in src, "the route must consult the shared guard"
     # The guard must run BEFORE the target URL is built. Asserted as ORDER, not as a
     # character-distance window: the window version broke the moment another early-return
     # (the no-backend-configured 503) was added between the two, reporting a security
     # regression that had not happened.
-    guard = src.index("BLOCKED_PATHS.has(")
+    guard = src.index("resolveProxyPath(path)")
     target = src.index("const target")
-    assert guard < target, "the denylist must be checked before the backend URL is built"
+    assert guard < target, "the path guard must run before the backend URL is built"
 
 
 def test_payments_disabled_without_a_webhook_secret(monkeypatch):
