@@ -84,12 +84,26 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      # [api] for the same reason the `test` job needs it, one step further on. The P5
+      # ticket-ownership tests reach the routes through `aeo.api.app`, which imports fastapi
+      # (and, via .auth, pyjwt) at module scope — and unlike the auth/payments suites they do
+      # NOT guard that with importorskip. So `.[dev]` alone did not skip them, it ERRORED
+      # them: four ModuleNotFoundError failures that had gone red on every run since
+      # 2026-08-04, taking the `image` job (needs: [test, migrations]) down with them.
+      # Adding importorskip here would be the wrong repair — it would turn the two-user
+      # paywall-bypass tests into silent skips, which is the failure this workflow has
+      # already suffered once.
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[api,dev]"
+      # Same belt-and-braces guard as the `test` job: if the install line ever drifts back,
+      # fail here with an unmistakable cause instead of four confusing test errors.
+      - name: Guard — ownership suite must be runnable, not skippable
+        run: python -c "import fastapi, jwt; print('api deps present')"
       - name: Apply migrations
         run: aeo migrate
+      # -ra so a suite that quietly stops running shows up as skip reasons in the log.
       - name: Integration tests (DB-backed)
-        run: pytest -q tests/integration
+        run: pytest -q -ra tests/integration
 
   image:
     needs: [test, migrations]

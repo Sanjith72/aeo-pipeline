@@ -37,9 +37,18 @@ def _auth_off(monkeypatch) -> None:
 
 @pytest.fixture
 def payments_on(monkeypatch):
-    """Configure Stripe keys on the live settings object and stub the entitlement write."""
+    """Configure Stripe keys on the live settings object and stub the entitlement write.
+
+    PUBLIC_APP_URL is part of "payments are configured", not an optional extra: once it is
+    unset, `checkout_pack` 503s before it can mint a session, so every checkout assertion
+    below becomes `assert 503 == <whatever>`. Omitting it made these four tests read the
+    developer's untracked .env — green here, red in CI, which is the exact defect the
+    `auth_off` fixture above was written to prevent. The sibling fixture in
+    tests/unit/test_payments_pipeline.py already sets it; this one was missed when checkout
+    started 503ing."""
     monkeypatch.setenv("AEO__PAYMENTS__STRIPE_SECRET_KEY", "sk_test_123")
     monkeypatch.setenv("AEO__PAYMENTS__WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("AEO__PAYMENTS__PUBLIC_APP_URL", "https://app.example.com")
     from aeo.settings import get_settings
 
     get_settings.cache_clear()
