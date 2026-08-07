@@ -105,3 +105,57 @@ test("denylist entries are stored dot-free, so they match what is forwarded", ()
     );
   }
 });
+
+// ── the encoded bypass the FIRST fix missed (found in production, 2026-08-07) ────────
+//
+// Vercel/Next percent-decode the catch-all segments ~twice before the guard runs, so a wire
+// path of `/api/entitlements/%25252e/grant` arrives here as the literal segment "%2e". Layer 1
+// compares against "." and lets it through; fetch()'s URL parser then performs the final
+// decode and strips it, delivering `entitlements/grant` to the backend. These tests model what
+// the guard ACTUALLY RECEIVES, not what was on the wire — testing the wire spelling would pass
+// while the real defect stayed open.
+
+test("a percent-encoded dot segment cannot reach a denylisted route", () => {
+  for (const enc of ["%2e", "%2E"]) {
+    const d = resolveProxyPath(["entitlements", enc, "grant"]);
+    assert.equal(d.ok, false, `entitlements/${enc}/grant must be refused`);
+    assert.match(d.ok === false ? d.reason : "", /denylisted/);
+  }
+});
+
+test("percent-encoded double-dots cannot climb out of /api/", () => {
+  // This is the severe half: it left /api/ entirely and made the proxy an authenticated
+  // reader of any backend-origin route. /openapi.json returned 200 through it in production.
+  for (const segs of [
+    ["x", "%2e%2e", "%2e%2e", "openapi.json"],
+    ["%2e%2e", "docs"],
+    ["packs", "%2e%2e", "%2e%2e", "internal"],
+  ]) {
+    const d = resolveProxyPath(segs);
+    assert.equal(d.ok, false, `${segs.join("/")} must be refused`);
+    assert.match(d.ok === false ? d.reason : "", /escapes/);
+  }
+});
+
+test("mixed literal and encoded dots are still caught", () => {
+  assert.equal(resolveProxyPath(["entitlements", ".%2e", "entitlements", "grant"]).ok, false);
+  assert.equal(resolveProxyPath(["entitlements", "%2e.", "entitlements", "grant"]).ok, false);
+});
+
+test("the forwarded path is the NORMALISED one, so check and wire cannot diverge", () => {
+  // The whole class of bug: deciding on one string and sending another. Whatever comes in,
+  // what is returned must already be in normal form — re-parsing it changes nothing.
+  const d = resolveProxyPath(["packs", "42"]);
+  assert.equal(d.ok, true);
+  const path = d.ok ? d.path : "";
+  const reparsed = new URL(`/api/${path}`, "https://proxy.invalid").pathname.slice("/api/".length);
+  assert.equal(path, reparsed, "the returned path must be a fixed point of URL normalisation");
+});
+
+test("ordinary encoded characters are still forwarded, not treated as attacks", () => {
+  // Only DOT segments are special. A percent-encoded space or a dot INSIDE a segment is
+  // ordinary path data and must keep working — over-refusing here would break real routes.
+  for (const segs of [["site-report", "42"], ["a.b", "c"], ["files", "report.json"]]) {
+    assert.equal(resolveProxyPath(segs).ok, true, segs.join("/"));
+  }
+});
