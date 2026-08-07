@@ -21,11 +21,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import {
   classifyAuthFailure,
+  looksLikeEmail,
   readCallback,
   resendCooldownRemaining,
+  resendTypeFor,
   safeNext,
   timeoutFailure,
   verifierMissingFailure,
+  type EmailOtpKind,
   type Failure,
 } from "@/lib/authCallback";
 import { authEnabled, supabase } from "@/lib/supabase";
@@ -39,6 +42,15 @@ function CallbackInner() {
   const params = useSearchParams();
   const [failure, setFailure] = useState<Failure | null>(null);
   const [email, setEmail] = useState<string | null>(null);
+  // What the user typed when we could not tell them their own address. This is not belt and
+  // braces — `email` is null on EVERY failure path (the provider_error branch returns before
+  // it is set; the verifyOtp branch nulls it on exactly the failure that offers a resend), so
+  // without this the resend button was unreachable and the copy promised a remedy that did
+  // not exist. verifyOtp failing means no user came back, so the address is genuinely
+  // unrecoverable — it has to be asked for.
+  const [typedEmail, setTypedEmail] = useState("");
+  /** Which OTP kind the link carried, so a resend asks for the same thing. */
+  const [otpKind, setOtpKind] = useState<EmailOtpKind | null>(null);
   const [resendState, setResendState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   const [cooldown, setCooldown] = useState(0);
   const lastSentAt = useRef<number | null>(null);
@@ -109,6 +121,7 @@ function CallbackInner() {
     // Handled FIRST and on its own: verifyOtp is a definitive answer, so this path never
     // waits on a timeout and never has to guess.
     if (shape.kind === "token_hash") {
+      setOtpKind(shape.type);
       void (async () => {
         const { data, error } = await client.auth.verifyOtp({
           token_hash: shape.tokenHash,
@@ -216,12 +229,15 @@ function CallbackInner() {
     return () => clearInterval(id);
   }, [cooldown]);
 
+  /** The address to resend to: the one the link told us, else the one the user typed. */
+  const resendTo = email ?? (looksLikeEmail(typedEmail) ? typedEmail.trim() : null);
+
   const resend = useCallback(async () => {
-    if (!supabase || !email || cooldown > 0) return;
+    if (!supabase || !resendTo || cooldown > 0) return;
     setResendState("sending");
     const { error } = await supabase.auth.resend({
-      type: "signup",
-      email,
+      type: resendTypeFor(otpKind),
+      email: resendTo,
       options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}` },
     });
     if (error) {
@@ -232,7 +248,7 @@ function CallbackInner() {
     lastSentAt.current = Date.now();
     setCooldown(resendCooldownRemaining(lastSentAt.current, Date.now()));
     setResendState("sent");
-  }, [cooldown, email, next]);
+  }, [cooldown, next, otpKind, resendTo]);
 
   return (
     <main className="flex min-h-[60vh] items-center justify-center p-6">
@@ -241,12 +257,33 @@ function CallbackInner() {
           <>
             <h1 className="mb-2 text-[19px] font-semibold text-ink">{failure.title}</h1>
             <p className="mb-4 text-[13.5px] leading-[1.5] text-ink-500">{failure.message}</p>
-            {failure.canResend && email && (
+            {/* Gated on canResend ALONE. It used to also require `email`, which is null on
+                every failure path — so this whole block was unreachable and the message above
+                promised a resend that could not be requested. When we do not know the
+                address, ask for it rather than hiding the only remedy. */}
+            {failure.canResend && (
               <div className="mb-3">
+                {!email && (
+                  <label className="mb-2 block text-left">
+                    <span className="mb-1 block text-[12.5px] text-ink-300">
+                      Your email address
+                    </span>
+                    <input
+                      type="email"
+                      autoComplete="email"
+                      inputMode="email"
+                      value={typedEmail}
+                      onChange={(e) => setTypedEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      aria-label="Your email address"
+                      className="input w-full px-3 py-2 text-[14px]"
+                    />
+                  </label>
+                )}
                 <button
                   type="button"
                   onClick={() => void resend()}
-                  disabled={cooldown > 0 || resendState === "sending"}
+                  disabled={!resendTo || cooldown > 0 || resendState === "sending"}
                   className="btn-primary w-full justify-center disabled:opacity-60"
                 >
                   {resendState === "sending"

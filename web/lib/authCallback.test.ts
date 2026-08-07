@@ -18,6 +18,8 @@ import {
   parseParams,
   readCallback,
   resendCooldownRemaining,
+  looksLikeEmail,
+  resendTypeFor,
   safeNext,
   timeoutFailure,
   verifierMissingFailure,
@@ -303,4 +305,46 @@ test("Supabase's expired-link shape is an expiry, even though it says access_den
     "access_denied otp_expired",
   );
   assert.equal(viaError.kind, "spent", "access_denied must not outrank explicit expiry evidence");
+});
+
+// ── the resend button was unreachable (Phase 6 follow-up) ────────────────────────────
+//
+// The gate was `failure.canResend && email`, and `email` is null on every failure path — the
+// provider_error branch returns before it is set, and the verifyOtp branch calls setEmail(null)
+// on precisely the failure that sets canResend:true. So "Send yourself a fresh one and it will
+// work" rendered above a lone "Go back" button. Confirmed on the deployed callback: the only
+// interactive control on the page was "Go back".
+
+test("the classifier promises a resend exactly where one must be offered", () => {
+  // If this drifts, the copy and the UI disagree again.
+  const spent = classifyAuthFailure("Email link is invalid or has expired", "otp_expired");
+  assert.equal(spent.canResend, true);
+  assert.match(spent.message.toLowerCase(), /fresh one|new link|send/);
+
+  for (const f of [
+    classifyAuthFailure("Consent was refused by the user", "access_denied"),
+    classifyAuthFailure("redirect_to is not allowed", "invalid_request"),
+    classifyAuthFailure("already been confirmed"),
+    timeoutFailure(),
+  ]) {
+    assert.equal(f.canResend, false, `${f.kind} must not offer a resend it cannot help with`);
+  }
+});
+
+test("an address can be validated well enough to enable the button", () => {
+  for (const good of ["a@b.com", "user+tag@sub.example.co.uk", "  spaced@example.com  "]) {
+    assert.equal(looksLikeEmail(good), true, good);
+  }
+  for (const bad of ["", "   ", "nope", "a@b", "a@.com", "a@b.", "a b@c.com", "a@@b.com", null]) {
+    assert.equal(looksLikeEmail(bad), false, JSON.stringify(bad));
+  }
+});
+
+test("the resend asks for the same kind of link that failed", () => {
+  assert.equal(resendTypeFor("email_change"), "email_change");
+  assert.equal(resendTypeFor("signup"), "signup");
+  // recovery is not resendable via resend() — it maps to the default rather than throwing,
+  // and the classifier is what decides whether a resend is offered at all.
+  assert.equal(resendTypeFor("recovery"), "signup");
+  assert.equal(resendTypeFor(null), "signup");
 });
