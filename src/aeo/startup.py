@@ -156,6 +156,48 @@ def _check_api(s: Settings, fatal: list[str], warnings: list[str], *, serving: b
             "serving without a rate limit (AEO__API__RATE_LIMIT=0) — fine locally, set it "
             "in any public deployment"
         )
+    _check_cors(api.cors_origins, warnings)
+
+
+def _check_cors(raw: str, warnings: list[str]) -> None:
+    """CORS origins that can never match what a browser actually sends.
+
+    Note what is NOT checked, because getting this wrong cost a wrong line in DEPLOY.md: an
+    unset or localhost-only value is not flagged, and there is no fatal here at all. In this
+    product the browser never calls the API — every /api/* request goes through the Next.js
+    server-side proxy, and a server-to-server request carries no Origin header and is not
+    subject to CORS. A proxy-only deployment with the middleware not installed is a correct,
+    intended posture, so warning about it would be noise that trains operators to skim.
+
+    What IS worth saying is that a CONFIGURED value cannot work. A browser sends
+    `Origin: scheme://host[:port]` — never a trailing slash, never a path — and Starlette
+    compares it exactly, so `https://app.example.com/` matches nothing and fails with an
+    opaque browser-side CORS error that names no variable. That is the silent-misconfiguration
+    class startup validation exists for.
+    """
+    for entry in (o.strip() for o in (raw or "").split(",")):
+        if not entry:
+            continue
+        if entry == "*":
+            warnings.append(
+                "AEO__API__CORS_ORIGINS is '*' — any website can make browser calls to this "
+                "API. Harmless only while nothing sensitive is reachable without a header a "
+                "cross-origin page cannot set; prefer listing origins explicitly"
+            )
+            continue
+        parsed = urlparse(entry)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            warnings.append(
+                f"AEO__API__CORS_ORIGINS entry {entry!r} is not an absolute origin — a browser "
+                "sends 'scheme://host[:port]' and the comparison is exact, so this entry can "
+                "never match"
+            )
+        elif entry.endswith("/") or parsed.path or parsed.query or parsed.fragment:
+            warnings.append(
+                f"AEO__API__CORS_ORIGINS entry {entry!r} carries a path or trailing slash — an "
+                "Origin header has neither, and the comparison is exact, so this entry can "
+                "never match. Use just the scheme, host and port"
+            )
 
 
 _SAFE_JWT_ALGS = frozenset({"HS256", "HS384", "HS512", "RS256", "ES256"})

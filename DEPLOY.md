@@ -481,10 +481,25 @@ a public deployment* — the local dev defaults are deliberately permissive.
 | `AEO__API__AUTH_KEY` | **yes** | require `X-API-Key` on `/api/*`. `aeo serve` refuses to boot without it (or `ALLOW_OPEN`) | unset → **fatal at boot** |
 | `AEO__API__ADMIN_KEY` | **with `AUTH_KEY`** | `X-Admin-Key` for the entitlement-MINTING routes. Must differ from `AUTH_KEY` — admin routes 503 until you set it | unset (admin routes disabled) |
 | `AEO__API__ALLOW_OPEN` | no | localhost-only escape hatch: permits serving with no `AUTH_KEY`. **Never set on a public host** | unset |
-| `AEO__API__CORS_ORIGINS` | **yes** | comma-separated browser origins allowed to call the API. Must list your deployed web origin | `http://localhost:3000,http://127.0.0.1:3000` |
+| `AEO__API__CORS_ORIGINS` | browser-direct only | comma-separated browser origins allowed to call the API. **Not needed in this topology** — see the note below | `http://localhost:3000,http://127.0.0.1:3000` |
 | `AEO__API__RATE_LIMIT` / `AEO__API__RATE_WINDOW_SEC` | recommended | per-IP `/api/*` throttle. `0` disables it; startup **warns** on a public deploy without it | `0` / `60` |
 | `AEO__API__OVERVIEW_DAILY_LIMIT` | recommended | fresh (non-cached) overview builds per IP per day — the expensive path. `0` disables | `0` |
 | `AEO__API__OVERVIEW_GLOBAL_DAILY_LIMIT` | recommended | global ceiling on fresh overview builds; the backstop the per-IP cap cannot provide, since `X-Forwarded-For` is spoofable | `0` |
+
+> **On CORS, correcting an earlier version of this table.** This row used to read
+> Req? = **yes**, "must list your deployed web origin". That was wrong, and worth stating
+> plainly because acting on it wastes time chasing a setting that changes nothing. The browser
+> never calls the backend: every `/api/*` request goes to the Next.js **server-side proxy**,
+> which forwards it from a server, and server-to-server requests send no `Origin` header and
+> are not subject to CORS at all. Your deployed web origin does not belong in this list and
+> adding it has no effect on the product.
+>
+> It matters only when a **browser is pointed straight at the API** — local development
+> against `localhost:8000`, a second front end, or someone poking `/docs`. Left blank the CORS
+> middleware is not installed at all, which is a perfectly good posture for a
+> proxy-only deployment. Startup validation now warns about entries that can never match
+> (a trailing slash or a path — a browser sends only `scheme://host[:port]`) and about `*`,
+> rather than about the value being "wrong" for a deployment that does not use it.
 
 ### User auth (Supabase JWT) — a separate boundary from `AUTH_KEY`
 
@@ -505,6 +520,10 @@ a public deployment* — the local dev defaults are deliberately permissive.
 | `AEO__PAYMENTS__PACK_PRICE_CENTS` | no | flat price for one pack, minor units (`4900` = $49.00). Must be > 0 unless a Price id is set | `4900` |
 | `AEO__PAYMENTS__CURRENCY` | no | ISO currency for the inline price | `usd` |
 | `AEO__PAYMENTS__STRIPE_PRICE_ID` | no | dashboard-managed Price instead of the inline amount (tax / multi-currency); overrides the two rows above | unset |
+| `AEO__PAYMENTS__ENABLED` | no | the master switch. Set `false` to **stop selling while keeping the credentials configured** — during a pricing change, or after a fraud incident. Without it the only way to stop the buy path is to unset the secret key, which is indistinguishable from having lost it | `true` |
+| `AEO__PAYMENTS__SUCCESS_PATH` | no | where Stripe returns a buyer, joined onto `PUBLIC_APP_URL`. The studio reads `?checkout=success` here; change it and the return leg stops being recognised | `/studio?checkout=success` |
+| `AEO__PAYMENTS__CANCEL_PATH` | no | as above for an abandoned checkout | `/studio?checkout=cancelled` |
+| `AEO__PAYMENTS__REQUEST_TIMEOUT_SEC` | no | how long to wait on Stripe's API before giving up. Worth raising on a cold free-tier Space, where the first outbound call after an idle period is slow | `20.0` |
 
 ### Web host (Vercel) — not in the backend `.env`
 
