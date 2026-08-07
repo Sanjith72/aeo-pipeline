@@ -132,6 +132,38 @@ jobs:
         id: img
         run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
+      # Free the storage BEFORE pushing, not after — and this ordering is the whole point.
+      #
+      # On 2026-08-07 the push at 91b5161 succeeded and created the package; the very next
+      # push (bb69667, six minutes later) failed with `403 Forbidden` on a blob HEAD request.
+      # GitHub Free includes 500 MB of Packages storage for PRIVATE packages, and this image
+      # carries Chromium plus Playwright's OS dependencies — one version of it is larger than
+      # the whole allowance. GHCR lets you go over, then refuses subsequent writes until you
+      # are back under. That is exactly the observed pattern: first push fine, second refused.
+      #
+      # So pruning AFTER a push (the usual idiom) would fix nothing: the push that needs the
+      # space is the one being blocked. Pruning first keeps at most one version resident, so
+      # every run has room for the image it is about to publish. `min-versions-to-keep: 0`
+      # rather than 1 for the same reason — keeping the previous build would leave us over the
+      # line again. Nothing consumes this image today, so there is no rollback value being
+      # given up; the tags are reproducible from any commit.
+      #
+      # continue-on-error because a prune failure must never be the reason a green build is
+      # reported red. If the 403 turns out to be the OTHER candidate cause — the source-repo
+      # linkage not granting later writes — this step is a no-op and the fix is manual:
+      # github.com/users/<owner>/packages/container/<pkg>/settings → Manage Actions access →
+      # add the repository with Write. The push error is identical either way, so check the
+      # storage figure at github.com/settings/billing before assuming which one you have.
+      - name: Prune old image versions (storage is the binding constraint)
+        continue-on-error: true
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: ${{ github.repository_owner }}
+          package-name: ${{ github.event.repository.name }}
+          package-type: container
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: false
+
       # Build once, push with both the commit SHA and a moving 'latest' tag.
       - name: Build & push
         uses: docker/build-push-action@v6
