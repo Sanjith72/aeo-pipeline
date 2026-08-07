@@ -1,5 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 
+import { resolveProxyPath } from "@/lib/proxyPath";
+
 // Server-side API proxy. The browser calls this SAME-ORIGIN route; it injects the secret
 // API key and forwards to the real backend — so the key (and the backend URL) never ship in
 // the client bundle. This replaces the old browser-visible NEXT_PUBLIC_API_KEY, which was a
@@ -68,20 +70,28 @@ const RETRY_BACKOFF_MS = [250, 750]; // waited before attempt 2 and attempt 3
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Paths this proxy must NEVER forward. The injected API_KEY authenticates the PROXY, not the
-// person — every visitor's browser can reach this route same-origin, so any backend route
-// gated only by X-API-Key is effectively public through here. These mint entitlements or read
-// another user's data; before this denylist, a signed-in visitor could POST themselves
-// `all_packs` from the devtools console and bypass the entire paywall. The backend also
-// enforces this independently (require_admin_key) — this is the second layer, and the one
-// that keeps the admin surface off the public origin entirely.
-const BLOCKED_PATHS = new Set(["entitlements/grant"]);
-
 async function proxy(req: NextRequest, path: string[]): Promise<Response> {
-  const joined = path.join("/");
-  if (BLOCKED_PATHS.has(joined)) {
+  // Which paths may be forwarded lives in lib/proxyPath.ts, with tests. It refuses the
+  // entitlement-minting route (the injected API_KEY authenticates the PROXY, not the person,
+  // so any backend route gated only by X-API-Key is effectively public through here) AND any
+  // path containing a dot-segment.
+  //
+  // The dot-segment half is not hypothetical: the old check was `Set.has(path.join("/"))`
+  // while the forwarded URL went through fetch()'s URL parser, which strips `.` and `..`. So
+  // `entitlements/./grant` passed the check and arrived at the backend as
+  // `entitlements/grant`. Reproduced against production on 2026-08-07 (403 "admin credential
+  // required" through the proxy, vs 404 for the same raw path sent straight to the backend —
+  // proving the proxy did the rewriting). The backend's require_admin_key still refused it,
+  // so nothing was granted, but this layer was not doing its job. Refusing dot-segments
+  // outright keeps the string that is CHECKED byte-identical to the string that is SENT.
+  const decision = resolveProxyPath(path);
+  if (!decision.ok) {
+    // Same 404 for both refusal kinds, so a prober cannot distinguish "denylisted" from
+    // "malformed". The reason goes to the server log only.
+    console.warn(`[api-proxy] refused: ${decision.reason}`);
     return NextResponse.json({ detail: "not found" }, { status: 404 });
   }
+  const joined = decision.path;
   warnOnce();
   // 503, not the 502 three failed fetches would produce: this is a permanent configuration
   // fault, not an unreachable backend, and retrying cannot fix it. The message names the
