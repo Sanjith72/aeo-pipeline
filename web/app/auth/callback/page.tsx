@@ -24,6 +24,8 @@ import {
   readCallback,
   resendCooldownRemaining,
   safeNext,
+  timeoutFailure,
+  verifierMissingFailure,
   type Failure,
 } from "@/lib/authCallback";
 import { authEnabled, supabase } from "@/lib/supabase";
@@ -161,7 +163,12 @@ function CallbackInner() {
             "The code was already used, or the code_verifier is missing from this browser's " +
             "storage (different browser, cleared storage, or a redirect through another origin).",
         );
-        fail(classifyAuthFailure("The sign-in link has expired or was already used."));
+        // Was `classifyAuthFailure("The sign-in link has expired or was already used.")` —
+        // the same hardcoded string the 15s timeout below also passed, so two different
+        // failures rendered byte-identical copy and the real reason reached console only.
+        // This case is specifically "no code_verifier in THIS browser", for which resending
+        // a link changes nothing; the copy has to say where to open it instead.
+        fail(verifierMissingFailure());
       }
     });
 
@@ -184,7 +191,11 @@ function CallbackInner() {
                 "sign-in button.",
               canResend: false,
             }
-          : classifyAuthFailure("The sign-in link has expired or was already used."),
+          // Not "your link expired" — we do not know that. Nothing resolved, which is a
+          // different (and much rarer, now INITIAL_SESSION answers in ms) condition, and
+          // asserting a cause we have not established is what made this indistinguishable
+          // from the case above.
+          : timeoutFailure(),
       );
     }, PKCE_TIMEOUT_MS);
 
