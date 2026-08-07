@@ -308,3 +308,40 @@ export function timeoutFailure(): Failure {
     canResend: false,
   };
 }
+
+// ── resending when we do not know the address ──────────────────────────────────────
+//
+// The callback's resend button was gated on `failure.canResend && email`, and `email` is null
+// on EVERY failure path: the provider_error branch returns before it is set, and the
+// verifyOtp branch calls setEmail(null) on exactly the failure that sets canResend:true. So a
+// spent confirmation link rendered "Send yourself a fresh one and it will work" above a single
+// "Go back" button. The copy promised a remedy the UI never offered — worse than saying
+// nothing, because the user concludes the product is broken rather than that they must act.
+//
+// The address genuinely IS unknown at that point: verifyOtp failed, so no user came back. It
+// cannot be recovered — it has to be asked for. Hence the check below, and a form.
+
+/** Does this look enough like an email address to be worth sending to Supabase?
+ *
+ *  Deliberately permissive. This is a pre-flight so the button can be disabled on obvious
+ *  nonsense and the user gets an instant answer instead of a round trip; the authority on
+ *  deliverability is the mail server, and over-strict client validation is how legitimate
+ *  addresses (plus-tags, long TLDs, unicode locals) get rejected by software that thinks it
+ *  knows better. */
+export function looksLikeEmail(raw: string | null | undefined): boolean {
+  const s = (raw ?? "").trim();
+  if (!s || s.length > 320 || /\s/.test(s)) return false;
+  const at = s.indexOf("@");
+  if (at <= 0 || at !== s.lastIndexOf("@")) return false;
+  const domain = s.slice(at + 1);
+  if (!domain || domain.startsWith(".") || domain.endsWith(".")) return false;
+  return domain.includes(".");
+}
+
+/** Supabase's `resend()` accepts a narrower set of types than a callback link can carry.
+ *  A recovery link is not resendable this way at all (that is resetPasswordForEmail), so it
+ *  maps to the signup default rather than throwing — the caller only reaches this when the
+ *  classifier has already said a resend can help. */
+export function resendTypeFor(kind: EmailOtpKind | null | undefined): "signup" | "email_change" {
+  return kind === "email_change" ? "email_change" : "signup";
+}
