@@ -11,11 +11,10 @@
 // Both facets stay mounted once opened and toggle via `hidden`, so switching tabs never
 // drops presentation state (open phases, expanded how-tos) or re-syncs milestones.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { DeveloperHandoffPanel, MilestoneDashboard } from "../MilestoneDashboard";
 import type { PackPreview, StructuredPlan } from "@/lib/types";
-import { PackPlanSection } from "./PackPlanSection";
 import { QuestMap } from "./QuestMap";
 import { useQuestTracker } from "./useQuestTracker";
 
@@ -37,8 +36,7 @@ export function TrackerView({
   businessName,
   cmsType,
   facet,
-  packContext,
-  focusFixId,
+  onShareUrl,
   visible = true,
 }: {
   domain: string;
@@ -47,10 +45,11 @@ export function TrackerView({
   cmsType?: string | null;
   /** Which results tab is hosting the tracker right now (Roadmap = map, Strategy = list). */
   facet: TrackerFacet;
-  /** Pack fixes to fold into this plan (item 3.4). Omitted on the no-domain path. */
-  packContext?: PackPlanContext;
-  /** A pack fix to flash, jumped to from the Pages tab (item 3.5). */
-  focusFixId?: string | null;
+  /** Lifts the tracker's share link OUT to whoever needs it beside this component — the
+   *  Pages tab's fix rows, which are no longer inside this subtree. A callback rather than
+   *  letting PagesPanel call useQuestTracker itself: a second instance would fire a second
+   *  POST /api/milestones sync (a DB write), which this file's header comment forbids. */
+  onShareUrl?: (url: string | null) => void;
   // False while the tracker is mounted but hidden behind another results tab — the map
   // defers its celebrations and "opened" analytics until it can actually be seen.
   visible?: boolean;
@@ -58,6 +57,11 @@ export function TrackerView({
   // The single tracker instance both facets render — syncs once, then every status change,
   // verify, or link rotation from either facet lands in the same state.
   const tracker = useQuestTracker({ domain, plan, businessName, cmsType });
+
+  const shareUrl = tracker.shareUrl;
+  useEffect(() => {
+    onShareUrl?.(shareUrl);
+  }, [onShareUrl, shareUrl]);
 
   // Track which facets have ever been shown; mount lazily, then keep mounted behind
   // `hidden` so tab switches preserve state without re-firing effects.
@@ -83,22 +87,14 @@ export function TrackerView({
             it for you.
           </p>
           <MilestoneDashboard tracker={tracker} />
-          {/* item 3.4 — the selected pack's fixes, in the same phases and the same card
-              chrome as the list above. Deliberately BESIDE the tracker, not inside it:
-              pack tickets are a different server-side family, and mounting a second tracker
-              is what this file's header comment forbids. The tracker keeps ownership of
-              progress, "Check my site now" and the share link, which this section reuses. */}
-          {packContext && (
-            <PackPlanSection
-              runId={packContext.runId}
-              packs={packContext.packs}
-              selectedPack={packContext.selectedPack}
-              onSelectPack={packContext.onSelectPack}
-              onUnlock={packContext.onUnlock}
-              focusFixId={focusFixId}
-              shareUrl={tracker.shareUrl}
-            />
-          )}
+          {/* The selected pack's page-by-page fixes used to render here (item 3.4). They now
+              live under each page in the PAGES tab, which is where a user looking at a page's
+              scores expects to find that page's work — and it leaves this tab as one list
+              again instead of two stacks that both said "Quick Wins".
+              What stays here is the half the pack fixes cannot express: the plan's
+              build-this-page milestones, which exist for pages that DO NOT EXIST YET. Pack
+              tickets only ever cover pages that were crawled, so deleting this list would
+              remove the only surface telling an owner to create the page they are missing. */}
           <DeveloperHandoffPanel tracker={tracker} />
         </div>
       )}

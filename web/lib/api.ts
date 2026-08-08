@@ -205,7 +205,7 @@ export const api = {
   /** The tickets for a run's packs (lazily generated on first view), FILTERED to the packs
    *  this viewer has unlocked, plus `locked_ticket_count` for the ones withheld.
    *
-   *  Read by PackPlanSection for that count — "N more fixes are in locked packs" — which is
+   *  Read by PagesPanel for that count — "N more fixes are in locked packs" — which is
    *  the sentence the backend computes it for. Not used for the ticket list itself: the plan
    *  works one pack at a time and `getPackTickets` gates per pack (403 on a locked one)
    *  rather than silently filtering. */
@@ -226,7 +226,7 @@ export const api = {
   /** Set a ticket's assignee / target_date (CH-08). Only the flagged fields change.
    *
    *  NO CALLER TODAY, and saying so is the point. TicketBoard.tsx was the only UI that ever
-   *  offered assignee/target-date; Phase 3 item 3.4 replaced the board with PackPlanSection,
+   *  offered assignee/target-date; Phase 3 item 3.4 replaced the board with the in-plan fix list,
    *  which does not, and Phase 4 deleted the orphaned file. So the capability is live and
    *  tested on the backend (POST /api/tickets/{run}/fields) with nothing in the product
    *  exposing it. Kept rather than deleted because the route is real and the gap is a

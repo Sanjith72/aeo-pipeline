@@ -14,7 +14,14 @@
 // This module only reshapes; the caller wires the mutations to /api/tickets/*.
 
 import type { PhaseKey } from "./phases";
-import type { MilestoneStatus, SkillKey, SkillPriority, Ticket, TicketStatus } from "./types";
+import type {
+  MilestoneStatus,
+  PackPageDetail,
+  SkillKey,
+  SkillPriority,
+  Ticket,
+  TicketStatus,
+} from "./types";
 
 /**
  * The roadmap order, restated rather than imported.
@@ -206,4 +213,118 @@ export function packPlanProgress(phases: readonly PackPlanPhase[]): {
     in_progress: inProgress,
     pct: all.length ? Math.round((verified / all.length) * 100) : 0,
   };
+}
+
+// ── grouping a pack's fixes by page (the Pages tab) ─────────────────────────────────
+//
+// When the workable fixes moved out of "Your plan" and under each page in the Pages tab, the
+// obvious implementation — render tickets inside the existing per-page accordion, filtered by
+// `t.page_url === page.url` — silently loses work in four different ways. Each of these is a
+// real product state, not a hypothetical:
+//
+//  1. A PAGE WITH NO SCORED DETAIL STILL HAS FIXES. Tickets are keyed per CLIENT, not per run
+//     (`list_tickets_for_run(client_id, pack_index)`), and `generate_tickets_from_run`
+//     deliberately preserves open tickets for pages the current run did not re-score — that
+//     is the data-loss fix guarded by tests/integration/test_ticket_prune_db.py. Rendering
+//     fixes only inside `page.detail != null` hides every one of them.
+//  2. A PAGE WITH ZERO PRIORITIES STILL HAS FIXES. `_skills_with_findings` falls back to "any
+//     skill with non-empty suggestions" when `priorities` is empty, so tickets legitimately
+//     exist where `detail.priorities` is `[]`. Gating on `priorities.length > 0` hides the
+//     whole list.
+//  3. A VERIFIED TICKET OUTLIVES ITS PAGE'S PLACE IN THE PACK. The prune never deletes
+//     `closed_pending_verify` or `verified_completed` tickets — they hold the pinned
+//     baseline→current record and the pack's completion signal. Their page can nonetheless be
+//     absent from this run's detail. Dropping them would erase the CH-15 delta and shrink the
+//     pack's apparent progress.
+//  4. URL SPELLINGS DIFFER. `page_priorities.url` and `crawled_pages.url_normalized` "can
+//     differ in form" (skill_scores.py) and a ticket's `page_url` is only refreshed when its
+//     page is re-scored. Exact string equality was fine when a mismatch cost a scroll anchor;
+//     as an existence test it would drop fixes on the floor.
+//
+// So the grouping is a UNION, not a filter: every ticket lands somewhere visible, and a page
+// with no detail is still a page. Matching prefers exact equality and falls back to a
+// deliberately timid normalisation — enough to survive a trailing slash or a capitalised
+// host, never enough to merge two genuinely different pages. `aeo.utils.url.normalize` is NOT
+// reimplemented here; see the note on packFixDomId for why that boundary is held.
+
+export interface PageFixGroup {
+  /** As the server spells it: the detail's url when we have one, else the ticket's own. */
+  url: string;
+  /** Null for a page that has fixes but was not scored in this run (cases 1 and 3 above). */
+  detail: PackPageDetail | null;
+  tickets: Ticket[];
+}
+
+/** Timid normalisation for MATCHING ONLY — never for display, never sent to the server.
+ *  Lower-cases scheme+host and drops one trailing slash. Deliberately leaves the query, the
+ *  path case and any `www.` alone: merging two pages that differ there would hide real work,
+ *  which is the failure this whole module is guarding against. */
+export function pageMatchKey(url: string | null | undefined): string {
+  const raw = (url ?? "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw);
+    const path = u.pathname.length > 1 ? u.pathname.replace(/\/+$/, "") : u.pathname;
+    return `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${path}${u.search}`;
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
+}
+
+/**
+ * Union of this run's scored pages and every page that has a ticket, in that order.
+ *
+ * Scored pages keep the server's impact ordering. Pages that exist only in tickets follow,
+ * so nothing is lost and nothing is silently reordered. Tickets with no page at all
+ * (`page_url: null` — site-wide findings) come back separately rather than being attached to
+ * an arbitrary page or dropped.
+ */
+export function groupFixesByPage(
+  pages: readonly PackPageDetail[] | null | undefined,
+  tickets: readonly Ticket[] | null | undefined,
+): { groups: PageFixGroup[]; sitewide: Ticket[] } {
+  const byKey = new Map<string, Ticket[]>();
+  const sitewide: Ticket[] = [];
+  for (const t of tickets ?? []) {
+    const key = pageMatchKey(t.page_url);
+    if (!key) {
+      sitewide.push(t);
+      continue;
+    }
+    const bucket = byKey.get(key);
+    if (bucket) bucket.push(t);
+    else byKey.set(key, [t]);
+  }
+
+  const groups: PageFixGroup[] = [];
+  const claimed = new Set<string>();
+  for (const p of pages ?? []) {
+    const key = pageMatchKey(p.url);
+    claimed.add(key);
+    groups.push({ url: p.url, detail: p, tickets: byKey.get(key) ?? [] });
+  }
+  // Whatever is left has fixes but no scored detail this run — cases 1 and 3.
+  for (const [key, group] of byKey) {
+    if (claimed.has(key)) continue;
+    groups.push({ url: group[0].page_url ?? key, detail: null, tickets: group });
+  }
+  return { groups, sitewide };
+}
+
+/** Fix counts for a page, for the sidebar badge. `open` is what is still to do. */
+export function pageFixCounts(tickets: readonly Ticket[]): {
+  total: number;
+  open: number;
+  verifying: number;
+  verified: number;
+} {
+  let open = 0;
+  let verifying = 0;
+  let verified = 0;
+  for (const t of tickets) {
+    if (t.status === "verified_completed") verified += 1;
+    else if (t.status === "closed_pending_verify") verifying += 1;
+    else open += 1;
+  }
+  return { total: tickets.length, open, verifying, verified };
 }

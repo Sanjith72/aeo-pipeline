@@ -11,6 +11,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  groupFixesByPage,
+  pageFixCounts,
   PACK_PHASE_ORDER,
   bucketTicket,
   packFixDomId,
@@ -21,7 +23,7 @@ import {
   ticketToPlanTask,
 } from "./packPlan.ts";
 import { PHASE_ORDER } from "./phases.ts";
-import type { SkillPriority, Ticket } from "./types.ts";
+import type { PackPageDetail, SkillPriority, Ticket, TicketStatus } from "./types.ts";
 
 test("the pack phase order is IDENTICAL to the plan's", () => {
   // packPlan.ts restates the order instead of importing it: a value import from a sibling
@@ -263,4 +265,102 @@ test("a missing skill or page still yields a stable, non-colliding anchor", () =
   // Never produce `undefined` in a DOM id, and never let two unknowns collide with a real one.
   assert.equal(packFixDomId(null, null), "packfix:?@?");
   assert.equal(packFixDomId(undefined, "https://x.com/"), "packfix:?@https://x.com/");
+});
+
+// ── grouping fixes by page for the Pages tab ────────────────────────────────────────
+//
+// Each of these pins a way the obvious implementation (filter tickets by
+// `t.page_url === page.url`, inside the existing `detail != null && priorities.length > 0`
+// accordion) silently loses a customer's work. They are product states, not hypotheticals —
+// see the block comment in packPlan.ts for where each one comes from in the backend.
+
+function tk(pageUrl: string | null, status: TicketStatus, skill = "messaging"): Ticket {
+  return {
+    id: 1, task_key: `skill:${skill}@${pageUrl}`, label: "l", action_required: "a", how_to: null,
+    status, status_source: "manual", detected_at: null, pack_index: 1, assignee: null,
+    target_date: null, page_url: pageUrl, skill: skill as Ticket["skill"],
+    baseline_score: null, current_score: null, closed_at: null,
+  };
+}
+const pg = (url: string, scored: boolean): PackPageDetail => ({
+  url, page_type: "generic", overall: scored ? 50 : null,
+  detail: scored ? { skills: {} as never, priorities: [] } : null,
+});
+
+test("a page scored this run keeps the server's impact ordering", () => {
+  const { groups } = groupFixesByPage([pg("https://x.com/a", true), pg("https://x.com/b", true)], []);
+  assert.deepEqual(groups.map((g) => g.url), ["https://x.com/a", "https://x.com/b"]);
+});
+
+test("a page with NO scored detail still shows its fixes", () => {
+  // Tickets are per-client, not per-run: generate_tickets_from_run preserves open tickets for
+  // pages this run did not re-score. Gating the fix list on `detail != null` hides them.
+  const { groups } = groupFixesByPage([pg("https://x.com/a", false)], [tk("https://x.com/a", "pending")]);
+  assert.equal(groups[0].tickets.length, 1, "an unscored page must not lose its fix list");
+});
+
+test("a page with zero priorities still shows its fixes", () => {
+  // _skills_with_findings falls back to 'any skill with suggestions', so tickets exist where
+  // priorities is []. The old accordion gate `priorities.length > 0` hid the whole list.
+  const page = pg("https://x.com/a", true); // detail present, priorities []
+  const { groups } = groupFixesByPage([page], [tk("https://x.com/a", "pending")]);
+  assert.equal(groups[0].detail?.detail?.priorities.length, 0);
+  assert.equal(groups[0].tickets.length, 1);
+});
+
+test("a verified ticket whose page left the pack is still shown", () => {
+  // The prune NEVER deletes closed_pending_verify / verified_completed tickets — they hold the
+  // pinned baseline->current record and the pack's completion signal. A page-keyed list that
+  // dropped them would erase the CH-15 delta and shrink the pack's apparent progress.
+  const { groups } = groupFixesByPage(
+    [pg("https://x.com/a", true)],
+    [tk("https://x.com/a", "pending"), tk("https://x.com/gone", "verified_completed")],
+  );
+  assert.equal(groups.length, 2);
+  assert.equal(groups[1].url, "https://x.com/gone");
+  assert.equal(groups[1].detail, null, "it has fixes but no scored detail");
+  assert.equal(groups[1].tickets[0].status, "verified_completed");
+});
+
+test("url spellings that differ only in host case or a trailing slash still match", () => {
+  // page_priorities.url and crawled_pages.url_normalized 'can differ in form', and a ticket's
+  // page_url is refreshed only when its page is re-scored. Exact equality was fine as a scroll
+  // anchor; as an existence test it drops fixes.
+  const { groups } = groupFixesByPage(
+    [pg("https://x.com/", true)],
+    [tk("https://X.com", "pending"), tk("https://x.com/", "pending")],
+  );
+  assert.equal(groups.length, 1, "must not split one page into two");
+  assert.equal(groups[0].tickets.length, 2);
+});
+
+test("matching is timid: pages that really differ are never merged", () => {
+  // Over-merging hides work, which is the failure this module exists to prevent. Query and
+  // path case are left alone on purpose.
+  const { groups } = groupFixesByPage(null, [
+    tk("https://x.com/a?v=1", "pending"),
+    tk("https://x.com/a?v=2", "pending"),
+    tk("https://x.com/A", "pending"),
+    tk("https://x.com/a", "pending"),
+  ]);
+  assert.equal(groups.length, 4, "distinct pages must stay distinct");
+});
+
+test("a site-wide fix with no page is returned, never dropped or misattached", () => {
+  const { groups, sitewide } = groupFixesByPage([pg("https://x.com/a", true)], [tk(null, "pending")]);
+  assert.equal(sitewide.length, 1);
+  assert.equal(groups[0].tickets.length, 0, "it must not be attached to an arbitrary page");
+});
+
+test("no pages and no tickets is empty, not a crash", () => {
+  assert.deepEqual(groupFixesByPage(null, null), { groups: [], sitewide: [] });
+  assert.deepEqual(groupFixesByPage([], []), { groups: [], sitewide: [] });
+});
+
+test("the sidebar badge counts what is still to do, separately from what is proven", () => {
+  const counts = pageFixCounts([
+    tk("u", "pending"), tk("u", "in_progress"),
+    tk("u", "closed_pending_verify"), tk("u", "verified_completed"),
+  ]);
+  assert.deepEqual(counts, { total: 4, open: 2, verifying: 1, verified: 1 });
 });
