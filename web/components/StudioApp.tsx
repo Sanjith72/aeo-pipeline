@@ -808,6 +808,9 @@ export function StudioApp() {
             profile: prof,
             business_name: name.trim() || null,
             domain: domain.trim() || null,
+            // Without this the resumed /plan/<id> can never show the Pages tab: the tab is
+            // gated on the saved run, and a NULL here is unrecoverable client-side.
+            run_id: runId ?? auditJob?.result?.run?.run_id ?? null,
             score: prof ? aeoScore(prof) : null,
           });
           setPlanStateId(id);

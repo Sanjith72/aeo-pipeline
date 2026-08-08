@@ -2189,7 +2189,22 @@ def get_plan_state(plan_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="plan store temporarily unavailable") from exc
     if not row:
         raise HTTPException(status_code=404, detail=f"no plan {plan_id}")
-    return {k: row.get(k) for k in _PLAN_STATE_PUBLIC}
+    out = {k: row.get(k) for k in _PLAN_STATE_PUBLIC}
+    if out.get("run_id") is None and (out.get("domain") or "").strip():
+        # Plans saved while the studio omitted run_id from the create call carry NULL here
+        # forever, and the Pages tab (packs, page scores, workable fixes) is gated on it —
+        # a permanently degraded resume for a bug the user cannot fix. Resolve the domain's
+        # latest crawl run at read time instead. Read-only: the stored row stays as saved,
+        # and pack access behind the run is still decided by entitlements, not by this id.
+        from ..storage.repos import runs as runs_repo
+
+        try:
+            latest = runs_repo.latest_for_domain(out["domain"])
+            if latest and latest.get("run_id") is not None:
+                out["run_id"] = latest["run_id"]
+        except Exception:
+            pass  # the fallback must never take down the plan itself
+    return out
 
 
 @app.put("/api/plan-state/{plan_id}")
