@@ -7,6 +7,7 @@
 // the root route); the results experience is in components/results.tsx.
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type {
   AuditJob,
@@ -36,7 +37,7 @@ import {
   unlockedDestination,
   urlWithoutCheckoutParams,
 } from "@/lib/checkoutReturn";
-import { clearPendingUnlock, readPendingUnlock, rememberPendingUnlock } from "@/lib/pendingUnlock";
+import { clearPendingUnlock, readPendingUnlock, rememberPendingUnlock, unlockReturnPath } from "@/lib/pendingUnlock";
 import type { UnlockedDestination } from "@/lib/checkoutReturn";
 import { GamificationStrip } from "@/components/GamificationStrip";
 import { Combobox } from "@/components/ui/Combobox";
@@ -173,6 +174,8 @@ export function StudioApp() {
   const [unlockOpen, setUnlockOpen] = useState(false);
   // Which pack the unlock dialog is for (v5 CH-02b) — drives the per-pack Stripe checkout.
   const [unlockPack, setUnlockPack] = useState<number | null>(null);
+  // One-shot ask for ResultsView to open a tab (a just-unlocked pack lands on Pages).
+  const [tabRequest, setTabRequest] = useState<{ id: "pages"; nonce: number } | null>(null);
   const [openPack, setOpenPack] = useState<number | null>(null);
   // v5 CH-02b: the state of a Stripe return, if we are in one. Null = an ordinary visit.
   const [checkout, setCheckout] = useState<{
@@ -180,6 +183,7 @@ export function StudioApp() {
     packIndex?: number;
   } | null>(null);
   const { authEnabled, user, openAuth } = useAuth();
+  const router = useRouter();
   // R2-2 re-crawl: when the homepage was crawled recently, default to reusing that data
   // (fast) and let the user opt into a fresh re-crawl that bypasses the skip gate.
   const [forceRecrawl, setForceRecrawl] = useState(false);
@@ -398,6 +402,11 @@ export function StudioApp() {
     setPacks([]); // clear a prior run's packs so they never leak into this build (incl. no-site)
     setRunId(null);
     setOpenPack(null);
+    // A redeemed-but-never-rendered unlock (or one the user walked away from) must not
+    // ambush the NEXT run: unlockOpen would survive into the new results view and pop a
+    // dialog for a stale pack against a run it was never about.
+    setUnlockOpen(false);
+    setUnlockPack(null);
     setLoading(true);
     try {
       if (noSite) {
@@ -497,6 +506,10 @@ export function StudioApp() {
         domain: domain.trim(),
         packIndex: packIndex ?? null,
         runId: runId ?? undefined,
+        // The saved plan is the one page that can rebuild this context after a full-page
+        // sign-in (OAuth, the email-confirmation link). AuthModal reads this to aim the
+        // round-trip at /plan/<id> instead of back at a freshly-wiped studio.
+        planStateId: planStateId ?? undefined,
       });
       openAuth("unlock-pack");
       return;
@@ -505,15 +518,42 @@ export function StudioApp() {
     setUnlockOpen(true);
   }
 
-  // Redeem that intent the moment sign-in completes. Covers both legs: the email/password
-  // modal resolves in place (this component never unmounts), and the OAuth round-trip comes
-  // back through /auth/callback to /studio, where this runs on mount with `user` already set.
+  // Redeem that intent the moment sign-in completes.
+  //
+  // The one leg that can redeem HERE is the in-place one: email/password resolving inside
+  // the modal while this component — and the run on screen — never unmounted. Every
+  // full-page leg (Google OAuth, the email-confirmation link) comes back to a FRESH mount
+  // whose view is the wizard: no run, no packs, and the unlock dialog used to be rendered
+  // only inside the results view — so the intent was consumed, deleted, and painted into a
+  // subtree that was not on screen. The user stared at step 01, exactly the bug the intent
+  // was built to fix. Now:
+  //   • intent tied to a saved plan + fresh mount → send them to /plan/<id>, WITHOUT
+  //     clearing: that page rebuilds the packs from the id and redeems the intent itself.
+  //   • intent tied to this very plan, in place → open the dialog here.
+  //   • no saved plan → restore what the intent carries (domain, run) and open the dialog,
+  //     which now renders in EITHER view, like the checkout notice and for the same reason.
   const unlockResumed = useRef(false);
   useEffect(() => {
     if (!user || unlockResumed.current) return;
     const pending = readPendingUnlock();
-    // A resumed-plan intent belongs to /plan/<id>, which redeems its own — never steal it.
-    if (!pending || pending.planStateId) return;
+    if (!pending) return;
+    if (pending.planStateId) {
+      if (view === "results" && pending.planStateId === planStateId) {
+        unlockResumed.current = true;
+        clearPendingUnlock();
+        setUnlockPack(pending.packIndex);
+        setUnlockOpen(true);
+      } else if (view === "wizard") {
+        const dest = unlockReturnPath(null, pending);
+        if (dest.startsWith("/plan/")) {
+          unlockResumed.current = true;
+          router.replace(dest);
+        }
+      }
+      // A results view showing some OTHER plan: leave the intent alone — /plan/<id>
+      // redeems its own, and stealing it here would open a dialog for the wrong run.
+      return;
+    }
     unlockResumed.current = true;
     clearPendingUnlock();
     if (pending.domain && !domain.trim()) {
@@ -1263,6 +1303,26 @@ export function StudioApp() {
         />
       )}
 
+      {/* Rendered in EITHER view, exactly like the checkout notice above and for the same
+          reason: the sign-in round-trip that reopens this dialog can land on a fresh mount
+          whose view is the wizard, and a dialog gated on the results view would consume the
+          user's remembered click and then paint into a subtree that is not on screen. */}
+      {unlockOpen && domain.trim() && (
+        <UnlockModal
+          domain={domain.trim()}
+          packIndex={unlockPack ?? undefined}
+          runId={runId ?? undefined}
+          onUnlocked={() => {
+            setUnlockOpen(false);
+            void refreshPacks();
+            // Land them on what they just unlocked. Consumed by ResultsView when the Pages
+            // tab exists — including the case where it mounts later (redeem from wizard).
+            setTabRequest({ id: "pages", nonce: Date.now() });
+          }}
+          onClose={() => setUnlockOpen(false)}
+        />
+      )}
+
       {/* Suppressed while a checkout notice is up: that notice already carries the link to
           their plan, and two stacked "welcome back" banners bury the thing they just paid
           for. */}
@@ -1335,18 +1395,6 @@ export function StudioApp() {
               )}
             </section>
           )}
-          {unlockOpen && domain.trim() && (
-            <UnlockModal
-              domain={domain.trim()}
-              packIndex={unlockPack ?? undefined}
-              runId={runId ?? undefined}
-              onUnlocked={() => {
-                setUnlockOpen(false);
-                void refreshPacks();
-              }}
-              onClose={() => setUnlockOpen(false)}
-            />
-          )}
           <ResultsView
             // Derive the display name the same way briefFromForm / the server do, so an
             // empty name never collapses distinct plans onto one shared localStorage key.
@@ -1381,6 +1429,7 @@ export function StudioApp() {
             personalizeProgress={personalizeJob?.progress ?? null}
             onDownloadZip={downloadZip}
             onEdit={() => setView("wizard")}
+            tabRequest={tabRequest}
           />
         </>
       ) : prefilling ? (

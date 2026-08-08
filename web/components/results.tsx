@@ -273,6 +273,7 @@ export function ResultsView({
   onEdit,
   resume,
   resumed = false,
+  tabRequest,
 }: {
   businessName: string;
   domain?: string;
@@ -300,6 +301,11 @@ export function ResultsView({
   // Tweaks the header copy for the resumed entry ("Your saved plan" instead of
   // "Analysis complete") — the tabs and panels below are exactly the build-flow ones.
   resumed?: boolean;
+  /** A one-shot ask to open a tab from OUTSIDE (a redeemed unlock landing on Pages, a
+   *  just-unlocked pack). The nonce makes each ask distinct; an ask for a tab that is not
+   *  available yet (packs still loading) stays live and is honoured the moment the tab
+   *  exists, because arriving before the data is precisely how these asks happen. */
+  tabRequest?: { id: TabId; nonce: number } | null;
 }) {
   const tabs: { id: TabId; label: string }[] = [
     ...(profile ? [{ id: "overview" as const, label: "Overview" }] : []),
@@ -319,6 +325,18 @@ export function ResultsView({
   // Land on the first available tab: Overview when there's a profile, otherwise the first
   // no-profile tab (the blueprint, in practice).
   const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
+
+  // Honour an outside ask to open a tab (see the prop's comment). Keyed on the tab SET as
+  // well as the nonce: the Pages tab appears only once packs load, and an ask that raced
+  // that load must win the race's replay, not be dropped.
+  const tabIds = tabs.map((t) => t.id).join(",");
+  const consumedTabAsk = useRef(0);
+  useEffect(() => {
+    if (!tabRequest || tabRequest.nonce === consumedTabAsk.current) return;
+    if (!tabIds.split(",").includes(tabRequest.id)) return;
+    consumedTabAsk.current = tabRequest.nonce;
+    setTab(tabRequest.id);
+  }, [tabRequest, tabIds]);
 
   // Spec #2 "Verified live": a re-crawl can confirm a recommended fix actually landed
   // (criterion-honest). Surface any confirmed-implemented outcomes for this domain in the
@@ -1941,6 +1959,11 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
   const [selectedPack, setSelectedPack] = useState<number | null>(null);
   const [unlockPack, setUnlockPack] = useState<number | null>(null);
   const [unlockOpen, setUnlockOpen] = useState(false);
+  // "Redirect me to the packs" — the ask that opens the Pages tab once it exists. Set by
+  // the redeemed sign-in and by a completed unlock; ResultsView honours it even when the
+  // tab has not been born yet (packs still loading on a fresh return).
+  const [tabRequest, setTabRequest] = useState<{ id: "pages"; nonce: number } | null>(null);
+  const askForPagesTab = useCallback(() => setTabRequest({ id: "pages", nonce: Date.now() }), []);
 
   const loadPacks = useCallback(async () => {
     if (state.run_id == null) return;
@@ -1983,6 +2006,9 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
 
   // Resume the unlock the moment sign-in completes — both the in-page email/password flow
   // (this component never unmounts) and the OAuth round-trip that lands back on /plan/<id>.
+  // The round-trip now aims HERE even when the click happened on /studio (AuthModal reads
+  // the intent's planStateId), because this is the one page that can rebuild the packs
+  // from its id alone. Landing the user in front of them is the other half of the redeem.
   useEffect(() => {
     if (!user) return;
     const pending = readPendingUnlock();
@@ -1991,7 +2017,8 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
     if (pending.packIndex != null) setSelectedPack(pending.packIndex);
     setUnlockPack(pending.packIndex);
     setUnlockOpen(true);
-  }, [state.id, user]);
+    askForPagesTab();
+  }, [askForPagesTab, state.id, user]);
 
   // Hydrate the plan panel from the saved state — no rebuild needed to see your plan.
   // (Downloadable assets aren't persisted; "Rebuild my plan" regenerates them.)
@@ -2091,6 +2118,7 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
         }
         resume={{ planStateId: state.id, initialDone: state.done_task_ids, score: state.score_snapshot }}
         resumed
+        tabRequest={tabRequest}
       />
       {unlockOpen && (state.domain ?? "").trim() && (
         <UnlockModal
@@ -2100,6 +2128,8 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
           onUnlocked={() => {
             setUnlockOpen(false);
             void loadPacks();
+            // They just paid for (or redeemed) this pack — put its pages in front of them.
+            askForPagesTab();
           }}
           onClose={() => setUnlockOpen(false)}
         />

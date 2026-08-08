@@ -12,8 +12,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { classifySignUpFailure, resendCooldownRemaining } from "@/lib/authCallback";
 import { currentAccessToken, signInWithGoogle, supabase } from "@/lib/supabase";
-import { signInReturnPath } from "@/lib/pendingUnlock";
+import { readPendingUnlock, unlockReturnPath } from "@/lib/pendingUnlock";
 import { useAuth } from "./AuthProvider";
+
+/** Where this sign-in should land when it involves a full page load. Read at CLICK time,
+ *  not render time — the pending-unlock record is written by the Unlock button moments
+ *  before this modal opens, and it names the one page (/plan/<id>) that can rebuild the
+ *  pack context after the round-trip. No pending unlock → back to the current page. */
+function returnNext(): string {
+  return unlockReturnPath(window.location.pathname + window.location.search, readPendingUnlock());
+}
 
 type Mode = "signin" | "signup";
 
@@ -23,7 +31,7 @@ const REASON_COPY: Record<string, string> = {
 };
 
 export function AuthModal() {
-  const { authOpen, authReason, closeAuth } = useAuth();
+  const { authOpen, authReason, closeAuth, user } = useAuth();
   const [mode, setMode] = useState<Mode>("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -51,6 +59,18 @@ export function AuthModal() {
     return () => clearInterval(id);
   }, [cooldown]);
 
+  // Sign-in can complete OUTSIDE this modal: the email-confirmation link opens in a new
+  // tab, that tab's session syncs across, and `user` appears here while the modal still
+  // says "Confirm your email" — painting over the unlock dialog the redeem effect just
+  // opened underneath it (same z-index, mounted later). Signed in means this modal's job
+  // is done, whoever finished it.
+  useEffect(() => {
+    if (user && authOpen) {
+      setAwaitingConfirm(null);
+      closeAuth();
+    }
+  }, [user, authOpen, closeAuth]);
+
   const resendConfirmation = useCallback(async () => {
     if (!supabase || !awaitingConfirm || cooldown > 0) return;
     setResending(true);
@@ -58,7 +78,7 @@ export function AuthModal() {
     const { error: err } = await supabase.auth.resend({
       type: "signup",
       email: awaitingConfirm,
-      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(signInReturnPath(window.location.pathname + window.location.search))}` },
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(returnNext())}` },
     });
     setResending(false);
     if (err) {
@@ -77,7 +97,7 @@ export function AuthModal() {
     setError(null);
     setNotice(null);
     // Resolves only if the redirect never happened — on success the tab is already gone.
-    const { error: err } = await signInWithGoogle();
+    const { error: err } = await signInWithGoogle(returnNext());
     if (err) {
       setError(err);
       setGoogleBusy(false);
@@ -98,7 +118,7 @@ export function AuthModal() {
           // Without this, `{{ .RedirectTo }}` is empty in the confirmation template and
           // GoTrue falls back to the project's bare Site URL — so the link lands on the
           // homepage instead of the callback that can actually complete the sign-in.
-          options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(signInReturnPath(window.location.pathname + window.location.search))}` },
+          options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(returnNext())}` },
         });
         if (err) throw err;
         if (!data.session) {

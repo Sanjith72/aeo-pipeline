@@ -119,3 +119,29 @@ export function signInReturnPath(pathname: string | null | undefined, fallback =
   if (p.startsWith("/auth")) return fallback;
   return p;
 }
+
+/**
+ * Where should the sign-in round-trip come back to WHEN AN UNLOCK IS PENDING?
+ *
+ * The full-page legs (Google OAuth, the email-confirmation link) come back to a FRESH
+ * mount of whatever `next` names. On /studio that mount is the wizard: no run, no packs —
+ * the unlock dialog has nothing to stand on, which is exactly how "sign in to unlock"
+ * used to strand people on step 01. The saved plan at /plan/<id> is the one surface that
+ * can rebuild the whole context from its id alone (plan, packs, locked state), so when the
+ * intent knows its plan, send the round-trip THERE instead of back to the page the user
+ * happened to be standing on.
+ *
+ * The id is interpolated into a path, so it is validated as the URL-safe token
+ * plan_state.new_id() mints — anything else falls back to the plain path rule. A malicious
+ * planStateId in localStorage can therefore only ever produce /plan/<opaque-token>, which
+ * renders "no plan" — never a redirect off-origin or onto another route.
+ */
+export function unlockReturnPath(
+  pathname: string | null | undefined,
+  pending: PendingUnlock | null,
+  fallback = "/studio",
+): string {
+  const id = pending?.planStateId ?? "";
+  if (/^[A-Za-z0-9_-]{8,64}$/.test(id)) return `/plan/${id}`;
+  return signInReturnPath(pathname, fallback);
+}
