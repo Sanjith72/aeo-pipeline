@@ -196,6 +196,57 @@ export function packPlanPhases(
   return PACK_PHASE_ORDER.filter((k) => buckets[k].length > 0).map((k) => ({ key: k, tasks: buckets[k] }));
 }
 
+/**
+ * A pack's tickets grouped into plan phases AS TICKETS — for the surface that renders them
+ * with the ticket row's own action machinery (Mark as done → Verifying… → Verified) inside
+ * the plan's phase cards. Same bucketing and same ordering rule as ``packPlanPhases``; this
+ * variant keeps the Ticket objects because the row component drives /api/tickets/* with
+ * them, and a flattened copy would strand the caller re-joining on task_key.
+ *
+ * Priorities are matched per (skill, PAGE), not per skill: impact is a per-page×skill
+ * number (CH-06), and a skill-only index — first entry wins — would bucket every page's
+ * ticket by whichever page happened to list that skill first, e.g. a /pricing structural
+ * rebuild inheriting the homepage's 0.9 impact and parading as a Quick Win. That is why
+ * this takes the pack's PAGES (which know their url) rather than a flat priority list.
+ * A ticket whose page has no scored priority falls back to its own baseline-score rule.
+ */
+export function ticketsByPhase(
+  tickets: readonly Ticket[] | null | undefined,
+  pages?: readonly PackPageDetail[] | null,
+): { key: PhaseKey; tickets: Ticket[] }[] {
+  const byPageSkill = new Map<string, SkillPriority>();
+  for (const p of pages ?? []) {
+    const pk = pageMatchKey(p.url);
+    for (const pr of p.detail?.priorities ?? []) {
+      const k = `${pr.skill}|${pk}`;
+      if (!byPageSkill.has(k)) byPageSkill.set(k, pr); // highest-impact first within a page
+    }
+  }
+  const buckets: Record<PhaseKey, Ticket[]> = { week_1: [], week_2_4: [], later: [] };
+  for (const t of tickets ?? []) {
+    const pr = t.skill ? byPageSkill.get(`${t.skill}|${pageMatchKey(t.page_url)}`) : null;
+    buckets[bucketTicket(t, pr ?? null)].push(t);
+  }
+  // The same reading order as packPlanPhases: unfinished first, then grouped by page. The
+  // rank runs over the REAL 4-state vocabulary, with closed_pending_verify beside
+  // in_progress exactly as ticketStatusToMilestoneStatus maps it.
+  const rank: Record<TicketStatus, number> = {
+    pending: 0,
+    in_progress: 1,
+    closed_pending_verify: 1,
+    verified_completed: 2,
+  };
+  for (const key of PACK_PHASE_ORDER) {
+    buckets[key].sort(
+      (a, b) =>
+        rank[a.status] - rank[b.status] ||
+        (a.page_url ?? "").localeCompare(b.page_url ?? "") ||
+        a.task_key.localeCompare(b.task_key),
+    );
+  }
+  return PACK_PHASE_ORDER.filter((k) => buckets[k].length > 0).map((k) => ({ key: k, tickets: buckets[k] }));
+}
+
 /** Progress across a pack's mapped tasks, in the same shape the tracker's roll-up uses, so
  *  the pack's numbers and the plan's are computed by the same rule. */
 export function packPlanProgress(phases: readonly PackPlanPhase[]): {

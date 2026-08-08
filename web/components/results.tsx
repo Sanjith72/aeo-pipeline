@@ -33,6 +33,8 @@ import { TaskHowTo } from "./TaskHowTo";
 import { StrategyExtras } from "./StrategyExtras";
 import { PagesPanel } from "./PagesPanel";
 import { TrackerView, type PackPlanContext, type TrackerFacet } from "./quest/TrackerView";
+import { usePackTickets } from "./quest/usePackTickets";
+import type { PackWork } from "./MilestoneDashboard";
 import { useAuth } from "./auth/AuthProvider";
 import { UnlockModal } from "./auth/UnlockModal";
 import { clearPendingUnlock, readPendingUnlock, rememberPendingUnlock } from "@/lib/pendingUnlock";
@@ -273,6 +275,7 @@ export function ResultsView({
   onEdit,
   resume,
   resumed = false,
+  tabRequest,
 }: {
   businessName: string;
   domain?: string;
@@ -300,6 +303,11 @@ export function ResultsView({
   // Tweaks the header copy for the resumed entry ("Your saved plan" instead of
   // "Analysis complete") — the tabs and panels below are exactly the build-flow ones.
   resumed?: boolean;
+  /** A one-shot ask to open a tab from OUTSIDE (a redeemed unlock landing on Pages, a
+   *  just-unlocked pack). The nonce makes each ask distinct; an ask for a tab that is not
+   *  available yet (packs still loading) stays live and is honoured the moment the tab
+   *  exists, because arriving before the data is precisely how these asks happen. */
+  tabRequest?: { id: TabId; nonce: number } | null;
 }) {
   const tabs: { id: TabId; label: string }[] = [
     ...(profile ? [{ id: "overview" as const, label: "Overview" }] : []),
@@ -319,6 +327,18 @@ export function ResultsView({
   // Land on the first available tab: Overview when there's a profile, otherwise the first
   // no-profile tab (the blueprint, in practice).
   const [tab, setTab] = useState<TabId>(tabs[0]?.id ?? "kit");
+
+  // Honour an outside ask to open a tab (see the prop's comment). Keyed on the tab SET as
+  // well as the nonce: the Pages tab appears only once packs load, and an ask that raced
+  // that load must win the race's replay, not be dropped.
+  const tabIds = tabs.map((t) => t.id).join(",");
+  const consumedTabAsk = useRef(0);
+  useEffect(() => {
+    if (!tabRequest || tabRequest.nonce === consumedTabAsk.current) return;
+    if (!tabIds.split(",").includes(tabRequest.id)) return;
+    consumedTabAsk.current = tabRequest.nonce;
+    setTab(tabRequest.id);
+  }, [tabRequest, tabIds]);
 
   // Spec #2 "Verified live": a re-crawl can confirm a recommended fix actually landed
   // (criterion-honest). Surface any confirmed-implemented outcomes for this domain in the
@@ -361,6 +381,32 @@ export function ResultsView({
   const planVisible = tab === "strategy" || tab === "kit";
   // v5 CH-10: one consolidated plan section — always the strategy-driven actionable list.
   const planFacet: TrackerFacet = "strategy";
+
+  // THE one owner of the selected pack's pages/tickets/verify-poll, rendered by BOTH the
+  // Pages tab and Your plan's phase cards. Instantiated here for the same reason shareUrl
+  // is lifted here: state two tabs render must have one owner, or a fix marked done on one
+  // tab stays undone on the other until a poll happens to fire. The hook no-ops on null
+  // (the no-domain path has no packs). The locked-set key is how an in-page unlock —
+  // which refreshes only the packs list — reaches the hook's fetches at all.
+  const lockedKey = (packContext?.packs ?? [])
+    .filter((p) => p.locked)
+    .map((p) => p.pack_index)
+    .join(",");
+  const packTickets = usePackTickets(
+    packContext?.runId ?? null,
+    packContext?.selectedPack ?? null,
+    lockedKey,
+  );
+  const packWork: PackWork | undefined = packContext
+    ? {
+        packs: packContext.packs,
+        selectedPack: packContext.selectedPack,
+        onSelectPack: packContext.onSelectPack,
+        onUnlock: packContext.onUnlock,
+        state: packTickets,
+      }
+    : undefined;
+
   const planPanel = (
     <PlanPanel
       visible={planVisible}
@@ -381,6 +427,7 @@ export function ResultsView({
           ? `aeo-plan:resumed:${resume.planStateId}`
           : `aeo-plan:${(domain?.trim() || businessName || "default").toLowerCase()}`
       }
+      packWork={packWork}
       resume={resume}
       onGenerate={onGenerateDeliverables}
       onDownloadZip={onDownloadZip}
@@ -451,6 +498,24 @@ export function ResultsView({
         <div hidden={!planVisible} className="animate-fade-in">
           {planPanel}
         </div>
+        {/* ALWAYS MOUNTED, merely hidden — like the plan panel above, and deliberately
+            OUTSIDE the key={tab} div below: a keyed wrapper remounts its whole subtree on
+            every tab switch, which is exactly what this block must never do. The ticket
+            state itself (fetches, the verify poll) lives one level up in usePackTickets, so
+            "Mark as done" keeps polling to Verified while the user reads another tab, and
+            the selected page survives the trip. */}
+        {packContext && (
+          <div hidden={tab !== "pages"} className="animate-fade-in">
+            <PagesPanel
+              packs={packContext.packs}
+              selectedPack={packContext.selectedPack}
+              onSelectPack={packContext.onSelectPack}
+              onUnlock={packContext.onUnlock}
+              shareUrl={shareUrl}
+              state={packTickets}
+            />
+          </div>
+        )}
         <div key={tab} className="animate-fade-in">
           {tab === "overview" && profile && (
             <>
@@ -477,25 +542,6 @@ export function ResultsView({
                 </div>
               )}
             </>
-          )}
-          {/* ALWAYS MOUNTED, merely hidden — like the plan panel above, and for a reason that
-              bites hard now that the fixes are workable here. PagesPanel polls
-              /api/tickets/{run}/{pack} while any fix is awaiting its verification crawl. If
-              it unmounted on a tab switch, clicking "Mark as done" and then glancing at
-              Overview would kill the poll, and the fix would never flip to Verified — the
-              user would come back to a row that still says "Verifying…" forever. Unmounting
-              would also throw away the selected page every time. */}
-          {packContext && (
-            <div hidden={tab !== "pages"}>
-              <PagesPanel
-                runId={packContext.runId}
-                packs={packContext.packs}
-                selectedPack={packContext.selectedPack}
-                onSelectPack={packContext.onSelectPack}
-                onUnlock={packContext.onUnlock}
-                shareUrl={shareUrl}
-              />
-            </div>
           )}
           {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
           {/* "actions" (Roadmap), "strategy", and "kit" are fully served by the
@@ -1482,6 +1528,12 @@ function PriorityGroup({
   const open = unlocked || manualOpen;
   const meta = BAND_META[band];
   const groupDone = tasks.filter((t) => done.has(t.id)).length;
+  // Checked-off work folds behind a small disclosure so a returning user sees what is
+  // LEFT, not a wall of completed cards. The band's counts and the progressive unlock
+  // still read the full set — this folds rows, it never uncounts them. Unchecking a task
+  // inside the fold moves it straight back into the open list.
+  const openTasks = tasks.filter((t) => !done.has(t.id));
+  const doneTasks = tasks.filter((t) => done.has(t.id));
   return (
     <div>
       <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-2">
@@ -1493,9 +1545,26 @@ function PriorityGroup({
       </div>
       {open ? (
         <ul className="space-y-2">
-          {tasks.map((t) => (
-            <TaskCard key={t.id} task={t} done={done.has(t.id)} onToggle={() => onToggle(t)} onHover={onHover} />
+          {openTasks.map((t) => (
+            <TaskCard key={t.id} task={t} done={false} onToggle={() => onToggle(t)} onHover={onHover} />
           ))}
+          {doneTasks.length > 0 && (
+            <li>
+              <details className="group/done">
+                <summary className="cursor-pointer list-none rounded-xl border border-dashed border-ink/15 bg-paper-200/40 px-4 py-2.5 text-[13px] text-ink-300 transition-colors hover:border-ink/25 hover:text-accent">
+                  <span className="group-open/done:hidden">
+                    ✓ Already done ({doneTasks.length}) — show →
+                  </span>
+                  <span className="hidden group-open/done:inline">Hide what&apos;s done</span>
+                </summary>
+                <ul className="mt-2 space-y-2">
+                  {doneTasks.map((t) => (
+                    <TaskCard key={t.id} task={t} done onToggle={() => onToggle(t)} onHover={onHover} />
+                  ))}
+                </ul>
+              </details>
+            </li>
+          )}
         </ul>
       ) : (
         <button
@@ -1642,6 +1711,7 @@ function PlanPanel({
   onShareUrl,
   error,
   storageKey,
+  packWork,
   resume,
   onGenerate,
   onDownloadZip,
@@ -1663,7 +1733,9 @@ function PlanPanel({
   domain?: string;
   businessName: string;
   cmsType?: string | null;
-  /** Pack fixes to fold into this plan (item 3.4); absent on the no-domain path. */
+  /** Pack fixes + shared ticket state to fold into this plan (item 3.4); absent on the
+   *  no-domain path. */
+  packWork?: PackWork;
   /** Lifts the tracker's share link out for the Pages tab's fix rows. */
   onShareUrl?: (url: string | null) => void;
   error: string | null;
@@ -1752,6 +1824,7 @@ function PlanPanel({
             facet={facet}
             onShareUrl={onShareUrl}
             visible={visible}
+            packWork={packWork}
           />
         ) : (
           <div className="space-y-6">
@@ -1941,6 +2014,11 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
   const [selectedPack, setSelectedPack] = useState<number | null>(null);
   const [unlockPack, setUnlockPack] = useState<number | null>(null);
   const [unlockOpen, setUnlockOpen] = useState(false);
+  // "Redirect me to the packs" — the ask that opens the Pages tab once it exists. Set by
+  // the redeemed sign-in and by a completed unlock; ResultsView honours it even when the
+  // tab has not been born yet (packs still loading on a fresh return).
+  const [tabRequest, setTabRequest] = useState<{ id: "pages"; nonce: number } | null>(null);
+  const askForPagesTab = useCallback(() => setTabRequest({ id: "pages", nonce: Date.now() }), []);
 
   const loadPacks = useCallback(async () => {
     if (state.run_id == null) return;
@@ -1983,6 +2061,9 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
 
   // Resume the unlock the moment sign-in completes — both the in-page email/password flow
   // (this component never unmounts) and the OAuth round-trip that lands back on /plan/<id>.
+  // The round-trip now aims HERE even when the click happened on /studio (AuthModal reads
+  // the intent's planStateId), because this is the one page that can rebuild the packs
+  // from its id alone. Landing the user in front of them is the other half of the redeem.
   useEffect(() => {
     if (!user) return;
     const pending = readPendingUnlock();
@@ -1991,7 +2072,8 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
     if (pending.packIndex != null) setSelectedPack(pending.packIndex);
     setUnlockPack(pending.packIndex);
     setUnlockOpen(true);
-  }, [state.id, user]);
+    askForPagesTab();
+  }, [askForPagesTab, state.id, user]);
 
   // Hydrate the plan panel from the saved state — no rebuild needed to see your plan.
   // (Downloadable assets aren't persisted; "Rebuild my plan" regenerates them.)
@@ -2091,6 +2173,7 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
         }
         resume={{ planStateId: state.id, initialDone: state.done_task_ids, score: state.score_snapshot }}
         resumed
+        tabRequest={tabRequest}
       />
       {unlockOpen && (state.domain ?? "").trim() && (
         <UnlockModal
@@ -2100,6 +2183,8 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
           onUnlocked={() => {
             setUnlockOpen(false);
             void loadPacks();
+            // They just paid for (or redeemed) this pack — put its pages in front of them.
+            askForPagesTab();
           }}
           onClose={() => setUnlockOpen(false)}
         />

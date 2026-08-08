@@ -17,14 +17,13 @@
 // Mobile: no two-column layout below 640px. The list becomes a <select> page picker, because
 // a squeezed sidebar next to a squeezed detail pane makes both unusable.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { api } from "@/lib/api";
-import { groupFixesByPage, packFixDomId, pageFixCounts } from "@/lib/packPlan";
-import type { PackPageDetail, PackPreview, SkillKey, SkillScore, Ticket } from "@/lib/types";
+import { groupFixesByPage, pageFixCounts } from "@/lib/packPlan";
+import type { PackPreview, SkillKey, SkillScore, Ticket } from "@/lib/types";
 import { CONFIDENCE_LABEL, Meter, PriorityList, SKILL_META } from "@/components/skills/SkillShared";
-import { TaskHowTo } from "@/components/TaskHowTo";
-import { Check } from "@/components/ui/icons";
+import { PackFixRow, PackSelector } from "@/components/PackFixRow";
+import type { PackTicketsState } from "@/components/quest/usePackTickets";
 
 /** "/pricing" from a full URL — the origin repeats on every row and adds no signal. */
 function pathOf(url: string): string {
@@ -81,18 +80,14 @@ function SkillRow({ label, blurb, skill }: { label: string; blurb: string; skill
   );
 }
 
-/** How often to re-read tickets while any of them is awaiting its verification crawl. */
-const VERIFY_POLL_MS = 5000;
-
 export function PagesPanel({
-  runId,
   packs,
   selectedPack,
   onSelectPack,
   onUnlock,
   shareUrl,
+  state,
 }: {
-  runId: number;
   packs: PackPreview[];
   selectedPack: number | null;
   onSelectPack: (packIndex: number) => void;
@@ -101,114 +96,24 @@ export function PagesPanel({
    *  TrackerView rather than obtained by mounting a second useQuestTracker — that would fire
    *  a second POST /api/milestones sync, which TrackerView's header comment forbids. */
   shareUrl: string | null;
+  /** The pack's pages, tickets, actions and verify poll — owned by ResultsView's single
+   *  usePackTickets instance, because "Your plan" renders these same tickets: two owners
+   *  meant two pollers and two ideas of a fix's status. */
+  state: PackTicketsState;
 }) {
-  const [pages, setPages] = useState<PackPageDetail[] | null>(null);
-  const [locked, setLocked] = useState(false);
-  const [error, setError] = useState(false);
+  const { pages, tickets, locked, error, fixError, busyKey, lockedFixCount } = state;
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
-  // The fixes themselves. A SEPARATE loader from `load` on purpose: `load` resets `pages`,
-  // `error` AND `selectedUrl`, so reusing it after "Mark as done" would throw the user back
-  // to the first page in the sidebar every time they completed something.
-  const [tickets, setTickets] = useState<Ticket[] | null>(null);
-  const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [fixError, setFixError] = useState<string | null>(null);
-  const [lockedFixCount, setLockedFixCount] = useState<number | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = useCallback(async () => {
-    if (selectedPack == null) return;
-    setLocked(false);
-    setError(false);
-    setPages(null);
-    try {
-      const res = await api.getPackDetail(runId, selectedPack);
-      setPages(res.pages);
-      // Land on the first page so the panel is never an empty right-hand column.
-      setSelectedUrl(res.pages[0]?.url ?? null);
-    } catch (e) {
-      if ((e as { status?: number })?.status === 403) {
-        setLocked(true);
-        setPages([]);
-        return;
-      }
-      setError(true);
-    }
-  }, [runId, selectedPack]);
-
-  const loadTickets = useCallback(async () => {
-    if (selectedPack == null) return;
-    try {
-      const res = await api.getPackTickets(runId, selectedPack);
-      setTickets(res.tickets);
-      setFixError(null);
-    } catch (e) {
-      // A locked pack is a 403 by design — a product state, not a failure. It must NOT set
-      // `error`, which renders "Couldn't load these page scores" and reads as a bug.
-      if ((e as { status?: number })?.status === 403) {
-        setLocked(true);
-        setTickets([]);
-        return;
-      }
-      setFixError(e instanceof Error ? e.message : String(e));
-    }
-  }, [runId, selectedPack]);
-
+  // Land on the first page so the panel is never an empty right-hand column — but ONLY
+  // when the current selection has gone stale (pack switch, first load). A ticket action
+  // reloads tickets without touching pages, so completing a fix keeps your place.
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
-    setTickets(null);
-    void loadTickets();
-  }, [loadTickets]);
-
-  // "N more fixes in locked packs" — the count the server computes for exactly this sentence.
-  // Keyed on the LOCKED SET, not just runId: unlocking a pack must drop the count. `null`
-  // means we don't know (the probe failed), which renders as nothing — never as "0 more".
-  const lockedKey = packs.filter((p) => p.locked).map((p) => p.pack_index).join(",");
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .getTickets(runId)
-      .then((res) => {
-        if (!cancelled) setLockedFixCount(res.locked_ticket_count ?? 0);
-      })
-      .catch(() => {
-        if (!cancelled) setLockedFixCount(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, lockedKey]);
-
-  // Poll only while something is actually awaiting its crawl, and PACK-WIDE — filtering this
-  // to the selected page would stop polling a fix the moment the user looked at another page.
-  const anyVerifying = tickets?.some((t) => t.status === "closed_pending_verify") ?? false;
-  useEffect(() => {
-    if (!anyVerifying) {
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = null;
-      return;
-    }
-    pollRef.current = setInterval(() => void loadTickets(), VERIFY_POLL_MS);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = null;
-    };
-  }, [anyVerifying, loadTickets]);
-
-  const act = async (taskKey: string, fn: () => Promise<unknown>) => {
-    setBusyKey(taskKey);
-    setFixError(null);
-    try {
-      await fn();
-      await loadTickets(); // NOT load() — that would reset the selected page
-    } catch (e) {
-      setFixError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusyKey(null);
-    }
-  };
+    setSelectedUrl((cur) => {
+      if (pages == null) return cur;
+      if (cur != null && pages.some((p) => p.url === cur)) return cur;
+      return pages[0]?.url ?? null;
+    });
+  }, [pages]);
 
   // Land on a pack automatically when none is chosen yet. Without this the tab is a dead
   // end: the selector is hidden when there is only ONE pack (a single chip that cannot be
@@ -231,27 +136,13 @@ export function PagesPanel({
   return (
     <div className="flex flex-col gap-4">
       {packs.length > 1 && (
-        <div className="card p-4">
-          <span className="label-mono">Pages from</span>
-          <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label="Choose which pack's pages to view">
-            {packs.map((p) => (
-              <button
-                key={p.pack_index}
-                type="button"
-                onClick={() => onSelectPack(p.pack_index)}
-                aria-pressed={p.pack_index === selectedPack}
-                className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12.5px] transition-colors ${
-                  p.pack_index === selectedPack
-                    ? "border-accent/40 bg-accent/10 font-medium text-ink"
-                    : "border-ink/10 text-ink-300 hover:border-ink/20 hover:text-ink"
-                }`}
-              >
-                {p.locked && <span aria-hidden>🔒</span>}
-                {p.title}
-              </button>
-            ))}
-          </div>
-        </div>
+        <PackSelector
+          label="Pages from"
+          packs={packs}
+          selectedPack={selectedPack}
+          onSelectPack={onSelectPack}
+          ariaLabel="Choose which pack's pages to view"
+        />
       )}
 
       {/* Outside the `packs.length > 1` selector above on purpose — that block is hidden on a
@@ -406,19 +297,7 @@ export function PagesPanel({
                           That didn&apos;t work: {fixError}
                         </p>
                       )}
-                      <ul className="m-0 flex list-none flex-col gap-1 divide-y divide-white/[0.06] p-0">
-                        {group.tickets.map((t) => (
-                          <PageFixRow
-                            key={t.task_key}
-                            ticket={t}
-                            shareUrl={shareUrl}
-                            busy={busyKey === t.task_key}
-                            onClose={() => act(t.task_key, () => api.closeTicket(runId, t.task_key))}
-                            onReopen={() => act(t.task_key, () => api.reopenTicket(runId, t.task_key))}
-                            onRecheck={() => act(t.task_key, () => api.recheckTicket(runId, t.task_key))}
-                          />
-                        ))}
-                      </ul>
+                      <FixList tickets={group.tickets} state={state} shareUrl={shareUrl} />
                     </div>
                   </details>
                 )}
@@ -480,19 +359,7 @@ export function PagesPanel({
                     not tied to a single page
                   </span>
                 </header>
-                <ul className="m-0 flex list-none flex-col gap-1 divide-y divide-white/[0.06] p-0">
-                  {sitewide.map((t) => (
-                    <PageFixRow
-                      key={t.task_key}
-                      ticket={t}
-                      shareUrl={shareUrl}
-                      busy={busyKey === t.task_key}
-                      onClose={() => act(t.task_key, () => api.closeTicket(runId, t.task_key))}
-                      onReopen={() => act(t.task_key, () => api.reopenTicket(runId, t.task_key))}
-                      onRecheck={() => act(t.task_key, () => api.recheckTicket(runId, t.task_key))}
-                    />
-                  ))}
-                </ul>
+                <FixList tickets={sitewide} state={state} shareUrl={shareUrl} />
               </article>
             )}
           </div>
@@ -502,104 +369,53 @@ export function PagesPanel({
   );
 }
 
-/** One workable fix, under the page it belongs to.
- *
- *  Ported from quest/PackPlanSection.tsx's PackTaskRow when the fixes moved out of "Your
- *  plan". Deliberately NOT given the plan's 3-state segmented control: a ticket has a FOURTH
- *  state, closed_pending_verify, and moves through ACTIONS rather than a free status set —
- *  closing one enqueues a forced re-crawl and only that crawl may mark it verified (CH-15). A
- *  radio button labelled "Verified" would let a user assert a verification that has not
- *  happened, which is the precise dishonesty that loop exists to prevent. */
-function PageFixRow({
-  ticket,
-  shareUrl,
-  busy,
-  onClose,
-  onReopen,
-  onRecheck,
-}: {
-  ticket: Ticket;
-  shareUrl: string | null;
-  busy: boolean;
-  onClose: () => void;
-  onReopen: () => void;
-  onRecheck: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const verifying = ticket.status === "closed_pending_verify";
-  const done = ticket.status === "verified_completed";
-  const lift =
-    ticket.baseline_score != null && ticket.current_score != null
-      ? ticket.current_score - ticket.baseline_score
-      : null;
+// PageFixRow moved to components/PackFixRow.tsx (as PackFixRow) when "Your plan" regained
+// the pack's fixes — one row definition for both surfaces, so they cannot drift.
 
+/** A ticket list with everything DONE folded behind "Already in place (N)". What is left
+ *  to do — including fixes mid-verification, whose Check-again/Reopen affordances are the
+ *  CH-15 loop — stays in view; the wins keep their badges and baseline→current lifts one
+ *  click away. Counts elsewhere (sidebar badges, "M verified") read the unfiltered list. */
+function FixList({
+  tickets,
+  state,
+  shareUrl,
+}: {
+  tickets: Ticket[];
+  state: PackTicketsState;
+  shareUrl: string | null;
+}) {
+  const row = (t: Ticket) => (
+    <PackFixRow
+      key={t.task_key}
+      ticket={t}
+      shareUrl={shareUrl}
+      busy={state.busyKey === t.task_key}
+      onClose={() => state.close(t.task_key)}
+      onReopen={() => state.reopen(t.task_key)}
+      onRecheck={() => state.recheck(t.task_key)}
+    />
+  );
+  const open = tickets.filter((t) => t.status !== "verified_completed");
+  const done = tickets.filter((t) => t.status === "verified_completed");
   return (
-    // The anchor both surfaces have always agreed on. Kept even though nothing links here
-    // today: it is one line, it is unit-tested, and it keeps a stable deep-link target.
-    <li id={packFixDomId(ticket.skill, ticket.page_url)} className="px-1 py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <span className={`text-[13.5px] font-medium ${done ? "text-ink-300 line-through" : "text-ink"}`}>
-            {ticket.label}
-          </span>
-          <p className="mt-0.5 text-[12.5px] leading-[1.5] text-ink-500">{ticket.action_required}</p>
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-            <button
-              type="button"
-              onClick={() => setOpen((o) => !o)}
-              className="text-ink-300 underline-offset-2 transition-colors hover:text-accent hover:underline"
-              aria-expanded={open}
-            >
-              {open ? "Hide how-to" : "Show me how →"}
-            </button>
-            {verifying && (
-              <span className="text-ink-300">
-                We&apos;re re-checking this page now — it flips to Verified once we can see the
-                change live.
+    <ul className="m-0 flex list-none flex-col gap-1 divide-y divide-white/[0.06] p-0">
+      {open.map(row)}
+      {done.length > 0 && (
+        <li className="px-1 py-2.5">
+          <details className="group/done">
+            <summary className="cursor-pointer list-none text-[12.5px] text-ink-300 transition-colors hover:text-accent">
+              <span className="group-open/done:hidden">
+                ✓ Already in place ({done.length}) — show what&apos;s done →
               </span>
-            )}
-            {done && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 font-medium text-emerald-300">
-                <Check width={10} height={10} /> auto-detected live
-              </span>
-            )}
-            {done && lift != null && lift > 0 && (
-              <span className="font-mono text-emerald-300">
-                {ticket.baseline_score} → {ticket.current_score} (+{lift})
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {busy ? (
-            <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink/20 border-t-accent" />
-          ) : done || verifying ? (
-            <>
-              {verifying && (
-                <button type="button" onClick={onRecheck} className="btn-ghost !py-1 text-[11px]">
-                  Check again
-                </button>
-              )}
-              <button type="button" onClick={onReopen} className="btn-ghost !py-1 text-[11px]">
-                Reopen
-              </button>
-            </>
-          ) : (
-            <button type="button" onClick={onClose} className="btn-primary !py-1 text-[11px]">
-              Mark as done
-            </button>
-          )}
-        </div>
-      </div>
-      {open && (
-        <TaskHowTo
-          taskKey={ticket.task_key}
-          label={ticket.label}
-          actionRequired={ticket.action_required ?? ""}
-          howTo={ticket.how_to ?? undefined}
-          shareUrl={shareUrl}
-        />
+              <span className="hidden group-open/done:inline">Hide what&apos;s done</span>
+            </summary>
+            <ul className="m-0 mt-1 flex list-none flex-col gap-1 divide-y divide-white/[0.06] border-t border-white/[0.06] p-0">
+              {done.map(row)}
+            </ul>
+          </details>
+        </li>
       )}
-    </li>
+    </ul>
   );
 }

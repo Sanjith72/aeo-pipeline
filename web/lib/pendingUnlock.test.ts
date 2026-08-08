@@ -15,6 +15,7 @@ import {
   readPendingUnlock,
   rememberPendingUnlock,
   signInReturnPath,
+  unlockReturnPath,
 } from "./pendingUnlock.ts";
 
 /** In-memory stand-in for localStorage — the runner has no DOM. */
@@ -114,4 +115,34 @@ test("the return path cannot be turned into an open redirect", () => {
 test("returning to an auth route would bounce the user back into sign-in", () => {
   assert.equal(signInReturnPath("/auth/callback"), "/studio");
   assert.equal(signInReturnPath("/auth/callback?next=/plan/x"), "/studio");
+});
+
+// ── where sign-in returns to WHEN AN UNLOCK IS PENDING ─────────────────────────────
+
+test("a pending unlock with a saved plan aims the round-trip at that plan", () => {
+  // The full-page legs (OAuth, the email-confirmation link) come back to a FRESH mount.
+  // On /studio that mount is the wizard — no run, no packs, nothing for the unlock dialog
+  // to stand on. /plan/<id> can rebuild all of it from the id, so that is where the
+  // round-trip must land, regardless of which page the click happened on.
+  const pending = { domain: "example.com", packIndex: 3, planStateId: "abc123XY", savedAt: NOW };
+  assert.equal(unlockReturnPath("/studio", pending), "/plan/abc123XY");
+  assert.equal(unlockReturnPath("/plan/abc123XY", pending), "/plan/abc123XY");
+});
+
+test("no pending unlock (or no saved plan on it) falls back to the plain path rule", () => {
+  assert.equal(unlockReturnPath("/studio", null), "/studio");
+  assert.equal(
+    unlockReturnPath("/studio", { domain: "example.com", packIndex: 2, savedAt: NOW }),
+    "/studio",
+  );
+  assert.equal(unlockReturnPath("//evil.example.com", null), "/studio");
+});
+
+test("a hand-edited planStateId cannot steer the redirect anywhere but /plan/<token>", () => {
+  // The id is interpolated into a path; anything that is not the URL-safe token
+  // plan_state.new_id() mints must fall back rather than build a crafted URL.
+  for (const bad of ["../admin", "x/../../etc", "https://evil", "a b", "", "short", "x".repeat(70)]) {
+    const pending = { domain: "d", packIndex: null, planStateId: bad, savedAt: NOW };
+    assert.equal(unlockReturnPath("/studio", pending), "/studio", JSON.stringify(bad));
+  }
 });

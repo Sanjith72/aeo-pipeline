@@ -11,12 +11,27 @@
 import { useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "@/lib/api";
-import type { Milestone, MilestoneStatus, MilestoneTask } from "@/lib/types";
+import type { Milestone, MilestoneStatus, MilestoneTask, PackPreview, Ticket } from "@/lib/types";
 import { manualCopyHint, selectField, useCopyAction } from "@/lib/copy";
-import { phaseDisplayTitle } from "@/lib/phases";
+import { phaseDisplayBlurb, phaseDisplayTitle } from "@/lib/phases";
+import type { PhaseKey } from "@/lib/phases";
+import { ticketsByPhase } from "@/lib/packPlan";
 import { Check } from "./ui/icons";
 import { TaskHowTo } from "./TaskHowTo";
+import { PackFixRow, PackSelector } from "./PackFixRow";
 import type { QuestTracker } from "./quest/useQuestTracker";
+import type { PackTicketsState } from "./quest/usePackTickets";
+
+/** Everything "Your plan" needs to fold the selected pack's fixes into its phase cards.
+ *  The ticket state itself is ResultsView's single usePackTickets instance — the same one
+ *  the Pages tab renders — so completing a fix on either surface updates both. */
+export interface PackWork {
+  packs: PackPreview[];
+  selectedPack: number | null;
+  onSelectPack: (packIndex: number) => void;
+  onUnlock: (packIndex: number) => void;
+  state: PackTicketsState;
+}
 
 export const STATUS_META: Record<MilestoneStatus, { label: string; pill: string; dot: string }> = {
   pending: {
@@ -38,7 +53,7 @@ export const STATUS_META: Record<MilestoneStatus, { label: string; pill: string;
 
 const STATUS_ORDER: MilestoneStatus[] = ["pending", "in_progress", "verified_completed"];
 
-export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
+export function MilestoneDashboard({ tracker, packWork }: { tracker: QuestTracker; packWork?: PackWork }) {
   const { dash, error, verifying, lastVerify, shareUrl, checkSite } = tracker;
   // Every branch here used to collapse into "nothing new is live yet" — including the ones
   // where we never actually read the site. Each distinct outcome now says what happened,
@@ -100,7 +115,36 @@ export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
   }
 
   const { progress, milestones } = dash;
-  const done = progress.pct === 100 && progress.total > 0;
+
+  // The selected pack's fixes, bucketed into the SAME three phases the plan renders below —
+  // one list, not a second stack that also says "Quick Wins" (the duplicate-heading problem
+  // that got the old standalone section removed). packWork is absent on the no-domain path;
+  // tickets are null while loading, which buckets to nothing and simply adds no rows yet.
+  // Bucketing takes the PAGES (not a flat priority list) so a fix is phased by its own
+  // page's impact — see ticketsByPhase's comment.
+  const packState = packWork?.state;
+  const packPhases = packState && !packState.locked ? ticketsByPhase(packState.tickets, packState.pages) : [];
+  const packByPhase = new Map(packPhases.map((p) => [p.key, p.tickets]));
+  const packOnlyPhases = packPhases.filter((p) => !milestones.some((m) => m.milestone_key === p.key));
+  const activePack = packWork?.packs.find((p) => p.pack_index === packWork.selectedPack) ?? null;
+  const packTitle =
+    activePack?.title ?? (packWork && packWork.selectedPack != null ? `Pack ${packWork.selectedPack}` : null);
+
+  // The header must count what the cards below now CONTAIN. The server roll-up excludes
+  // pack tickets by design (milestone_key NOT LIKE 'pack:%'), so with the selected pack's
+  // fixes folded into the cards, a bare `progress` header could read "6 / 6 verified 🎉"
+  // directly above an In-progress card holding three workable rows. Blend the folded
+  // tickets in — the numbers describe this surface as rendered, selected pack included.
+  const packAll = packState && !packState.locked ? (packState.tickets ?? []) : [];
+  const packVerifiedAll = packAll.filter((t) => t.status === "verified_completed").length;
+  const packInProgressAll = packAll.filter(
+    (t) => t.status === "in_progress" || t.status === "closed_pending_verify",
+  ).length;
+  const shownTotal = progress.total + packAll.length;
+  const shownVerified = progress.verified + packVerifiedAll;
+  const shownInProgress = progress.in_progress + packInProgressAll;
+  const shownPct = shownTotal > 0 ? Math.round((shownVerified / shownTotal) * 100) : progress.pct;
+  const done = shownPct === 100 && shownTotal > 0;
 
   return (
     <div className="space-y-6">
@@ -112,27 +156,27 @@ export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
         <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
           <h3 className="label-mono">Automatic site check</h3>
           <span className="font-mono text-xs text-ink-500">
-            {progress.verified} / {progress.total} verified
+            {shownVerified} / {shownTotal} verified
           </span>
         </div>
         <div
           className="mb-4 h-2 overflow-hidden rounded-full bg-ink/[0.07]"
           role="progressbar"
-          aria-valuenow={progress.pct}
+          aria-valuenow={shownPct}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-label="Implementation progress"
         >
           <div
             className="h-full rounded-full bg-gradient-to-r from-accent to-accent-600 transition-[width] duration-500 ease-out"
-            style={{ width: `${progress.pct}%` }}
+            style={{ width: `${shownPct}%` }}
           />
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-ink-500">
-            {progress.in_progress > 0 && (
+            {shownInProgress > 0 && (
               <>
-                <span className="font-medium text-amber-200">{progress.in_progress} in progress</span> ·{" "}
+                <span className="font-medium text-amber-200">{shownInProgress} in progress</span> ·{" "}
               </>
             )}
             Our crawler re-checks your live site every week and marks a step done once it can
@@ -186,8 +230,71 @@ export function MilestoneDashboard({ tracker }: { tracker: QuestTracker }) {
         )}
       </div>
 
+      {/* Which pack's fixes are folded into the phases below, and how to switch. Hidden on
+          a single-pack run (one unswitchable chip is noise, and the auto-select in
+          PagesPanel has already chosen it). */}
+      {packWork && packWork.packs.length > 1 && (
+        <PackSelector
+          label="Fixes from"
+          packs={packWork.packs}
+          selectedPack={packWork.selectedPack}
+          onSelectPack={packWork.onSelectPack}
+          ariaLabel="Choose which pack's fixes are folded into your plan"
+        />
+      )}
+      {packState?.lockedFixCount != null && packState.lockedFixCount > 0 && (
+        <p className="text-[12.5px] text-ink-500">
+          <span aria-hidden>🔒</span> {packState.lockedFixCount} more fix
+          {packState.lockedFixCount === 1 ? "" : "es"} {packState.lockedFixCount === 1 ? "is" : "are"} in
+          locked packs.
+        </p>
+      )}
+      {/* A locked pack is an expected product state (CH-02a): an offer, never an error. */}
+      {packWork && packState?.locked && packWork.selectedPack != null && (
+        <div className="rounded-xl border border-accent/25 bg-accent/[0.05] p-5">
+          <h4 className="text-base font-semibold">{packTitle} is locked</h4>
+          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-ink-500">
+            Unlock this pack to work its page-by-page fixes right here, inside your plan.
+          </p>
+          <button
+            type="button"
+            onClick={() => packWork.onUnlock(packWork.selectedPack as number)}
+            className="btn-primary mt-3 !py-2 text-[13px]"
+          >
+            Unlock {packTitle}
+          </button>
+        </div>
+      )}
+      {packState?.fixError && (
+        <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
+          That didn&apos;t work: {packState.fixError}
+        </p>
+      )}
+
       {milestones.map((m, i) => (
-        <MilestoneCard key={m.milestone_key} milestone={m} index={i} shareUrl={shareUrl} onSetStatus={setStatus} />
+        <MilestoneCard
+          key={m.milestone_key}
+          milestone={m}
+          index={i}
+          shareUrl={shareUrl}
+          onSetStatus={setStatus}
+          packTickets={packByPhase.get(m.milestone_key as PhaseKey) ?? []}
+          packTitle={packTitle}
+          packState={packState}
+        />
+      ))}
+      {/* A phase the plan has no milestone for can still have pack fixes — they must land
+          somewhere visible rather than being dropped for want of a card to sit in. */}
+      {packOnlyPhases.map((p, i) => (
+        <PackOnlyPhaseCard
+          key={p.key}
+          phaseKey={p.key}
+          tickets={p.tickets}
+          index={milestones.length + i}
+          packTitle={packTitle}
+          packState={packState as PackTicketsState}
+          shareUrl={shareUrl}
+        />
       ))}
     </div>
   );
@@ -315,26 +422,189 @@ function MilestoneCard({
   index,
   shareUrl,
   onSetStatus,
+  packTickets = [],
+  packTitle,
+  packState,
 }: {
   milestone: Milestone;
   index: number;
   shareUrl: string | null;
   onSetStatus: (task: MilestoneTask, status: MilestoneStatus) => void;
+  /** The selected pack's fixes belonging to THIS phase (item 3.4) — same card, same list. */
+  packTickets?: Ticket[];
+  packTitle?: string | null;
+  packState?: PackTicketsState;
 }) {
-  const meta = STATUS_META[milestone.status];
   const verified = milestone.tasks.filter((t) => t.status === "verified_completed").length;
+  const packVerified = packTickets.filter((t) => t.status === "verified_completed").length;
+  // The pill must describe what the card now CONTAINS: a milestone the server calls done
+  // above unfinished pack fixes is not a done card.
+  const status: MilestoneStatus =
+    milestone.status === "verified_completed" && packVerified < packTickets.length
+      ? "in_progress"
+      : milestone.status;
+  const meta = STATUS_META[status];
+  // What is DONE folds away (the disclosure below); what is left to do stays in view. A
+  // ticket awaiting its verification crawl is NOT done — its "Verifying…"/"Check again"
+  // affordances are the CH-15 loop and must stay visible.
+  const activeTasks = milestone.tasks.filter((t) => t.status !== "verified_completed");
+  const doneTasks = milestone.tasks.filter((t) => t.status === "verified_completed");
+  const activeTickets = packTickets.filter((t) => t.status !== "verified_completed");
+  const doneTickets = packTickets.filter((t) => t.status === "verified_completed");
   return (
     <PhaseCardShell
       statusLabel={meta.label}
       statusPill={meta.pill}
       title={phaseDisplayTitle(milestone.milestone_key, milestone.title)}
       blurb={milestone.blurb}
-      countLabel={`${verified}/${milestone.tasks.length} verified`}
+      countLabel={`${verified + packVerified}/${milestone.tasks.length + packTickets.length} verified`}
       index={index}
     >
-      {milestone.tasks.map((t) => (
+      {activeTasks.map((t) => (
         <TaskRow key={t.task_key} task={t} shareUrl={shareUrl} onSetStatus={onSetStatus} />
       ))}
+      {activeTickets.length > 0 && packState && (
+        <PackTicketRows tickets={activeTickets} packTitle={packTitle} packState={packState} shareUrl={shareUrl} />
+      )}
+      <DoneFold count={doneTasks.length + doneTickets.length}>
+        {doneTasks.map((t) => (
+          <TaskRow key={t.task_key} task={t} shareUrl={shareUrl} onSetStatus={onSetStatus} />
+        ))}
+        {packState &&
+          doneTickets.map((t) => (
+            <PackFixRow
+              key={t.task_key}
+              ticket={t}
+              shareUrl={shareUrl}
+              busy={packState.busyKey === t.task_key}
+              onClose={() => packState.close(t.task_key)}
+              onReopen={() => packState.reopen(t.task_key)}
+              onRecheck={() => packState.recheck(t.task_key)}
+              className="px-4 py-3"
+            />
+          ))}
+      </DoneFold>
+    </PhaseCardShell>
+  );
+}
+
+/**
+ * The collapsed home of everything already done — crawl-verified, already-in-place at the
+ * baseline, or ticked off by the owner. The first thing a returning user sees must be what
+ * is LEFT, not a wall of struck-through wins; but the wins stay one click away (with their
+ * badges and baseline→current lifts intact) because "what's already in place" is the
+ * evidence the plan is working. Progress numbers, coins and the share page all read the
+ * UNFILTERED sets — this folds rows, it never uncounts them.
+ */
+function DoneFold({ count, children }: { count: number; children: ReactNode }) {
+  if (count === 0) return null;
+  return (
+    <li className="px-4 py-2.5">
+      <details className="group/done">
+        <summary className="cursor-pointer list-none text-[13px] text-ink-300 transition-colors hover:text-accent">
+          <span className="group-open/done:hidden">
+            ✓ Already in place ({count}) — show what&apos;s done →
+          </span>
+          <span className="hidden group-open/done:inline">Hide what&apos;s done</span>
+        </summary>
+        <ul className="mt-2 divide-y divide-ink/[0.06] border-t border-ink/[0.06]">{children}</ul>
+      </details>
+    </li>
+  );
+}
+
+/** The pack's rows inside a phase card: a quiet provenance line, then the same workable
+ *  rows the Pages tab renders (PackFixRow — actions, not the 3-state radio; see its
+ *  comment for why a "Verified" radio would be dishonest here). */
+function PackTicketRows({
+  tickets,
+  packTitle,
+  packState,
+  shareUrl,
+}: {
+  tickets: Ticket[];
+  packTitle?: string | null;
+  packState: PackTicketsState;
+  shareUrl: string | null;
+}) {
+  return (
+    <>
+      {packTitle && (
+        <li className="bg-paper-200/30 px-4 py-1.5">
+          <span className="label-mono !text-[10px] text-ink-300">
+            Fixes from {packTitle} — also under each page in the Pages tab
+          </span>
+        </li>
+      )}
+      {tickets.map((t) => (
+        <PackFixRow
+          key={t.task_key}
+          ticket={t}
+          shareUrl={shareUrl}
+          busy={packState.busyKey === t.task_key}
+          onClose={() => packState.close(t.task_key)}
+          onReopen={() => packState.reopen(t.task_key)}
+          onRecheck={() => packState.recheck(t.task_key)}
+          className="px-4 py-3"
+        />
+      ))}
+    </>
+  );
+}
+
+/** A phase the plan has no milestone for, carrying only pack fixes. Same shell, status
+ *  derived from the tickets it holds. */
+function PackOnlyPhaseCard({
+  phaseKey,
+  tickets,
+  index,
+  packTitle,
+  packState,
+  shareUrl,
+}: {
+  phaseKey: PhaseKey;
+  tickets: Ticket[];
+  index: number;
+  packTitle?: string | null;
+  packState: PackTicketsState;
+  shareUrl: string | null;
+}) {
+  const verified = tickets.filter((t) => t.status === "verified_completed").length;
+  const status: MilestoneStatus =
+    verified === tickets.length
+      ? "verified_completed"
+      : tickets.some((t) => t.status !== "pending")
+        ? "in_progress"
+        : "pending";
+  const meta = STATUS_META[status];
+  const active = tickets.filter((t) => t.status !== "verified_completed");
+  const done = tickets.filter((t) => t.status === "verified_completed");
+  return (
+    <PhaseCardShell
+      statusLabel={meta.label}
+      statusPill={meta.pill}
+      title={phaseDisplayTitle(phaseKey, phaseKey)}
+      blurb={phaseDisplayBlurb(phaseKey, "")}
+      countLabel={`${verified}/${tickets.length} verified`}
+      index={index}
+    >
+      {active.length > 0 && (
+        <PackTicketRows tickets={active} packTitle={packTitle} packState={packState} shareUrl={shareUrl} />
+      )}
+      <DoneFold count={done.length}>
+        {done.map((t) => (
+          <PackFixRow
+            key={t.task_key}
+            ticket={t}
+            shareUrl={shareUrl}
+            busy={packState.busyKey === t.task_key}
+            onClose={() => packState.close(t.task_key)}
+            onReopen={() => packState.reopen(t.task_key)}
+            onRecheck={() => packState.recheck(t.task_key)}
+            className="px-4 py-3"
+          />
+        ))}
+      </DoneFold>
     </PhaseCardShell>
   );
 }

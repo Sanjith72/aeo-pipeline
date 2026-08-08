@@ -14,6 +14,7 @@
 import { useEffect, useState } from "react";
 
 import { DeveloperHandoffPanel, MilestoneDashboard } from "../MilestoneDashboard";
+import type { PackWork } from "../MilestoneDashboard";
 import type { PackPreview, StructuredPlan } from "@/lib/types";
 import { QuestMap } from "./QuestMap";
 import { useQuestTracker } from "./useQuestTracker";
@@ -38,6 +39,7 @@ export function TrackerView({
   facet,
   onShareUrl,
   visible = true,
+  packWork,
 }: {
   domain: string;
   plan: StructuredPlan;
@@ -53,6 +55,10 @@ export function TrackerView({
   // False while the tracker is mounted but hidden behind another results tab — the map
   // defers its celebrations and "opened" analytics until it can actually be seen.
   visible?: boolean;
+  /** The selected pack's fixes + the shared ticket state (ResultsView's one usePackTickets
+   *  instance), folded into the milestone phase cards (item 3.4). Absent on the no-domain
+   *  path, which has no run and therefore no packs. */
+  packWork?: PackWork;
 }) {
   // The single tracker instance both facets render — syncs once, then every status change,
   // verify, or link rotation from either facet lands in the same state.
@@ -86,15 +92,13 @@ export function TrackerView({
             things off yourself, or publish the change and let the automatic site check verify
             it for you.
           </p>
-          <MilestoneDashboard tracker={tracker} />
-          {/* The selected pack's page-by-page fixes used to render here (item 3.4). They now
-              live under each page in the PAGES tab, which is where a user looking at a page's
-              scores expects to find that page's work — and it leaves this tab as one list
-              again instead of two stacks that both said "Quick Wins".
-              What stays here is the half the pack fixes cannot express: the plan's
-              build-this-page milestones, which exist for pages that DO NOT EXIST YET. Pack
-              tickets only ever cover pages that were crawled, so deleting this list would
-              remove the only surface telling an owner to create the page they are missing. */}
+          {/* The selected pack's fixes render INSIDE the milestone phase cards (item 3.4)
+              — one list per phase, not a second stack that also says "Quick Wins". The same
+              tickets are workable under each page in the Pages tab; both surfaces render
+              ResultsView's single usePackTickets instance, so they cannot disagree. The
+              plan's own build-this-page milestones stay: they exist for pages that DO NOT
+              EXIST YET, which pack tickets (crawled pages only) can never express. */}
+          <MilestoneDashboard tracker={tracker} packWork={packWork} />
           <DeveloperHandoffPanel tracker={tracker} />
         </div>
       )}

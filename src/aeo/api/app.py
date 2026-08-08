@@ -2189,7 +2189,33 @@ def get_plan_state(plan_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="plan store temporarily unavailable") from exc
     if not row:
         raise HTTPException(status_code=404, detail=f"no plan {plan_id}")
-    return {k: row.get(k) for k in _PLAN_STATE_PUBLIC}
+    out = {k: row.get(k) for k in _PLAN_STATE_PUBLIC}
+    if out.get("run_id") is None and (out.get("domain") or "").strip():
+        # Plans saved while the studio omitted run_id from the create call carry NULL here
+        # forever, and the Pages tab (packs, page scores, workable fixes) is gated on it —
+        # a permanently degraded resume for a bug the user cannot fix. Resolve the domain's
+        # newest PACK-BEARING run at read time instead. Read-only: the stored row stays as
+        # saved, and pack access behind the run is still decided by entitlements.
+        #
+        # The resolver is exact-host and requires packs (see latest_pack_run_for_domain) —
+        # runs.latest_for_domain would prefix-match a longer host (acme.co → acme.com) and
+        # happily return a cancelled re-crawl with no packs. On top of that, the adopted
+        # run must resolve back to the plan's own domain key under the same normalization
+        # the grant path uses, so a run that crawled several hosts can never bind another
+        # site's identity (its scores, its ticket board) to this plan link.
+        from ..reference.domain_config import normalize_domain
+        from ..storage.repos import packs as packs_repo
+        from ..storage.repos import runs as runs_repo
+
+        try:
+            candidate = packs_repo.latest_pack_run_for_domain(out["domain"])
+            if candidate is not None and runs_repo.domain_for_run(candidate) == normalize_domain(
+                out["domain"]
+            ):
+                out["run_id"] = candidate
+        except Exception:
+            pass  # the fallback must never take down the plan itself
+    return out
 
 
 @app.put("/api/plan-state/{plan_id}")
