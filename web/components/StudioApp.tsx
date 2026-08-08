@@ -176,9 +176,10 @@ export function StudioApp() {
   // Which pack the unlock dialog is for (v5 CH-02b) — drives the per-pack Stripe checkout.
   const [unlockPack, setUnlockPack] = useState<number | null>(null);
   // One-shot ask for ResultsView to open a tab (a just-unlocked pack lands on Pages; the
-  // pack grid's "Open fixes →" jumps to that pack's card under Your plan).
+  // pack grid's "Open fixes →" jumps to that pack's card under Your plan — which lives on
+  // the "strategy" tab with a profile and the "kit" fallback tab without one).
   const [tabRequest, setTabRequest] = useState<{
-    id: "pages" | "strategy";
+    id: "pages" | "strategy" | "kit";
     nonce: number;
     anchor?: string;
   } | null>(null);
@@ -1403,7 +1404,10 @@ export function StudioApp() {
                         : () => {
                             setOpenPack(pack.pack_index);
                             setTabRequest({
-                              id: "strategy",
+                              // Without a profile there is no "strategy" tab and an ask
+                              // for it would pend forever; the "kit" fallback tab hosts
+                              // the same plan panel (and the same pack cards).
+                              id: profile ? "strategy" : "kit",
                               nonce: Date.now(),
                               anchor: packFixesDomId(pack.pack_index),
                             });
@@ -1438,6 +1442,7 @@ export function StudioApp() {
                     selectedPack: openPack,
                     onSelectPack: setOpenPack,
                     onUnlock: handleUnlock,
+                    onRefreshPacks: () => void refreshPacks(),
                   }
                 : undefined
             }
@@ -1447,7 +1452,13 @@ export function StudioApp() {
             personalizeError={personalizeError}
             personalizeProgress={personalizeJob?.progress ?? null}
             onDownloadZip={downloadZip}
-            onEdit={() => setView("wizard")}
+            // Also drops any un-consumed (or consumed-but-remembered) tab ask: ResultsView
+            // holds the consumed marker in a ref, so unmounting it here and returning via
+            // "View my results" would otherwise replay an old ask on every round-trip.
+            onEdit={() => {
+              setTabRequest(null);
+              setView("wizard");
+            }}
             tabRequest={tabRequest}
           />
         </>

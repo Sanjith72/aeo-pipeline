@@ -29,6 +29,10 @@ export interface PackPlanContext {
   selectedPack: number | null;
   onSelectPack: (packIndex: number) => void;
   onUnlock: (packIndex: number) => void;
+  /** Re-read the packs list from the server. Called when the ticket list proves the grid
+   *  stale — e.g. an earned progressive unlock (finish pack 1 → pack 2 unlocks) shows up
+   *  in the run-wide tickets long before anything else would refresh the grid. */
+  onRefreshPacks?: () => void;
 }
 
 export function TrackerView({

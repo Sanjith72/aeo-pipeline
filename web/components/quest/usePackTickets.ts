@@ -36,6 +36,11 @@ export interface PackTicketsState {
   /** Every unlocked pack's tickets for the run (each knows its pack_index); null while
    *  loading. What "Your plan" groups under each pack. */
   allTickets: Ticket[] | null;
+  /** True when `allTickets` reflects the CURRENT locked set. False while the refetch a
+   *  just-changed entitlement triggers is still in flight (or failed) — the window where a
+   *  freshly unlocked pack has no rows in the list simply because the list predates the
+   *  purchase. Callers must not read "no rows" as "nothing to do" unless this is true. */
+  ticketsFresh: boolean;
   /** The selected pack is locked (server 403 on its page detail) — a product state, not a
    *  failure. */
   locked: boolean;
@@ -66,22 +71,36 @@ export function usePackTickets(
 ): PackTicketsState {
   const [pages, setPages] = useState<PackPageDetail[] | null>(null);
   const [allTickets, setAllTickets] = useState<Ticket[] | null>(null);
+  // The lockedKey the current allTickets was fetched under — the freshness marker. A list
+  // read before an unlock must never be mistaken for a statement about the post-unlock
+  // world (it is missing the just-paid pack's rows).
+  const [ticketsKey, setTicketsKey] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
   const [error, setError] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [lockedFixCount, setLockedFixCount] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Monotonic fetch sequence — LATEST WINS. Responses are applied only if no newer fetch
+  // has started since; without this, a slow pre-unlock read resolving after the fast
+  // post-unlock one would overwrite the fresh list with the stale one, and a just-paid
+  // pack would render "nothing to fix" until a reload (the exact class of stale-latch bug
+  // the lockedKey dependency exists to prevent).
+  const ticketsSeq = useRef(0);
+  const pagesSeq = useRef(0);
 
   const loadPages = useCallback(async () => {
     if (runId == null || selectedPack == null) return;
+    const seq = ++pagesSeq.current;
     setLocked(false);
     setError(false);
     setPages(null);
     try {
       const res = await api.getPackDetail(runId, selectedPack);
+      if (seq !== pagesSeq.current) return; // a newer fetch owns the state now
       setPages(res.pages);
     } catch (e) {
+      if (seq !== pagesSeq.current) return;
       if ((e as { status?: number })?.status === 403) {
         setLocked(true);
         setPages([]);
@@ -99,13 +118,18 @@ export function usePackTickets(
   // different slice of the same list rather than refetching it.
   const loadTickets = useCallback(async () => {
     if (runId == null) return;
+    const seq = ++ticketsSeq.current;
     try {
       const res = await api.getTickets(runId);
+      if (seq !== ticketsSeq.current) return; // a newer fetch owns the state now
       setAllTickets(res.tickets);
+      setTicketsKey(lockedKey);
       setLockedFixCount(res.locked_ticket_count ?? 0);
       setFixError(null);
     } catch (e) {
-      setLockedFixCount(null); // unknown, never "0 more"
+      if (seq !== ticketsSeq.current) return;
+      // The last successful list AND count stay up — both are still true statements about
+      // the last read, unlike a blank. Only the error message changes.
       setFixError(e instanceof Error ? e.message : String(e));
     }
     // lockedKey: a just-unlocked pack's tickets appear in this route's response only after
@@ -190,6 +214,7 @@ export function usePackTickets(
     pages,
     tickets,
     allTickets,
+    ticketsFresh: allTickets != null && ticketsKey === lockedKey,
     locked,
     error,
     fixError,

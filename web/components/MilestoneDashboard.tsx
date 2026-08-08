@@ -11,7 +11,7 @@
 import { useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "@/lib/api";
-import type { Milestone, MilestoneStatus, MilestoneTask, PackPageDetail, PackPreview, Ticket } from "@/lib/types";
+import type { Milestone, MilestoneStatus, MilestoneTask, PackPreview, Ticket } from "@/lib/types";
 import { manualCopyHint, selectField, useCopyAction } from "@/lib/copy";
 import { phaseDisplayTitle } from "@/lib/phases";
 import { packFixesDomId, ticketsByPack, ticketsByPhase } from "@/lib/packPlan";
@@ -145,7 +145,9 @@ export function MilestoneDashboard({ tracker, packWork }: { tracker: QuestTracke
   const shownVerified = progress.verified + packVerifiedAll;
   const shownInProgress = progress.in_progress + packInProgressAll;
   const shownPct = shownTotal > 0 ? Math.round((shownVerified / shownTotal) * 100) : progress.pct;
-  const done = shownPct === 100 && shownTotal > 0;
+  // Exact equality, NOT the rounded pct: with the run-wide blend the denominator can reach
+  // the hundreds, where 199/200 rounds to a "100%" celebration above one still-open fix.
+  const done = shownTotal > 0 && shownVerified === shownTotal;
 
   return (
     <div className="space-y-6">
@@ -265,35 +267,49 @@ export function MilestoneDashboard({ tracker, packWork }: { tracker: QuestTracke
               That didn&apos;t work: {packWork.state.fixError}
             </p>
           )}
-          {packWork.packs.map((pack, i) =>
-            pack.locked ? (
-              <PackLockedCard
-                key={pack.pack_index}
-                pack={pack}
-                onUnlock={() => packWork.onUnlock(pack.pack_index)}
-                index={milestones.length + i}
-              />
-            ) : (
+          {packWork.packs.map((pack, i) => {
+            const packTickets = byPack.get(pack.pack_index) ?? [];
+            // Ticket presence outranks the grid's `locked` flag: the server only ships an
+            // unlocked pack's tickets, and the ticket list refreshes on every poll and
+            // action while the packs grid refreshes rarely. An earned progressive unlock
+            // (finish pack 1 → pack 2 unlocks server-side) reaches the list first — and a
+            // pay card rendered over workable rows would demand money for something the
+            // user already earned.
+            if (pack.locked && packTickets.length === 0) {
+              return (
+                <PackLockedCard
+                  key={pack.pack_index}
+                  pack={pack}
+                  onUnlock={() => packWork.onUnlock(pack.pack_index)}
+                  index={milestones.length + i}
+                />
+              );
+            }
+            const empty = packTickets.length === 0;
+            return (
               <PackFixesCard
                 key={pack.pack_index}
                 title={pack.title}
                 anchorId={packFixesDomId(pack.pack_index)}
-                tickets={byPack.get(pack.pack_index) ?? []}
-                loading={packWork.state.allTickets == null}
-                pages={pack.pack_index === packWork.selectedPack ? packWork.state.pages : undefined}
+                tickets={packTickets}
+                // An empty slice only MEANS "nothing to do" once the list is fresh for the
+                // current entitlements — a just-unlocked pack's rows are still in flight,
+                // and claiming its pages "pass" from a pre-purchase list would be false.
+                pending={empty && !packWork.state.ticketsFresh && !packWork.state.fixError}
+                failed={empty && !packWork.state.ticketsFresh && !!packWork.state.fixError}
+                onRetry={packWork.state.reloadTickets}
                 packState={packWork.state}
                 shareUrl={shareUrl}
                 index={milestones.length + i}
               />
-            ),
-          )}
+            );
+          })}
           {orphanTickets.length > 0 && (
             <PackFixesCard
               title="Fixes from an earlier audit"
               blurb="Found on pages that aren't in your current packs — still yours to work, and still verified the same way."
               anchorId="pack-fixes-earlier"
               tickets={orphanTickets}
-              loading={false}
               packState={packWork.state}
               shareUrl={shareUrl}
               index={milestones.length + packWork.packs.length}
@@ -512,8 +528,9 @@ function PackFixesCard({
   blurb,
   anchorId,
   tickets,
-  loading,
-  pages,
+  pending = false,
+  failed = false,
+  onRetry,
   packState,
   shareUrl,
   index,
@@ -522,26 +539,41 @@ function PackFixesCard({
   blurb?: string;
   anchorId: string;
   tickets: Ticket[];
-  /** The run-wide list has not arrived yet — render the frame with a quiet loading row. */
-  loading: boolean;
-  /** The pack's scored pages when it is the SELECTED pack (impact-accurate phase order);
-   *  undefined otherwise, where bucketTicket falls back to each ticket's baseline score. */
-  pages?: PackPageDetail[] | null;
+  /** No rows AND the run-wide list cannot yet speak for this pack (first load, or the
+   *  refetch a just-changed entitlement triggered is still in flight). */
+  pending?: boolean;
+  /** No rows AND the fetch that would provide them failed — offer a retry, never a
+   *  confident empty claim. */
+  failed?: boolean;
+  onRetry?: () => void;
   packState: PackTicketsState;
   shareUrl: string | null;
   index: number;
 }) {
   const verified = tickets.filter((t) => t.status === "verified_completed").length;
-  const status: MilestoneStatus =
-    !loading && tickets.length > 0 && verified === tickets.length
-      ? "verified_completed"
-      : tickets.some((t) => t.status !== "pending")
-        ? "in_progress"
-        : "pending";
-  const meta = STATUS_META[status];
+  // The pill must say what the card KNOWS, not what a default implies: a grey "Pending"
+  // over a spinner claims a state before anything is known, and over an empty pack it
+  // claims work is waiting when none is.
+  const meta = pending
+    ? { label: "Loading", pill: STATUS_META.pending.pill }
+    : failed
+      ? { label: "Unavailable", pill: STATUS_META.pending.pill }
+      : tickets.length === 0
+        ? { label: "No open fixes", pill: STATUS_META.pending.pill }
+        : STATUS_META[
+            verified === tickets.length
+              ? "verified_completed"
+              : tickets.some((t) => t.status !== "pending")
+                ? "in_progress"
+                : "pending"
+          ];
   const active = tickets.filter((t) => t.status !== "verified_completed");
   const done = tickets.filter((t) => t.status === "verified_completed");
-  const activeByPhase = ticketsByPhase(active, pages);
+  // Bucketed by each ticket's own baseline score — deliberately NOT by the selected pack's
+  // impact priorities. That signal exists for at most one card at a time, so using it
+  // would relabel the same fix's phase whenever the selection moved; a plan whose labels
+  // depend on what was last clicked reads as noise, not as a plan.
+  const activeByPhase = ticketsByPhase(active);
   return (
     <div id={anchorId} className="scroll-mt-24">
       <PhaseCardShell
@@ -549,17 +581,29 @@ function PackFixesCard({
         statusPill={meta.pill}
         title={title}
         blurb={blurb}
-        countLabel={loading ? "" : `${verified}/${tickets.length} verified`}
+        countLabel={tickets.length === 0 ? "" : `${verified}/${tickets.length} verified`}
         index={index}
       >
-        {loading ? (
+        {pending ? (
           <li className="flex items-center gap-2 px-4 py-3 text-sm text-ink-500">
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink/20 border-t-accent" />
             Loading this pack&apos;s fixes…
           </li>
+        ) : failed ? (
+          <li className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm text-ink-500">
+            <span>Couldn&apos;t load this pack&apos;s fixes just now.</span>
+            {onRetry && (
+              <button type="button" onClick={onRetry} className="btn-ghost !py-1 text-[12px]">
+                Try again
+              </button>
+            )}
+          </li>
         ) : tickets.length === 0 ? (
+          // "No open fixes" ≠ "these pages pass": zero tickets is also what an unscored
+          // (unreachable on the crawl) page produces, so the copy claims only what the
+          // data can back.
           <li className="px-4 py-3 text-sm text-ink-500">
-            Nothing to fix here — this pack&apos;s pages already pass our checks.
+            No open fixes for this pack in this audit.
           </li>
         ) : (
           <>

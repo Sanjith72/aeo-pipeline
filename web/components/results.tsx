@@ -335,22 +335,36 @@ export function ResultsView({
   // that load must win the race's replay, not be dropped.
   const tabIds = tabs.map((t) => t.id).join(",");
   const consumedTabAsk = useRef(0);
+  // What the user is looking at RIGHT NOW — read by the retrying anchor scroll below so a
+  // late-arriving card never yanks a user who has already moved to another tab.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
   useEffect(() => {
     if (!tabRequest || tabRequest.nonce === consumedTabAsk.current) return;
     if (!tabIds.split(",").includes(tabRequest.id)) return;
     consumedTabAsk.current = tabRequest.nonce;
     setTab(tabRequest.id);
     // The asked-for element sits in a subtree that was `hidden` until the setTab above
-    // lands, so the scroll waits two frames: one for React to commit the unhide, one for
-    // layout. A missing anchor (stale id, still-loading card) degrades to just the tab
-    // switch — never an error.
+    // lands — and it may not EXIST yet: the pack cards mount only after the plan
+    // auto-builds and the milestone sync returns, both slower than the pack grid the
+    // click came from. So the scroll retries for a bounded window instead of firing once
+    // into the void, and gives up silently (the right tab is already open, which is most
+    // of the value) rather than erroring.
     const anchor = tabRequest.anchor;
     if (anchor) {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          document.getElementById(anchor)?.scrollIntoView({ behavior: "smooth", block: "start" });
-        });
-      });
+      const wantedTab = tabRequest.id;
+      let attempts = 40; // × 250ms ≈ 10s — covers the plan build + tracker sync
+      const tryScroll = () => {
+        if (tabRef.current !== wantedTab) return; // the user moved on — don't yank them back
+        const el = document.getElementById(anchor);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "start" });
+          return;
+        }
+        if (attempts-- > 0) window.setTimeout(tryScroll, 250);
+      };
+      // Two frames first: one for React to commit the unhide, one for layout.
+      requestAnimationFrame(() => requestAnimationFrame(tryScroll));
     }
   }, [tabRequest, tabIds]);
 
@@ -411,6 +425,20 @@ export function ResultsView({
     packContext?.selectedPack ?? null,
     lockedKey,
   );
+  // Grid ↔ entitlement reconciliation. The server only ships an unlocked pack's tickets,
+  // so a ticket for a pack the grid still calls locked is PROOF the grid is stale — the
+  // earned progressive unlock (finish pack 1 → pack 2 unlocks server-side) surfaces here
+  // first, via the verify poll, while nothing else would refresh the grid until a reload.
+  // Refreshing the packs list flips the flag, which also rolls lockedKey and lets the
+  // hook fetch the newly reachable page detail. Fires only on a false→true transition of
+  // the mismatch, so a server that keeps disagreeing cannot cause a refresh loop.
+  const gridStale = !!packContext?.packs.some(
+    (p) => p.locked && (packTickets.allTickets ?? []).some((t) => t.pack_index === p.pack_index),
+  );
+  const onRefreshPacks = packContext?.onRefreshPacks;
+  useEffect(() => {
+    if (gridStale) onRefreshPacks?.();
+  }, [gridStale, onRefreshPacks]);
   const packWork: PackWork | undefined = packContext
     ? {
         packs: packContext.packs,
@@ -2182,6 +2210,7 @@ export function ResumedPlanView({ state }: { state: PlanStateResponse }) {
                 selectedPack,
                 onSelectPack: setSelectedPack,
                 onUnlock: handleUnlock,
+                onRefreshPacks: () => void loadPacks(),
               }
             : undefined
         }
