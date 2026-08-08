@@ -196,6 +196,42 @@ export function packPlanPhases(
   return PACK_PHASE_ORDER.filter((k) => buckets[k].length > 0).map((k) => ({ key: k, tasks: buckets[k] }));
 }
 
+/**
+ * A pack's tickets grouped into plan phases AS TICKETS — for the surface that renders them
+ * with the ticket row's own action machinery (Mark as done → Verifying… → Verified) inside
+ * the plan's phase cards. Same bucketing and same ordering rule as ``packPlanPhases``; this
+ * variant keeps the Ticket objects because the row component drives /api/tickets/* with
+ * them, and a flattened copy would strand the caller re-joining on task_key.
+ */
+export function ticketsByPhase(
+  tickets: readonly Ticket[] | null | undefined,
+  priorities?: readonly SkillPriority[] | null,
+): { key: PhaseKey; tickets: Ticket[] }[] {
+  const bySkill = priorityBySkill(priorities);
+  const buckets: Record<PhaseKey, Ticket[]> = { week_1: [], week_2_4: [], later: [] };
+  for (const t of tickets ?? []) {
+    buckets[bucketTicket(t, t.skill ? bySkill.get(t.skill) : null)].push(t);
+  }
+  // The same reading order as packPlanPhases: unfinished first, then grouped by page. The
+  // rank runs over the REAL 4-state vocabulary, with closed_pending_verify beside
+  // in_progress exactly as ticketStatusToMilestoneStatus maps it.
+  const rank: Record<TicketStatus, number> = {
+    pending: 0,
+    in_progress: 1,
+    closed_pending_verify: 1,
+    verified_completed: 2,
+  };
+  for (const key of PACK_PHASE_ORDER) {
+    buckets[key].sort(
+      (a, b) =>
+        rank[a.status] - rank[b.status] ||
+        (a.page_url ?? "").localeCompare(b.page_url ?? "") ||
+        a.task_key.localeCompare(b.task_key),
+    );
+  }
+  return PACK_PHASE_ORDER.filter((k) => buckets[k].length > 0).map((k) => ({ key: k, tickets: buckets[k] }));
+}
+
 /** Progress across a pack's mapped tasks, in the same shape the tracker's roll-up uses, so
  *  the pack's numbers and the plan's are computed by the same rule. */
 export function packPlanProgress(phases: readonly PackPlanPhase[]): {

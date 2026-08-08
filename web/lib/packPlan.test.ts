@@ -19,6 +19,7 @@ import {
   packPlanPhases,
   packPlanProgress,
   priorityBySkill,
+  ticketsByPhase,
   ticketStatusToMilestoneStatus,
   ticketToPlanTask,
 } from "./packPlan.ts";
@@ -363,4 +364,57 @@ test("the sidebar badge counts what is still to do, separately from what is prov
     tk("u", "closed_pending_verify"), tk("u", "verified_completed"),
   ]);
   assert.deepEqual(counts, { total: 4, open: 2, verifying: 1, verified: 1 });
+});
+
+// ── ticketsByPhase (the plan-card variant) ─────────────────────────────────────────
+
+test("ticketsByPhase buckets identically to packPlanPhases", () => {
+  // Two surfaces, one bucketing rule: a fix must sit in the same phase whether "Your plan"
+  // renders it as a ticket row or anything else derives the mapped task shape.
+  const tickets = [
+    ticket({ task_key: "a", baseline_score: 80 }),
+    ticket({ task_key: "b", baseline_score: 45 }),
+    ticket({ task_key: "c", baseline_score: 10 }),
+    ticket({ task_key: "d", baseline_score: null }),
+  ];
+  const viaTasks = packPlanPhases(tickets);
+  const viaTickets = ticketsByPhase(tickets);
+  assert.deepEqual(
+    viaTickets.map((p) => ({ key: p.key, keys: p.tickets.map((t) => t.task_key).sort() })),
+    viaTasks.map((p) => ({ key: p.key, keys: p.tasks.map((t) => t.task_key).sort() })),
+  );
+});
+
+test("ticketsByPhase keeps the REAL Ticket objects", () => {
+  // The row component drives /api/tickets/* with the ticket itself — a flattened copy
+  // would strand the caller re-joining on task_key.
+  const t = ticket({ task_key: "x", status: "closed_pending_verify" as TicketStatus });
+  const phases = ticketsByPhase([t]);
+  assert.equal(phases.length, 1);
+  assert.equal(phases[0].tickets[0], t);
+});
+
+test("ticketsByPhase honours a skill's priority impact over the score fallback", () => {
+  const t = ticket({ task_key: "hi", skill: "messaging", baseline_score: 10 });
+  // Score 10 alone would say "later"; an impact of 0.9 says Quick Win — impact wins.
+  const phases = ticketsByPhase([t], [priority({ skill: "messaging", impact: 0.9 })]);
+  assert.deepEqual(phases.map((p) => p.key), ["week_1"]);
+});
+
+test("ticketsByPhase sorts unfinished above verified, verifying beside in_progress", () => {
+  const tickets = [
+    ticket({ task_key: "done", status: "verified_completed" as TicketStatus, baseline_score: 80 }),
+    ticket({ task_key: "verifying", status: "closed_pending_verify" as TicketStatus, baseline_score: 80 }),
+    ticket({ task_key: "open", status: "pending" as TicketStatus, baseline_score: 80 }),
+  ];
+  const phases = ticketsByPhase(tickets);
+  const order = phases[0].tickets.map((t) => t.task_key);
+  assert.equal(order[0], "open"); // to-do first
+  assert.equal(order[order.length - 1], "done"); // verified sinks to the bottom
+});
+
+test("ticketsByPhase on nothing is an empty plan, not a crash", () => {
+  assert.deepEqual(ticketsByPhase(null), []);
+  assert.deepEqual(ticketsByPhase([]), []);
+  assert.deepEqual(ticketsByPhase(undefined, null), []);
 });

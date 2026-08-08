@@ -33,6 +33,8 @@ import { TaskHowTo } from "./TaskHowTo";
 import { StrategyExtras } from "./StrategyExtras";
 import { PagesPanel } from "./PagesPanel";
 import { TrackerView, type PackPlanContext, type TrackerFacet } from "./quest/TrackerView";
+import { usePackTickets } from "./quest/usePackTickets";
+import type { PackWork } from "./MilestoneDashboard";
 import { useAuth } from "./auth/AuthProvider";
 import { UnlockModal } from "./auth/UnlockModal";
 import { clearPendingUnlock, readPendingUnlock, rememberPendingUnlock } from "@/lib/pendingUnlock";
@@ -379,6 +381,23 @@ export function ResultsView({
   const planVisible = tab === "strategy" || tab === "kit";
   // v5 CH-10: one consolidated plan section — always the strategy-driven actionable list.
   const planFacet: TrackerFacet = "strategy";
+
+  // THE one owner of the selected pack's pages/tickets/verify-poll, rendered by BOTH the
+  // Pages tab and Your plan's phase cards. Instantiated here for the same reason shareUrl
+  // is lifted here: state two tabs render must have one owner, or a fix marked done on one
+  // tab stays undone on the other until a poll happens to fire. The hook no-ops on null
+  // (the no-domain path has no packs).
+  const packTickets = usePackTickets(packContext?.runId ?? null, packContext?.selectedPack ?? null);
+  const packWork: PackWork | undefined = packContext
+    ? {
+        packs: packContext.packs,
+        selectedPack: packContext.selectedPack,
+        onSelectPack: packContext.onSelectPack,
+        onUnlock: packContext.onUnlock,
+        state: packTickets,
+      }
+    : undefined;
+
   const planPanel = (
     <PlanPanel
       visible={planVisible}
@@ -399,6 +418,7 @@ export function ResultsView({
           ? `aeo-plan:resumed:${resume.planStateId}`
           : `aeo-plan:${(domain?.trim() || businessName || "default").toLowerCase()}`
       }
+      packWork={packWork}
       resume={resume}
       onGenerate={onGenerateDeliverables}
       onDownloadZip={onDownloadZip}
@@ -469,6 +489,24 @@ export function ResultsView({
         <div hidden={!planVisible} className="animate-fade-in">
           {planPanel}
         </div>
+        {/* ALWAYS MOUNTED, merely hidden — like the plan panel above, and deliberately
+            OUTSIDE the key={tab} div below: a keyed wrapper remounts its whole subtree on
+            every tab switch, which is exactly what this block must never do. The ticket
+            state itself (fetches, the verify poll) lives one level up in usePackTickets, so
+            "Mark as done" keeps polling to Verified while the user reads another tab, and
+            the selected page survives the trip. */}
+        {packContext && (
+          <div hidden={tab !== "pages"} className="animate-fade-in">
+            <PagesPanel
+              packs={packContext.packs}
+              selectedPack={packContext.selectedPack}
+              onSelectPack={packContext.onSelectPack}
+              onUnlock={packContext.onUnlock}
+              shareUrl={shareUrl}
+              state={packTickets}
+            />
+          </div>
+        )}
         <div key={tab} className="animate-fade-in">
           {tab === "overview" && profile && (
             <>
@@ -495,25 +533,6 @@ export function ResultsView({
                 </div>
               )}
             </>
-          )}
-          {/* ALWAYS MOUNTED, merely hidden — like the plan panel above, and for a reason that
-              bites hard now that the fixes are workable here. PagesPanel polls
-              /api/tickets/{run}/{pack} while any fix is awaiting its verification crawl. If
-              it unmounted on a tab switch, clicking "Mark as done" and then glancing at
-              Overview would kill the poll, and the fix would never flip to Verified — the
-              user would come back to a row that still says "Verifying…" forever. Unmounting
-              would also throw away the selected page every time. */}
-          {packContext && (
-            <div hidden={tab !== "pages"}>
-              <PagesPanel
-                runId={packContext.runId}
-                packs={packContext.packs}
-                selectedPack={packContext.selectedPack}
-                onSelectPack={packContext.onSelectPack}
-                onUnlock={packContext.onUnlock}
-                shareUrl={shareUrl}
-              />
-            </div>
           )}
           {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
           {/* "actions" (Roadmap), "strategy", and "kit" are fully served by the
@@ -1660,6 +1679,7 @@ function PlanPanel({
   onShareUrl,
   error,
   storageKey,
+  packWork,
   resume,
   onGenerate,
   onDownloadZip,
@@ -1681,7 +1701,9 @@ function PlanPanel({
   domain?: string;
   businessName: string;
   cmsType?: string | null;
-  /** Pack fixes to fold into this plan (item 3.4); absent on the no-domain path. */
+  /** Pack fixes + shared ticket state to fold into this plan (item 3.4); absent on the
+   *  no-domain path. */
+  packWork?: PackWork;
   /** Lifts the tracker's share link out for the Pages tab's fix rows. */
   onShareUrl?: (url: string | null) => void;
   error: string | null;
@@ -1770,6 +1792,7 @@ function PlanPanel({
             facet={facet}
             onShareUrl={onShareUrl}
             visible={visible}
+            packWork={packWork}
           />
         ) : (
           <div className="space-y-6">
