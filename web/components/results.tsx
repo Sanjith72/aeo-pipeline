@@ -324,8 +324,10 @@ export function ResultsView({
   // (criterion-honest). Surface any confirmed-implemented outcomes for this domain in the
   // overview. Best-effort — the API resolves to an empty set on any miss, so this never
   // breaks the results view.
-  /** Which pack fix to flash after a jump from the Pages tab (item 3.5). */
-  const [focusFix, setFocusFix] = useState<string | null>(null);
+  /** The tracker's share link, lifted out of TrackerView so the Pages tab's fix rows can put
+   *  it in their developer handoff. TrackerView owns the ONE useQuestTracker instance; a
+   *  second one in PagesPanel would fire a second /api/milestones sync. */
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [recheck, setRecheck] = useState<RecheckStatusResponse>({ verified: [], pending: [], count: 0 });
   useEffect(() => {
     if (profile?.domain) api.recheckStatus(profile.domain).then(setRecheck).catch(() => {});
@@ -340,30 +342,11 @@ export function ResultsView({
     [profile?.actions, deliverables?.plan],
   );
 
-  /** item 3.5 — take a fix in the Pages tab to the SAME task in Your plan.
-   *
-   *  Both surfaces derive the anchor from lib/packPlan.packFixDomId(skill, page_url), so
-   *  they cannot disagree about which row is meant. The plan panel is always mounted (just
-   *  hidden behind `hidden`), but a hidden element has no layout and cannot be scrolled to —
-   *  hence the rAF: switch the tab, let the browser lay the panel out, then scroll. It also
-   *  flashes the row, because scrolling someone to a list and leaving them to find the line
-   *  again is barely better than not moving at all. */
-  const openFixInPlan = useCallback((domId: string) => {
-    setTab("strategy");
-    // The highlight is STATE, not a className mutation. Adding the class imperatively looked
-    // fine and then vanished: the row is React-rendered, so the very re-render caused by
-    // switching tabs resets className and wipes it. Scrolling survives (the DOM owns scroll
-    // position); a ring does not.
-    setFocusFix(domId);
-    window.setTimeout(() => setFocusFix((cur) => (cur === domId ? null : cur)), 2400);
-    // The plan panel is always mounted but `hidden`, and a hidden element has no layout to
-    // scroll to — so wait for the tab switch to paint before scrolling.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        document.getElementById(domId)?.scrollIntoView({ behavior: "smooth", block: "center" });
-      });
-    });
-  }, []);
+  // `openFixInPlan` lived here: a cross-tab jump that switched to Your plan, waited two
+  // animation frames for the hidden panel to lay out, scrolled to the row and flashed it.
+  // It is gone because the thing it jumped TO is gone — the fixes are workable in the Pages
+  // tab now, so Pages is the destination rather than a signpost to one. packFixDomId still
+  // anchors each row, so a deep link remains possible without the machinery.
 
   // #6 — the old "reserve the tallest panel height" floor was removed: it left a large dead
   // space below shorter tabs (most visibly "Your plan" before a plan is built). The sticky
@@ -388,8 +371,7 @@ export function ResultsView({
       domain={domain?.trim() || undefined}
       businessName={businessName}
       cmsType={cmsType}
-      packContext={packContext}
-      focusFixId={focusFix}
+      onShareUrl={setShareUrl}
       error={delivError}
       // Salt the local key with the domain so two plans that share a (possibly derived)
       // business name — e.g. a consultant's back-to-back no-site briefs — never load each
@@ -496,15 +478,24 @@ export function ResultsView({
               )}
             </>
           )}
-          {tab === "pages" && packContext && (
-            <PagesPanel
-              runId={packContext.runId}
-              packs={packContext.packs}
-              selectedPack={packContext.selectedPack}
-              onSelectPack={packContext.onSelectPack}
-              onUnlock={packContext.onUnlock}
-              onOpenFixInPlan={openFixInPlan}
-            />
+          {/* ALWAYS MOUNTED, merely hidden — like the plan panel above, and for a reason that
+              bites hard now that the fixes are workable here. PagesPanel polls
+              /api/tickets/{run}/{pack} while any fix is awaiting its verification crawl. If
+              it unmounted on a tab switch, clicking "Mark as done" and then glancing at
+              Overview would kill the poll, and the fix would never flip to Verified — the
+              user would come back to a row that still says "Verifying…" forever. Unmounting
+              would also throw away the selected page every time. */}
+          {packContext && (
+            <div hidden={tab !== "pages"}>
+              <PagesPanel
+                runId={packContext.runId}
+                packs={packContext.packs}
+                selectedPack={packContext.selectedPack}
+                onSelectPack={packContext.onSelectPack}
+                onUnlock={packContext.onUnlock}
+                shareUrl={shareUrl}
+              />
+            </div>
           )}
           {tab === "blueprint" && plan && <BlueprintPanel sitemap={plan.blueprint.sitemap} topic={plan.blueprint.topic} />}
           {/* "actions" (Roadmap), "strategy", and "kit" are fully served by the
@@ -1648,8 +1639,7 @@ function PlanPanel({
   domain,
   businessName,
   cmsType,
-  packContext,
-  focusFixId,
+  onShareUrl,
   error,
   storageKey,
   resume,
@@ -1674,8 +1664,8 @@ function PlanPanel({
   businessName: string;
   cmsType?: string | null;
   /** Pack fixes to fold into this plan (item 3.4); absent on the no-domain path. */
-  packContext?: PackPlanContext;
-  focusFixId?: string | null;
+  /** Lifts the tracker's share link out for the Pages tab's fix rows. */
+  onShareUrl?: (url: string | null) => void;
   error: string | null;
   storageKey: string;
   // Saved-plan hydration: seeds the no-domain checklist from the persisted /plan/<id> state.
@@ -1760,8 +1750,7 @@ function PlanPanel({
             businessName={businessName}
             cmsType={cmsType}
             facet={facet}
-            packContext={packContext}
-            focusFixId={focusFixId}
+            onShareUrl={onShareUrl}
             visible={visible}
           />
         ) : (
