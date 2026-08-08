@@ -42,7 +42,16 @@ export interface PackTicketsState {
   reloadTickets: () => void;
 }
 
-export function usePackTickets(runId: number | null, selectedPack: number | null): PackTicketsState {
+export function usePackTickets(
+  runId: number | null,
+  selectedPack: number | null,
+  /** The locked-pack set as a string (e.g. "2,3"), derived from the packs list the caller
+   *  refreshes after an unlock. It is a dependency of every fetch here for one reason: an
+   *  in-page promo redemption changes NOTHING else this hook can see — without it, the
+   *  403-latched `locked` flag and the pages/tickets it suppressed stay stale forever, and
+   *  the just-paid pack keeps rendering "locked" on both tabs until a full reload. */
+  lockedKey = "",
+): PackTicketsState {
   const [pages, setPages] = useState<PackPageDetail[] | null>(null);
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
   const [locked, setLocked] = useState(false);
@@ -68,13 +77,17 @@ export function usePackTickets(runId: number | null, selectedPack: number | null
       }
       setError(true);
     }
-  }, [runId, selectedPack]);
+    // lockedKey: an unlock flips entitlements without touching runId/selectedPack — the
+    // refetch it triggers here is what clears a stale `locked` and loads the paid pages.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId, selectedPack, lockedKey]);
 
   const loadTickets = useCallback(async () => {
     if (runId == null || selectedPack == null) return;
     try {
       const res = await api.getPackTickets(runId, selectedPack);
       setTickets(res.tickets);
+      setLocked(false); // a successful read IS the proof the pack is not locked
       setFixError(null);
     } catch (e) {
       if ((e as { status?: number })?.status === 403) {
@@ -84,7 +97,8 @@ export function usePackTickets(runId: number | null, selectedPack: number | null
       }
       setFixError(e instanceof Error ? e.message : String(e));
     }
-  }, [runId, selectedPack]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId, selectedPack, lockedKey]);
 
   useEffect(() => {
     void loadPages();
@@ -96,7 +110,8 @@ export function usePackTickets(runId: number | null, selectedPack: number | null
   }, [loadTickets]);
 
   // "N more fixes in locked packs" — the count the server computes for exactly that
-  // sentence. Re-read whenever tickets change shape (an unlock changes the answer).
+  // sentence. Keyed on the LOCKED SET, exactly as the pre-refactor code was: unlocking a
+  // pack must drop the count, and nothing else the hook sees changes on an unlock.
   useEffect(() => {
     if (runId == null) return;
     let cancelled = false;
@@ -111,7 +126,7 @@ export function usePackTickets(runId: number | null, selectedPack: number | null
     return () => {
       cancelled = true;
     };
-  }, [runId, locked, tickets == null]);
+  }, [runId, lockedKey]);
 
   // Poll only while something is actually awaiting its crawl, and PACK-WIDE — filtering
   // this to one page would stop polling a fix the moment the user looked at another page.

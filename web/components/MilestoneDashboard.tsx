@@ -115,20 +115,36 @@ export function MilestoneDashboard({ tracker, packWork }: { tracker: QuestTracke
   }
 
   const { progress, milestones } = dash;
-  const done = progress.pct === 100 && progress.total > 0;
 
   // The selected pack's fixes, bucketed into the SAME three phases the plan renders below —
   // one list, not a second stack that also says "Quick Wins" (the duplicate-heading problem
   // that got the old standalone section removed). packWork is absent on the no-domain path;
   // tickets are null while loading, which buckets to nothing and simply adds no rows yet.
+  // Bucketing takes the PAGES (not a flat priority list) so a fix is phased by its own
+  // page's impact — see ticketsByPhase's comment.
   const packState = packWork?.state;
-  const packPriorities = packState?.pages?.flatMap((p) => p.detail?.priorities ?? []) ?? [];
-  const packPhases = packState && !packState.locked ? ticketsByPhase(packState.tickets, packPriorities) : [];
+  const packPhases = packState && !packState.locked ? ticketsByPhase(packState.tickets, packState.pages) : [];
   const packByPhase = new Map(packPhases.map((p) => [p.key, p.tickets]));
   const packOnlyPhases = packPhases.filter((p) => !milestones.some((m) => m.milestone_key === p.key));
   const activePack = packWork?.packs.find((p) => p.pack_index === packWork.selectedPack) ?? null;
   const packTitle =
     activePack?.title ?? (packWork && packWork.selectedPack != null ? `Pack ${packWork.selectedPack}` : null);
+
+  // The header must count what the cards below now CONTAIN. The server roll-up excludes
+  // pack tickets by design (milestone_key NOT LIKE 'pack:%'), so with the selected pack's
+  // fixes folded into the cards, a bare `progress` header could read "6 / 6 verified 🎉"
+  // directly above an In-progress card holding three workable rows. Blend the folded
+  // tickets in — the numbers describe this surface as rendered, selected pack included.
+  const packAll = packState && !packState.locked ? (packState.tickets ?? []) : [];
+  const packVerifiedAll = packAll.filter((t) => t.status === "verified_completed").length;
+  const packInProgressAll = packAll.filter(
+    (t) => t.status === "in_progress" || t.status === "closed_pending_verify",
+  ).length;
+  const shownTotal = progress.total + packAll.length;
+  const shownVerified = progress.verified + packVerifiedAll;
+  const shownInProgress = progress.in_progress + packInProgressAll;
+  const shownPct = shownTotal > 0 ? Math.round((shownVerified / shownTotal) * 100) : progress.pct;
+  const done = shownPct === 100 && shownTotal > 0;
 
   return (
     <div className="space-y-6">
@@ -140,27 +156,27 @@ export function MilestoneDashboard({ tracker, packWork }: { tracker: QuestTracke
         <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
           <h3 className="label-mono">Automatic site check</h3>
           <span className="font-mono text-xs text-ink-500">
-            {progress.verified} / {progress.total} verified
+            {shownVerified} / {shownTotal} verified
           </span>
         </div>
         <div
           className="mb-4 h-2 overflow-hidden rounded-full bg-ink/[0.07]"
           role="progressbar"
-          aria-valuenow={progress.pct}
+          aria-valuenow={shownPct}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-label="Implementation progress"
         >
           <div
             className="h-full rounded-full bg-gradient-to-r from-accent to-accent-600 transition-[width] duration-500 ease-out"
-            style={{ width: `${progress.pct}%` }}
+            style={{ width: `${shownPct}%` }}
           />
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-ink-500">
-            {progress.in_progress > 0 && (
+            {shownInProgress > 0 && (
               <>
-                <span className="font-medium text-amber-200">{progress.in_progress} in progress</span> ·{" "}
+                <span className="font-medium text-amber-200">{shownInProgress} in progress</span> ·{" "}
               </>
             )}
             Our crawler re-checks your live site every week and marks a step done once it can

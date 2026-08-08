@@ -394,11 +394,47 @@ test("ticketsByPhase keeps the REAL Ticket objects", () => {
   assert.equal(phases[0].tickets[0], t);
 });
 
-test("ticketsByPhase honours a skill's priority impact over the score fallback", () => {
-  const t = ticket({ task_key: "hi", skill: "messaging", baseline_score: 10 });
-  // Score 10 alone would say "later"; an impact of 0.9 says Quick Win — impact wins.
-  const phases = ticketsByPhase([t], [priority({ skill: "messaging", impact: 0.9 })]);
-  assert.deepEqual(phases.map((p) => p.key), ["week_1"]);
+const scoredPage = (url: string, priorities: SkillPriority[]): PackPageDetail => ({
+  url,
+  page_type: "generic",
+  overall: 50,
+  detail: { skills: {} as never, priorities },
+});
+
+test("ticketsByPhase matches a priority by skill AND page — impact never crosses pages", () => {
+  // Impact is a per-page×skill number (CH-06). The homepage's 0.9 messaging impact must
+  // phase the HOMEPAGE's ticket; the /pricing ticket (own impact 0.15, score 10) is
+  // structural work and must not parade as a Quick Win just because another page listed
+  // the same skill first in the flattened pack.
+  const home = "https://x.com/";
+  const pricing = "https://x.com/pricing";
+  const pages = [
+    scoredPage(home, [priority({ skill: "messaging", impact: 0.9 })]),
+    scoredPage(pricing, [priority({ skill: "messaging", impact: 0.15 })]),
+  ];
+  const tickets = [
+    ticket({ task_key: "home-fix", skill: "messaging", page_url: home, baseline_score: 10 }),
+    ticket({ task_key: "pricing-fix", skill: "messaging", page_url: pricing, baseline_score: 10 }),
+  ];
+  const phases = ticketsByPhase(tickets, pages);
+  const phaseOf = (key: string) =>
+    phases.find((p) => p.tickets.some((t) => t.task_key === key))?.key;
+  assert.equal(phaseOf("home-fix"), "week_1"); // its own page's 0.9
+  assert.equal(phaseOf("pricing-fix"), "later"); // its own page's 0.15 — not the homepage's
+});
+
+test("ticketsByPhase falls back to the ticket's own score when its page has no priority", () => {
+  const t = ticket({
+    task_key: "x",
+    skill: "messaging",
+    page_url: "https://x.com/other",
+    baseline_score: 80,
+  });
+  const phases = ticketsByPhase(
+    [t],
+    [scoredPage("https://x.com/", [priority({ skill: "messaging", impact: 0.1 })])],
+  );
+  assert.deepEqual(phases.map((p) => p.key), ["week_1"]); // score 80 → nearly there
 });
 
 test("ticketsByPhase sorts unfinished above verified, verifying beside in_progress", () => {

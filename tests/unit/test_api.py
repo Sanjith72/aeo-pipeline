@@ -780,17 +780,30 @@ def _plan_state_row(**overrides) -> dict:
 def test_plan_state_read_backfills_run_id_from_domain(monkeypatch) -> None:
     # Every plan saved while the studio omitted run_id from the create call has NULL here,
     # and the resumed view's Pages tab (packs, page scores, workable fixes) is gated on it.
-    # The read must resolve the domain's latest run, not serve a permanently degraded plan.
+    # The read must resolve the domain's newest pack-bearing run, not serve a permanently
+    # degraded plan.
     monkeypatch.setattr("aeo.storage.repos.plan_state.get", lambda pid: _plan_state_row())
-    monkeypatch.setattr(
-        "aeo.storage.repos.runs.latest_for_domain",
-        lambda domain: {"run_id": 42, "last_crawled_at": None, "status": "completed"},
-    )
+    monkeypatch.setattr("aeo.storage.repos.packs.latest_pack_run_for_domain", lambda domain: 42)
+    monkeypatch.setattr("aeo.storage.repos.runs.domain_for_run", lambda rid: "example.com")
     r = client.get("/api/plan-state/p1")
     assert r.status_code == 200
     body = r.json()
     assert body["run_id"] == 42
     assert "session_id" not in body  # the allowlist still holds through the fallback path
+
+
+def test_plan_state_read_rejects_a_run_of_another_domain(monkeypatch) -> None:
+    # The belt over the resolver's host match: a candidate run must resolve back to the
+    # plan's OWN domain key. Without it, a host-collision (acme.co vs acme.com) would bind
+    # another site's packs, scores and ticket board to this plan link.
+    monkeypatch.setattr(
+        "aeo.storage.repos.plan_state.get", lambda pid: _plan_state_row(domain="acme.co")
+    )
+    monkeypatch.setattr("aeo.storage.repos.packs.latest_pack_run_for_domain", lambda domain: 57)
+    monkeypatch.setattr("aeo.storage.repos.runs.domain_for_run", lambda rid: "acme.com")
+    r = client.get("/api/plan-state/p1")
+    assert r.status_code == 200
+    assert r.json()["run_id"] is None  # degraded resume beats another site's identity
 
 
 def test_plan_state_read_keeps_a_saved_run_id(monkeypatch) -> None:
@@ -799,8 +812,8 @@ def test_plan_state_read_keeps_a_saved_run_id(monkeypatch) -> None:
     monkeypatch.setattr("aeo.storage.repos.plan_state.get", lambda pid: _plan_state_row(run_id=7))
     called: list[str] = []
     monkeypatch.setattr(
-        "aeo.storage.repos.runs.latest_for_domain",
-        lambda domain: called.append(domain) or {"run_id": 99},
+        "aeo.storage.repos.packs.latest_pack_run_for_domain",
+        lambda domain: called.append(domain) or 99,
     )
     r = client.get("/api/plan-state/p1")
     assert r.status_code == 200
@@ -813,7 +826,7 @@ def test_plan_state_read_survives_a_broken_run_fallback(monkeypatch) -> None:
     monkeypatch.setattr("aeo.storage.repos.plan_state.get", lambda pid: _plan_state_row())
     def boom(domain: str):
         raise RuntimeError("no db")
-    monkeypatch.setattr("aeo.storage.repos.runs.latest_for_domain", boom)
+    monkeypatch.setattr("aeo.storage.repos.packs.latest_pack_run_for_domain", boom)
     r = client.get("/api/plan-state/p1")
     assert r.status_code == 200
     assert r.json()["run_id"] is None

@@ -12,15 +12,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { classifySignUpFailure, resendCooldownRemaining } from "@/lib/authCallback";
 import { currentAccessToken, signInWithGoogle, supabase } from "@/lib/supabase";
-import { readPendingUnlock, unlockReturnPath } from "@/lib/pendingUnlock";
+import { clearPendingUnlock, readPendingUnlock, unlockReturnPath } from "@/lib/pendingUnlock";
 import { useAuth } from "./AuthProvider";
 
-/** Where this sign-in should land when it involves a full page load. Read at CLICK time,
- *  not render time — the pending-unlock record is written by the Unlock button moments
- *  before this modal opens, and it names the one page (/plan/<id>) that can rebuild the
- *  pack context after the round-trip. No pending unlock → back to the current page. */
-function returnNext(): string {
-  return unlockReturnPath(window.location.pathname + window.location.search, readPendingUnlock());
+/** Where this sign-in should land when it involves a full page load. The pending-unlock
+ *  record names the one page (/plan/<id>) that can rebuild the pack context after the
+ *  round-trip — but it steers ONLY the sign-in it belongs to: the one this modal opened
+ *  for with reason "unlock-pack". Any other sign-in (the header button, "go deeper")
+ *  returns to the page the user is on, even if an unredeemed intent is still sitting in
+ *  storage — hijacking an unrelated sign-in an hour later is worse than the original bug. */
+function returnNext(reason: string | null): string {
+  const pending = reason === "unlock-pack" ? readPendingUnlock() : null;
+  return unlockReturnPath(window.location.pathname + window.location.search, pending);
 }
 
 type Mode = "signin" | "signup";
@@ -78,7 +81,7 @@ export function AuthModal() {
     const { error: err } = await supabase.auth.resend({
       type: "signup",
       email: awaitingConfirm,
-      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(returnNext())}` },
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(returnNext(authReason))}` },
     });
     setResending(false);
     if (err) {
@@ -92,12 +95,22 @@ export function AuthModal() {
 
   if (!authOpen) return null;
 
+  // Dismissing this modal without signing in ABANDONS whatever unlock click opened it —
+  // the remembered intent must die with the dismissal, or it sits in storage for an hour
+  // steering the next unrelated sign-in back to a plan the user walked away from. The one
+  // exception is the "confirm your email" state: that sign-in is mid-flight in their
+  // inbox, and the intent is what the confirmation link comes back to redeem.
+  function dismiss() {
+    if (!awaitingConfirm) clearPendingUnlock();
+    closeAuth();
+  }
+
   async function google() {
     setGoogleBusy(true);
     setError(null);
     setNotice(null);
     // Resolves only if the redirect never happened — on success the tab is already gone.
-    const { error: err } = await signInWithGoogle(returnNext());
+    const { error: err } = await signInWithGoogle(returnNext(authReason));
     if (err) {
       setError(err);
       setGoogleBusy(false);
@@ -118,7 +131,7 @@ export function AuthModal() {
           // Without this, `{{ .RedirectTo }}` is empty in the confirmation template and
           // GoTrue falls back to the project's bare Site URL — so the link lands on the
           // homepage instead of the callback that can actually complete the sign-in.
-          options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(returnNext())}` },
+          options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(returnNext(authReason))}` },
         });
         if (err) throw err;
         if (!data.session) {
@@ -158,14 +171,14 @@ export function AuthModal() {
       role="dialog"
       aria-modal="true"
       aria-label="Sign in"
-      onClick={closeAuth}
+      onClick={dismiss}
     >
       <div className="card w-full max-w-[400px] p-6" onClick={(e) => e.stopPropagation()}>
         <div className="mb-1 flex items-baseline justify-between">
           <h2 className="text-[19px] font-semibold text-ink">
             {awaitingConfirm ? "Confirm your email" : mode === "signin" ? "Sign in" : "Create your account"}
           </h2>
-          <button type="button" onClick={closeAuth} aria-label="Close" className="text-ink-300 hover:text-ink">
+          <button type="button" onClick={dismiss} aria-label="Close" className="text-ink-300 hover:text-ink">
             ✕
           </button>
         </div>

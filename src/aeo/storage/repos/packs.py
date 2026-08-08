@@ -131,3 +131,52 @@ def by_domain(domain: str) -> list[dict[str, Any]]:
 
     latest = runs_repo.latest_for_domain(domain)
     return by_run(latest["run_id"]) if latest and latest.get("run_id") else []
+
+
+def latest_pack_run_for_domain(domain: str) -> int | None:
+    """The newest run for EXACTLY this host that has persisted packs — the run a saved
+    plan can actually resume onto (packs → page scores → tickets).
+
+    Two deliberate tightenings over ``runs.latest_for_domain``, both load-bearing:
+
+    * **Exact host, never a prefix.** ``normalize`` guarantees the host is followed by
+      ``/`` or ``:`` in ``url_normalized``, so matching ``host/`` and ``host:`` means
+      ``acme.co`` can never match ``acme.com``'s pages. latest_for_domain's bare
+      ``LIKE 'https://host%%'`` does exactly that, and its newest-wins ordering would
+      then bind ANOTHER site's run — packs, scores, ticket board — to this plan.
+    * **Packs must exist.** A cancelled/failed re-crawl or a ticket-verify crawl keeps
+      crawled pages but persists no packs; picking it would resume the plan onto a run
+      that cannot serve the Pages tab while an older, fully scored run sits unused.
+
+    Both ``www.`` spellings are tried (grants and plans key on the bare domain; crawls
+    keep the site's own spelling). LIKE metacharacters in the host are escaped — the
+    domain here comes from a user-supplied plan row, not from our own crawler.
+    """
+    from ...reference.domain_config import normalize_domain
+
+    bare = normalize_domain(domain)
+    if not bare:
+        return None
+    hosts = {bare, f"www.{bare}"}
+    patterns: list[str] = []
+    for h in hosts:
+        esc = h.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        patterns.extend(
+            f"{scheme}://{esc}{sep}%" for scheme in ("https", "http") for sep in ("/", ":")
+        )
+    where = " OR ".join(["cp.url_normalized LIKE %s ESCAPE '\\'"] * len(patterns))
+    with transaction() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT cp.run_id AS run_id, MAX(cp.crawled_at) AS last_crawled_at
+              FROM crawled_pages cp
+             WHERE ({where})
+               AND EXISTS (SELECT 1 FROM packs p WHERE p.run_id = cp.run_id)
+             GROUP BY cp.run_id
+             ORDER BY last_crawled_at DESC
+             LIMIT 1
+            """,
+            patterns,
+        )
+        row = cur.fetchone()
+    return row["run_id"] if row else None

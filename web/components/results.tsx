@@ -386,8 +386,17 @@ export function ResultsView({
   // Pages tab and Your plan's phase cards. Instantiated here for the same reason shareUrl
   // is lifted here: state two tabs render must have one owner, or a fix marked done on one
   // tab stays undone on the other until a poll happens to fire. The hook no-ops on null
-  // (the no-domain path has no packs).
-  const packTickets = usePackTickets(packContext?.runId ?? null, packContext?.selectedPack ?? null);
+  // (the no-domain path has no packs). The locked-set key is how an in-page unlock —
+  // which refreshes only the packs list — reaches the hook's fetches at all.
+  const lockedKey = (packContext?.packs ?? [])
+    .filter((p) => p.locked)
+    .map((p) => p.pack_index)
+    .join(",");
+  const packTickets = usePackTickets(
+    packContext?.runId ?? null,
+    packContext?.selectedPack ?? null,
+    lockedKey,
+  );
   const packWork: PackWork | undefined = packContext
     ? {
         packs: packContext.packs,

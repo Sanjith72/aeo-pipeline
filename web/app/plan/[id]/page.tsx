@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
+import { clearPendingUnlock, readPendingUnlock } from "@/lib/pendingUnlock";
 import type { PlanStateResponse } from "@/lib/types";
 import { TopBar, Footer } from "@/components/chrome";
 import { ResumedPlanView } from "@/components/results";
@@ -42,6 +43,14 @@ export default function PlanPage() {
         if (!alive) return;
         const code = (err as { status?: number }).status;
         // 404 → the plan really is gone; anything else (503/500/network) is retryable
+        if (code === 404 && readPendingUnlock()?.planStateId === id) {
+          // A pending unlock aimed at a plan that no longer exists must die HERE — the
+          // studio redirects a signed-in pristine wizard to the intent's plan, and this
+          // 404 page's own "Start a new plan" CTA leads back to the studio. Leaving the
+          // intent alive turns that pair into an hour-long redirect loop that locks the
+          // wizard out entirely. (A 5xx keeps the intent: the plan may well come back.)
+          clearPendingUnlock();
+        }
         setStatus(code === 404 ? "missing" : "unavailable");
       },
     );

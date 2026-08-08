@@ -404,9 +404,12 @@ export function StudioApp() {
     setOpenPack(null);
     // A redeemed-but-never-rendered unlock (or one the user walked away from) must not
     // ambush the NEXT run: unlockOpen would survive into the new results view and pop a
-    // dialog for a stale pack against a run it was never about.
+    // dialog for a stale pack against a run it was never about. Same for a consumed
+    // open-the-Pages-tab ask — ResultsView remounts with a fresh consumed-marker, and a
+    // surviving nonce would yank the new run's results straight onto Pages.
     setUnlockOpen(false);
     setUnlockPack(null);
+    setTabRequest(null);
     setLoading(true);
     try {
       if (noSite) {
@@ -543,7 +546,11 @@ export function StudioApp() {
         clearPendingUnlock();
         setUnlockPack(pending.packIndex);
         setUnlockOpen(true);
-      } else if (view === "wizard") {
+      } else if (view === "wizard" && step === 0 && !domain.trim() && !prefilling && !onePage) {
+        // Only a PRISTINE wizard mount gets redirected to the intent's plan — this is the
+        // full-page sign-in leg arriving back on /studio. A wizard with anything typed in
+        // it is a user starting new work; yanking them to an old plan would trade one
+        // lost-context bug for another. The untouched intent expires on its own TTL.
         const dest = unlockReturnPath(null, pending);
         if (dest.startsWith("/plan/")) {
           unlockResumed.current = true;
@@ -696,6 +703,11 @@ export function StudioApp() {
     setPacks([]); // clear a prior run's packs before the unattended build
     setRunId(null);
     setOpenPack(null);
+    // Same clean slate as createPlan: a stale unlock dialog or a consumed Pages-tab ask
+    // must not fire against the run this unattended build is about to create.
+    setUnlockOpen(false);
+    setUnlockPack(null);
+    setTabRequest(null);
 
     setPrefilling(true);
     setPrefillDone(false);
