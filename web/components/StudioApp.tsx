@@ -38,6 +38,7 @@ import {
   urlWithoutCheckoutParams,
 } from "@/lib/checkoutReturn";
 import { clearPendingUnlock, readPendingUnlock, rememberPendingUnlock, unlockReturnPath } from "@/lib/pendingUnlock";
+import { packFixesDomId } from "@/lib/packPlan";
 import type { UnlockedDestination } from "@/lib/checkoutReturn";
 import { GamificationStrip } from "@/components/GamificationStrip";
 import { Combobox } from "@/components/ui/Combobox";
@@ -174,8 +175,14 @@ export function StudioApp() {
   const [unlockOpen, setUnlockOpen] = useState(false);
   // Which pack the unlock dialog is for (v5 CH-02b) — drives the per-pack Stripe checkout.
   const [unlockPack, setUnlockPack] = useState<number | null>(null);
-  // One-shot ask for ResultsView to open a tab (a just-unlocked pack lands on Pages).
-  const [tabRequest, setTabRequest] = useState<{ id: "pages"; nonce: number } | null>(null);
+  // One-shot ask for ResultsView to open a tab (a just-unlocked pack lands on Pages; the
+  // pack grid's "Open fixes →" jumps to that pack's card under Your plan — which lives on
+  // the "strategy" tab with a profile and the "kit" fallback tab without one).
+  const [tabRequest, setTabRequest] = useState<{
+    id: "pages" | "strategy" | "kit";
+    nonce: number;
+    anchor?: string;
+  } | null>(null);
   const [openPack, setOpenPack] = useState<number | null>(null);
   // v5 CH-02b: the state of a Stripe return, if we are in one. Null = an ordinary visit.
   const [checkout, setCheckout] = useState<{
@@ -1386,25 +1393,29 @@ export function StudioApp() {
                     pack={pack}
                     ctaMode={authEnabled ? "gated" : "preview"}
                     onUnlock={() => handleUnlock(pack.pack_index)}
-                    onOpen={pack.locked ? undefined : () => setOpenPack((cur) => (cur === pack.pack_index ? null : pack.pack_index))}
-                    opened={openPack === pack.pack_index}
+                    // "Open fixes →" GOES somewhere now: the pack's own fixes card under
+                    // Your plan (each pack renders one there). It used to only set state
+                    // and print a pointer sentence — the user still had to find the tab
+                    // themselves, which is the friction the click was supposed to remove.
+                    // Selecting the pack too keeps the Pages tab in step.
+                    onOpen={
+                      pack.locked
+                        ? undefined
+                        : () => {
+                            setOpenPack(pack.pack_index);
+                            setTabRequest({
+                              // Without a profile there is no "strategy" tab and an ask
+                              // for it would pend forever; the "kit" fallback tab hosts
+                              // the same plan panel (and the same pack cards).
+                              id: profile ? "strategy" : "kit",
+                              nonce: Date.now(),
+                              anchor: packFixesDomId(pack.pack_index),
+                            });
+                          }
+                    }
                   />
                 ))}
               </div>
-              {/* The standalone TicketBoard that used to sit here is GONE (Phase 3 item
-                  3.4). It was a second to-do surface with its own layout and its own
-                  progress, sitting under the plan the user was already working. Those same
-                  fixes now render inside "Your plan", bucketed into Quick Wins / Foundation
-                  / Growth & Scale — opening a pack here selects it there. Only the duplicate
-                  UI was removed: /api/tickets/{run}/{pack} is unchanged and is what the plan
-                  section reads. */}
-              {runId != null && openPack != null && packs.some((p) => p.pack_index === openPack && !p.locked) && (
-                <p className="mt-4 text-[13px] leading-[1.6] text-ink-300">
-                  This pack&apos;s fixes are in <span className="text-ink">Your plan</span>, and
-                  its page-by-page scores are under <span className="text-ink">Pages</span> —
-                  both below.
-                </p>
-              )}
             </section>
           )}
           <ResultsView
@@ -1420,9 +1431,9 @@ export function StudioApp() {
             delivError={delivError}
             aiPersonalization={useLlm}
             cmsType={profileResult?.cms_type ?? null}
-            // item 3.4 — the pack grid lives here, but its fixes render inside
-            // "Your plan". Opening a pack above selects it there, and vice versa, so
-            // the two surfaces always agree on which pack is being worked.
+            // The pack grid lives here; every pack's fixes render under their own pack
+            // card inside "Your plan", and selectedPack drives which pack the Pages tab
+            // shows ("Open fixes" above sets both).
             packContext={
               runId != null && packs.length > 0
                 ? {
@@ -1431,6 +1442,7 @@ export function StudioApp() {
                     selectedPack: openPack,
                     onSelectPack: setOpenPack,
                     onUnlock: handleUnlock,
+                    onRefreshPacks: () => void refreshPacks(),
                   }
                 : undefined
             }
@@ -1440,7 +1452,13 @@ export function StudioApp() {
             personalizeError={personalizeError}
             personalizeProgress={personalizeJob?.progress ?? null}
             onDownloadZip={downloadZip}
-            onEdit={() => setView("wizard")}
+            // Also drops any un-consumed (or consumed-but-remembered) tab ask: ResultsView
+            // holds the consumed marker in a ref, so unmounting it here and returning via
+            // "View my results" would otherwise replay an old ask on every round-trip.
+            onEdit={() => {
+              setTabRequest(null);
+              setView("wizard");
+            }}
             tabRequest={tabRequest}
           />
         </>

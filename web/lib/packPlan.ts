@@ -56,6 +56,32 @@ export function packFixDomId(skill: string | null | undefined, pageUrl: string |
   return `packfix:${skill ?? "?"}@${pageUrl ?? "?"}`;
 }
 
+/**
+ * The DOM id of one pack's fixes card inside "Your plan" — the target of the pack grid's
+ * "Open fixes →" jump. Derived here (not inline in either component) for the same reason as
+ * packFixDomId above: the clicker and the card live in different files, and an id spelled
+ * twice is an id that drifts.
+ */
+export function packFixesDomId(packIndex: number): string {
+  return `pack-fixes-${packIndex}`;
+}
+
+/**
+ * A run's visible tickets grouped by the pack they belong to, pack order ascending, ticket
+ * order preserved within a pack. The run-wide tickets route returns every unlocked pack's
+ * tickets in one list (each carrying its ``pack_index``); "Your plan" renders them under
+ * each pack, so the grouping is the load-bearing step between the two shapes.
+ */
+export function ticketsByPack(tickets: readonly Ticket[] | null | undefined): Map<number, Ticket[]> {
+  const out = new Map<number, Ticket[]>();
+  for (const t of tickets ?? []) {
+    const bucket = out.get(t.pack_index);
+    if (bucket) bucket.push(t);
+    else out.set(t.pack_index, [t]);
+  }
+  return new Map([...out.entries()].sort(([a], [b]) => a - b));
+}
+
 /** A pack ticket wearing the plan's clothes. Keeps the ticket-only fields the plan has no
  *  equivalent for (the 4th status, the before/after scores) rather than flattening them
  *  away — the UI needs "Verifying…" to be distinguishable from "done". */

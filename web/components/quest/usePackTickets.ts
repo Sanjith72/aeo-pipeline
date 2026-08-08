@@ -1,7 +1,8 @@
 "use client";
 
-// The ONE owner of a pack's workable state — pages, tickets, the verify poll, and the
-// close/reopen/recheck actions — shared by the Pages tab and "Your plan".
+// The ONE owner of a run's workable state — the selected pack's pages, EVERY unlocked
+// pack's tickets, the verify poll, and the close/reopen/recheck actions — shared by the
+// Pages tab and "Your plan".
 //
 // It exists because the two surfaces used to each fetch and poll /api/tickets/* on their
 // own (PagesPanel and the old PackPlanSection), so marking a fix done on one left the
@@ -9,10 +10,17 @@
 // pack. Instantiated once in ResultsView — the same reason ResultsView lifts shareUrl:
 // state that two tabs render must have one owner, or the tabs disagree.
 //
-// A locked pack is a 403 by DESIGN (CH-02a): the server refuses to ship a locked pack's
-// data, and this hook reports it as `locked`, never as an error.
+// Tickets are read RUN-WIDE (GET /api/tickets/{run}), not per pack: "Your plan" renders
+// every unlocked pack's fixes under its own pack card, and N per-pack fetches describing
+// one list is how surfaces drift. The server filters that route to the viewer's unlocked
+// packs and reports `locked_ticket_count` for what it withheld — so a locked pack's
+// tickets are simply absent here, never an error.
+//
+// The page DETAIL stays per-pack (GET /api/packs/{run}/{pack}) because only the selected
+// pack's scores are on screen at once — and a locked pack answers 403 by DESIGN (CH-02a),
+// which this hook reports as `locked`, never as an error.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
 import type { PackPageDetail, Ticket } from "@/lib/types";
@@ -23,9 +31,18 @@ const VERIFY_POLL_MS = 5000;
 export interface PackTicketsState {
   /** The selected pack's scored pages; null while loading. */
   pages: PackPageDetail[] | null;
-  /** The selected pack's tickets; null while loading. */
+  /** The selected pack's tickets — a view over `allTickets`; null while loading. */
   tickets: Ticket[] | null;
-  /** The selected pack is locked (server 403) — a product state, not a failure. */
+  /** Every unlocked pack's tickets for the run (each knows its pack_index); null while
+   *  loading. What "Your plan" groups under each pack. */
+  allTickets: Ticket[] | null;
+  /** True when `allTickets` reflects the CURRENT locked set. False while the refetch a
+   *  just-changed entitlement triggers is still in flight (or failed) — the window where a
+   *  freshly unlocked pack has no rows in the list simply because the list predates the
+   *  purchase. Callers must not read "no rows" as "nothing to do" unless this is true. */
+  ticketsFresh: boolean;
+  /** The selected pack is locked (server 403 on its page detail) — a product state, not a
+   *  failure. */
   locked: boolean;
   /** The page-detail fetch genuinely failed (network/5xx — not a lock). */
   error: boolean;
@@ -53,23 +70,37 @@ export function usePackTickets(
   lockedKey = "",
 ): PackTicketsState {
   const [pages, setPages] = useState<PackPageDetail[] | null>(null);
-  const [tickets, setTickets] = useState<Ticket[] | null>(null);
+  const [allTickets, setAllTickets] = useState<Ticket[] | null>(null);
+  // The lockedKey the current allTickets was fetched under — the freshness marker. A list
+  // read before an unlock must never be mistaken for a statement about the post-unlock
+  // world (it is missing the just-paid pack's rows).
+  const [ticketsKey, setTicketsKey] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
   const [error, setError] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [lockedFixCount, setLockedFixCount] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Monotonic fetch sequence — LATEST WINS. Responses are applied only if no newer fetch
+  // has started since; without this, a slow pre-unlock read resolving after the fast
+  // post-unlock one would overwrite the fresh list with the stale one, and a just-paid
+  // pack would render "nothing to fix" until a reload (the exact class of stale-latch bug
+  // the lockedKey dependency exists to prevent).
+  const ticketsSeq = useRef(0);
+  const pagesSeq = useRef(0);
 
   const loadPages = useCallback(async () => {
     if (runId == null || selectedPack == null) return;
+    const seq = ++pagesSeq.current;
     setLocked(false);
     setError(false);
     setPages(null);
     try {
       const res = await api.getPackDetail(runId, selectedPack);
+      if (seq !== pagesSeq.current) return; // a newer fetch owns the state now
       setPages(res.pages);
     } catch (e) {
+      if (seq !== pagesSeq.current) return;
       if ((e as { status?: number })?.status === 403) {
         setLocked(true);
         setPages([]);
@@ -82,55 +113,51 @@ export function usePackTickets(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, selectedPack, lockedKey]);
 
+  // The run-wide read: every unlocked pack's tickets plus the withheld count, in one
+  // response. Deliberately NOT keyed on selectedPack — switching packs re-renders a
+  // different slice of the same list rather than refetching it.
   const loadTickets = useCallback(async () => {
-    if (runId == null || selectedPack == null) return;
+    if (runId == null) return;
+    const seq = ++ticketsSeq.current;
     try {
-      const res = await api.getPackTickets(runId, selectedPack);
-      setTickets(res.tickets);
-      setLocked(false); // a successful read IS the proof the pack is not locked
+      const res = await api.getTickets(runId);
+      if (seq !== ticketsSeq.current) return; // a newer fetch owns the state now
+      setAllTickets(res.tickets);
+      setTicketsKey(lockedKey);
+      setLockedFixCount(res.locked_ticket_count ?? 0);
       setFixError(null);
     } catch (e) {
-      if ((e as { status?: number })?.status === 403) {
-        setLocked(true);
-        setTickets([]);
-        return;
-      }
+      if (seq !== ticketsSeq.current) return;
+      // The last successful list AND count stay up — both are still true statements about
+      // the last read, unlike a blank. Only the error message changes.
       setFixError(e instanceof Error ? e.message : String(e));
     }
+    // lockedKey: a just-unlocked pack's tickets appear in this route's response only after
+    // the entitlement flip — this is what fetches them without a reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId, selectedPack, lockedKey]);
+  }, [runId, lockedKey]);
 
   useEffect(() => {
     void loadPages();
   }, [loadPages]);
 
   useEffect(() => {
-    setTickets(null);
     void loadTickets();
   }, [loadTickets]);
 
-  // "N more fixes in locked packs" — the count the server computes for exactly that
-  // sentence. Keyed on the LOCKED SET, exactly as the pre-refactor code was: unlocking a
-  // pack must drop the count, and nothing else the hook sees changes on an unlock.
-  useEffect(() => {
-    if (runId == null) return;
-    let cancelled = false;
-    api
-      .getTickets(runId)
-      .then((res) => {
-        if (!cancelled) setLockedFixCount(res.locked_ticket_count ?? 0);
-      })
-      .catch(() => {
-        if (!cancelled) setLockedFixCount(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, lockedKey]);
+  /** The selected pack's slice, in the shape PagesPanel has always consumed. A locked
+   *  selected pack derives to [] because the server withheld its rows — same outcome the
+   *  old per-pack 403 produced. */
+  const tickets = useMemo(() => {
+    if (allTickets == null) return null;
+    if (selectedPack == null) return [];
+    return allTickets.filter((t) => t.pack_index === selectedPack);
+  }, [allTickets, selectedPack]);
 
-  // Poll only while something is actually awaiting its crawl, and PACK-WIDE — filtering
-  // this to one page would stop polling a fix the moment the user looked at another page.
-  const anyVerifying = tickets?.some((t) => t.status === "closed_pending_verify") ?? false;
+  // Poll only while something is actually awaiting its crawl, and RUN-WIDE — filtering
+  // this to one pack would stop polling a fix the moment the user switched packs (the
+  // per-page version of the same bug is why the old poll was already pack-wide).
+  const anyVerifying = allTickets?.some((t) => t.status === "closed_pending_verify") ?? false;
   useEffect(() => {
     if (!anyVerifying) {
       if (pollRef.current) clearInterval(pollRef.current);
@@ -183,5 +210,19 @@ export function usePackTickets(
   );
   const reloadTickets = useCallback(() => void loadTickets(), [loadTickets]);
 
-  return { pages, tickets, locked, error, fixError, busyKey, lockedFixCount, close, reopen, recheck, reloadTickets };
+  return {
+    pages,
+    tickets,
+    allTickets,
+    ticketsFresh: allTickets != null && ticketsKey === lockedKey,
+    locked,
+    error,
+    fixError,
+    busyKey,
+    lockedFixCount,
+    close,
+    reopen,
+    recheck,
+    reloadTickets,
+  };
 }

@@ -205,10 +205,12 @@ export const api = {
   /** The tickets for a run's packs (lazily generated on first view), FILTERED to the packs
    *  this viewer has unlocked, plus `locked_ticket_count` for the ones withheld.
    *
-   *  Read by PagesPanel for that count — "N more fixes are in locked packs" — which is
-   *  the sentence the backend computes it for. Not used for the ticket list itself: the plan
-   *  works one pack at a time and `getPackTickets` gates per pack (403 on a locked one)
-   *  rather than silently filtering. */
+   *  THE ticket-list source: usePackTickets reads it run-wide — every unlocked pack's
+   *  tickets in one response, each carrying its pack_index — because "Your plan" renders
+   *  all packs' fixes at once and the Pages tab's selected pack is a derived slice of the
+   *  same list. A locked pack's tickets are simply absent (with the count saying how
+   *  many), so absence-of-rows is NOT proof a pack is locked — the page-detail 403
+   *  (getPackDetail) is the lock signal. */
   async getTickets(runId: number): Promise<TicketsResponse> {
     const res = await fetch(`${BASE}/api/tickets/${runId}`, { headers: headers() });
     if (!res.ok) throw new Error(`API ${res.status} ${res.statusText}`);
@@ -216,7 +218,12 @@ export const api = {
   },
   /** The tickets for one pack of a run. 403 when the pack is locked for the viewer — the
    *  same gate as getPackDetail, since a ticket carries the same page×skill deep value.
-   *  Status-carrying so the board can render "locked" instead of "couldn't load". */
+   *  Status-carrying so a caller can render "locked" instead of "couldn't load".
+   *
+   *  NO CALLER TODAY: the UI moved to the run-wide getTickets above (one fetch, one poll,
+   *  every surface reading one list). Kept because the route is real, tested, and the
+   *  honest per-pack gate — do NOT quietly re-adopt it for a single surface; two ticket
+   *  sources is how the plan and the Pages tab drifted apart before. */
   async getPackTickets(runId: number, packIndex: number): Promise<TicketsResponse> {
     const res = await fetch(`${BASE}/api/tickets/${runId}/${packIndex}`, { headers: headers() });
     if (res.status === 403) throw Object.assign(new Error("locked"), { status: 403 });
@@ -247,7 +254,7 @@ export const api = {
     return postJson<{ ticket: Ticket }>(`/api/tickets/${runId}/fields`, payload);
   },
   /** Mark a ticket done (CH-15) → closed_pending_verify + a forced re-crawl to prove the
-   *  lift. Poll getPackTickets until the ticket flips to verified_completed. */
+   *  lift. Poll getTickets (run-wide) until the ticket flips to verified_completed. */
   closeTicket(runId: number, taskKey: string): Promise<{ ticket: Ticket; verify_job_id: number | null }> {
     return postJson(`/api/tickets/${runId}/close`, { task_key: taskKey });
   },
