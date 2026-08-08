@@ -428,6 +428,13 @@ function MilestoneCard({
       ? "in_progress"
       : milestone.status;
   const meta = STATUS_META[status];
+  // What is DONE folds away (the disclosure below); what is left to do stays in view. A
+  // ticket awaiting its verification crawl is NOT done — its "Verifying…"/"Check again"
+  // affordances are the CH-15 loop and must stay visible.
+  const activeTasks = milestone.tasks.filter((t) => t.status !== "verified_completed");
+  const doneTasks = milestone.tasks.filter((t) => t.status === "verified_completed");
+  const activeTickets = packTickets.filter((t) => t.status !== "verified_completed");
+  const doneTickets = packTickets.filter((t) => t.status === "verified_completed");
   return (
     <PhaseCardShell
       statusLabel={meta.label}
@@ -437,13 +444,56 @@ function MilestoneCard({
       countLabel={`${verified + packVerified}/${milestone.tasks.length + packTickets.length} verified`}
       index={index}
     >
-      {milestone.tasks.map((t) => (
+      {activeTasks.map((t) => (
         <TaskRow key={t.task_key} task={t} shareUrl={shareUrl} onSetStatus={onSetStatus} />
       ))}
-      {packTickets.length > 0 && packState && (
-        <PackTicketRows tickets={packTickets} packTitle={packTitle} packState={packState} shareUrl={shareUrl} />
+      {activeTickets.length > 0 && packState && (
+        <PackTicketRows tickets={activeTickets} packTitle={packTitle} packState={packState} shareUrl={shareUrl} />
       )}
+      <DoneFold count={doneTasks.length + doneTickets.length}>
+        {doneTasks.map((t) => (
+          <TaskRow key={t.task_key} task={t} shareUrl={shareUrl} onSetStatus={onSetStatus} />
+        ))}
+        {packState &&
+          doneTickets.map((t) => (
+            <PackFixRow
+              key={t.task_key}
+              ticket={t}
+              shareUrl={shareUrl}
+              busy={packState.busyKey === t.task_key}
+              onClose={() => packState.close(t.task_key)}
+              onReopen={() => packState.reopen(t.task_key)}
+              onRecheck={() => packState.recheck(t.task_key)}
+              className="px-4 py-3"
+            />
+          ))}
+      </DoneFold>
     </PhaseCardShell>
+  );
+}
+
+/**
+ * The collapsed home of everything already done — crawl-verified, already-in-place at the
+ * baseline, or ticked off by the owner. The first thing a returning user sees must be what
+ * is LEFT, not a wall of struck-through wins; but the wins stay one click away (with their
+ * badges and baseline→current lifts intact) because "what's already in place" is the
+ * evidence the plan is working. Progress numbers, coins and the share page all read the
+ * UNFILTERED sets — this folds rows, it never uncounts them.
+ */
+function DoneFold({ count, children }: { count: number; children: ReactNode }) {
+  if (count === 0) return null;
+  return (
+    <li className="px-4 py-2.5">
+      <details className="group/done">
+        <summary className="cursor-pointer list-none text-[13px] text-ink-300 transition-colors hover:text-accent">
+          <span className="group-open/done:hidden">
+            ✓ Already in place ({count}) — show what&apos;s done →
+          </span>
+          <span className="hidden group-open/done:inline">Hide what&apos;s done</span>
+        </summary>
+        <ul className="mt-2 divide-y divide-ink/[0.06] border-t border-ink/[0.06]">{children}</ul>
+      </details>
+    </li>
   );
 }
 
@@ -511,6 +561,8 @@ function PackOnlyPhaseCard({
         ? "in_progress"
         : "pending";
   const meta = STATUS_META[status];
+  const active = tickets.filter((t) => t.status !== "verified_completed");
+  const done = tickets.filter((t) => t.status === "verified_completed");
   return (
     <PhaseCardShell
       statusLabel={meta.label}
@@ -520,7 +572,23 @@ function PackOnlyPhaseCard({
       countLabel={`${verified}/${tickets.length} verified`}
       index={index}
     >
-      <PackTicketRows tickets={tickets} packTitle={packTitle} packState={packState} shareUrl={shareUrl} />
+      {active.length > 0 && (
+        <PackTicketRows tickets={active} packTitle={packTitle} packState={packState} shareUrl={shareUrl} />
+      )}
+      <DoneFold count={done.length}>
+        {done.map((t) => (
+          <PackFixRow
+            key={t.task_key}
+            ticket={t}
+            shareUrl={shareUrl}
+            busy={packState.busyKey === t.task_key}
+            onClose={() => packState.close(t.task_key)}
+            onReopen={() => packState.reopen(t.task_key)}
+            onRecheck={() => packState.recheck(t.task_key)}
+            className="px-4 py-3"
+          />
+        ))}
+      </DoneFold>
     </PhaseCardShell>
   );
 }

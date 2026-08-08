@@ -1519,6 +1519,12 @@ function PriorityGroup({
   const open = unlocked || manualOpen;
   const meta = BAND_META[band];
   const groupDone = tasks.filter((t) => done.has(t.id)).length;
+  // Checked-off work folds behind a small disclosure so a returning user sees what is
+  // LEFT, not a wall of completed cards. The band's counts and the progressive unlock
+  // still read the full set — this folds rows, it never uncounts them. Unchecking a task
+  // inside the fold moves it straight back into the open list.
+  const openTasks = tasks.filter((t) => !done.has(t.id));
+  const doneTasks = tasks.filter((t) => done.has(t.id));
   return (
     <div>
       <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-2">
@@ -1530,9 +1536,26 @@ function PriorityGroup({
       </div>
       {open ? (
         <ul className="space-y-2">
-          {tasks.map((t) => (
-            <TaskCard key={t.id} task={t} done={done.has(t.id)} onToggle={() => onToggle(t)} onHover={onHover} />
+          {openTasks.map((t) => (
+            <TaskCard key={t.id} task={t} done={false} onToggle={() => onToggle(t)} onHover={onHover} />
           ))}
+          {doneTasks.length > 0 && (
+            <li>
+              <details className="group/done">
+                <summary className="cursor-pointer list-none rounded-xl border border-dashed border-ink/15 bg-paper-200/40 px-4 py-2.5 text-[13px] text-ink-300 transition-colors hover:border-ink/25 hover:text-accent">
+                  <span className="group-open/done:hidden">
+                    ✓ Already done ({doneTasks.length}) — show →
+                  </span>
+                  <span className="hidden group-open/done:inline">Hide what&apos;s done</span>
+                </summary>
+                <ul className="mt-2 space-y-2">
+                  {doneTasks.map((t) => (
+                    <TaskCard key={t.id} task={t} done onToggle={() => onToggle(t)} onHover={onHover} />
+                  ))}
+                </ul>
+              </details>
+            </li>
+          )}
         </ul>
       ) : (
         <button

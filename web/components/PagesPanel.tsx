@@ -20,7 +20,7 @@
 import { useEffect, useState } from "react";
 
 import { groupFixesByPage, pageFixCounts } from "@/lib/packPlan";
-import type { PackPreview, SkillKey, SkillScore } from "@/lib/types";
+import type { PackPreview, SkillKey, SkillScore, Ticket } from "@/lib/types";
 import { CONFIDENCE_LABEL, Meter, PriorityList, SKILL_META } from "@/components/skills/SkillShared";
 import { PackFixRow, PackSelector } from "@/components/PackFixRow";
 import type { PackTicketsState } from "@/components/quest/usePackTickets";
@@ -297,19 +297,7 @@ export function PagesPanel({
                           That didn&apos;t work: {fixError}
                         </p>
                       )}
-                      <ul className="m-0 flex list-none flex-col gap-1 divide-y divide-white/[0.06] p-0">
-                        {group.tickets.map((t) => (
-                          <PackFixRow
-                            key={t.task_key}
-                            ticket={t}
-                            shareUrl={shareUrl}
-                            busy={busyKey === t.task_key}
-                            onClose={() => state.close(t.task_key)}
-                            onReopen={() => state.reopen(t.task_key)}
-                            onRecheck={() => state.recheck(t.task_key)}
-                          />
-                        ))}
-                      </ul>
+                      <FixList tickets={group.tickets} state={state} shareUrl={shareUrl} />
                     </div>
                   </details>
                 )}
@@ -371,19 +359,7 @@ export function PagesPanel({
                     not tied to a single page
                   </span>
                 </header>
-                <ul className="m-0 flex list-none flex-col gap-1 divide-y divide-white/[0.06] p-0">
-                  {sitewide.map((t) => (
-                    <PackFixRow
-                      key={t.task_key}
-                      ticket={t}
-                      shareUrl={shareUrl}
-                      busy={busyKey === t.task_key}
-                      onClose={() => state.close(t.task_key)}
-                      onReopen={() => state.reopen(t.task_key)}
-                      onRecheck={() => state.recheck(t.task_key)}
-                    />
-                  ))}
-                </ul>
+                <FixList tickets={sitewide} state={state} shareUrl={shareUrl} />
               </article>
             )}
           </div>
@@ -395,3 +371,51 @@ export function PagesPanel({
 
 // PageFixRow moved to components/PackFixRow.tsx (as PackFixRow) when "Your plan" regained
 // the pack's fixes — one row definition for both surfaces, so they cannot drift.
+
+/** A ticket list with everything DONE folded behind "Already in place (N)". What is left
+ *  to do — including fixes mid-verification, whose Check-again/Reopen affordances are the
+ *  CH-15 loop — stays in view; the wins keep their badges and baseline→current lifts one
+ *  click away. Counts elsewhere (sidebar badges, "M verified") read the unfiltered list. */
+function FixList({
+  tickets,
+  state,
+  shareUrl,
+}: {
+  tickets: Ticket[];
+  state: PackTicketsState;
+  shareUrl: string | null;
+}) {
+  const row = (t: Ticket) => (
+    <PackFixRow
+      key={t.task_key}
+      ticket={t}
+      shareUrl={shareUrl}
+      busy={state.busyKey === t.task_key}
+      onClose={() => state.close(t.task_key)}
+      onReopen={() => state.reopen(t.task_key)}
+      onRecheck={() => state.recheck(t.task_key)}
+    />
+  );
+  const open = tickets.filter((t) => t.status !== "verified_completed");
+  const done = tickets.filter((t) => t.status === "verified_completed");
+  return (
+    <ul className="m-0 flex list-none flex-col gap-1 divide-y divide-white/[0.06] p-0">
+      {open.map(row)}
+      {done.length > 0 && (
+        <li className="px-1 py-2.5">
+          <details className="group/done">
+            <summary className="cursor-pointer list-none text-[12.5px] text-ink-300 transition-colors hover:text-accent">
+              <span className="group-open/done:hidden">
+                ✓ Already in place ({done.length}) — show what&apos;s done →
+              </span>
+              <span className="hidden group-open/done:inline">Hide what&apos;s done</span>
+            </summary>
+            <ul className="m-0 mt-1 flex list-none flex-col gap-1 divide-y divide-white/[0.06] border-t border-white/[0.06] p-0">
+              {done.map(row)}
+            </ul>
+          </details>
+        </li>
+      )}
+    </ul>
+  );
+}
