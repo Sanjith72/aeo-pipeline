@@ -304,10 +304,12 @@ export function ResultsView({
   // "Analysis complete") — the tabs and panels below are exactly the build-flow ones.
   resumed?: boolean;
   /** A one-shot ask to open a tab from OUTSIDE (a redeemed unlock landing on Pages, a
-   *  just-unlocked pack). The nonce makes each ask distinct; an ask for a tab that is not
-   *  available yet (packs still loading) stays live and is honoured the moment the tab
-   *  exists, because arriving before the data is precisely how these asks happen. */
-  tabRequest?: { id: TabId; nonce: number } | null;
+   *  just-unlocked pack, the pack grid's "Open fixes →" jump into Your plan). The nonce
+   *  makes each ask distinct; an ask for a tab that is not available yet (packs still
+   *  loading) stays live and is honoured the moment the tab exists, because arriving
+   *  before the data is precisely how these asks happen. `anchor` optionally names a DOM
+   *  id inside the opened tab to scroll to (e.g. one pack's fixes card). */
+  tabRequest?: { id: TabId; nonce: number; anchor?: string } | null;
 }) {
   const tabs: { id: TabId; label: string }[] = [
     ...(profile ? [{ id: "overview" as const, label: "Overview" }] : []),
@@ -338,6 +340,18 @@ export function ResultsView({
     if (!tabIds.split(",").includes(tabRequest.id)) return;
     consumedTabAsk.current = tabRequest.nonce;
     setTab(tabRequest.id);
+    // The asked-for element sits in a subtree that was `hidden` until the setTab above
+    // lands, so the scroll waits two frames: one for React to commit the unhide, one for
+    // layout. A missing anchor (stale id, still-loading card) degrades to just the tab
+    // switch — never an error.
+    const anchor = tabRequest.anchor;
+    if (anchor) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          document.getElementById(anchor)?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
+    }
   }, [tabRequest, tabIds]);
 
   // Spec #2 "Verified live": a re-crawl can confirm a recommended fix actually landed

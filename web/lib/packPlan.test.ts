@@ -16,9 +16,11 @@ import {
   PACK_PHASE_ORDER,
   bucketTicket,
   packFixDomId,
+  packFixesDomId,
   packPlanPhases,
   packPlanProgress,
   priorityBySkill,
+  ticketsByPack,
   ticketsByPhase,
   ticketStatusToMilestoneStatus,
   ticketToPlanTask,
@@ -453,4 +455,42 @@ test("ticketsByPhase on nothing is an empty plan, not a crash", () => {
   assert.deepEqual(ticketsByPhase(null), []);
   assert.deepEqual(ticketsByPhase([]), []);
   assert.deepEqual(ticketsByPhase(undefined, null), []);
+});
+
+// ── grouping the run-wide list under each pack (Your plan's by-pack section) ────────
+
+test("ticketsByPack groups by pack, packs ascending, ticket order preserved within", () => {
+  // The run-wide route returns one flat list; "Your plan" renders it under each pack. The
+  // within-pack order is the server's and must survive the grouping — reordering here
+  // would fight the phase sort applied downstream.
+  const grouped = ticketsByPack([
+    ticket({ task_key: "p3-a", pack_index: 3 }),
+    ticket({ task_key: "p1-a", pack_index: 1 }),
+    ticket({ task_key: "p3-b", pack_index: 3 }),
+    ticket({ task_key: "p1-b", pack_index: 1 }),
+  ]);
+  assert.deepEqual([...grouped.keys()], [1, 3]);
+  assert.deepEqual(grouped.get(1)?.map((t) => t.task_key), ["p1-a", "p1-b"]);
+  assert.deepEqual(grouped.get(3)?.map((t) => t.task_key), ["p3-a", "p3-b"]);
+});
+
+test("ticketsByPack on nothing is an empty map, not a crash", () => {
+  assert.equal(ticketsByPack(null).size, 0);
+  assert.equal(ticketsByPack(undefined).size, 0);
+  assert.equal(ticketsByPack([]).size, 0);
+});
+
+test("a pack with no tickets is simply absent — the CARD decides how to render that", () => {
+  // MilestoneDashboard renders a card for every pack in the grid and asks the map with
+  // `?? []`; the map must not invent empty entries that would mask a genuinely missing
+  // pack elsewhere.
+  const grouped = ticketsByPack([ticket({ pack_index: 2 })]);
+  assert.equal(grouped.has(1), false);
+  assert.deepEqual(grouped.get(2)?.length, 1);
+});
+
+test("the pack grid's jump and the plan's card agree on the anchor id", () => {
+  // One function, imported by both sides — this pins the format so a refactor of either
+  // caller cannot silently break the scroll-to-pack jump.
+  assert.equal(packFixesDomId(2), "pack-fixes-2");
 });

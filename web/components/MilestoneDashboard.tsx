@@ -11,18 +11,17 @@
 import { useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "@/lib/api";
-import type { Milestone, MilestoneStatus, MilestoneTask, PackPreview, Ticket } from "@/lib/types";
+import type { Milestone, MilestoneStatus, MilestoneTask, PackPageDetail, PackPreview, Ticket } from "@/lib/types";
 import { manualCopyHint, selectField, useCopyAction } from "@/lib/copy";
-import { phaseDisplayBlurb, phaseDisplayTitle } from "@/lib/phases";
-import type { PhaseKey } from "@/lib/phases";
-import { ticketsByPhase } from "@/lib/packPlan";
+import { phaseDisplayTitle } from "@/lib/phases";
+import { packFixesDomId, ticketsByPack, ticketsByPhase } from "@/lib/packPlan";
 import { Check } from "./ui/icons";
 import { TaskHowTo } from "./TaskHowTo";
-import { PackFixRow, PackSelector } from "./PackFixRow";
+import { PackFixRow } from "./PackFixRow";
 import type { QuestTracker } from "./quest/useQuestTracker";
 import type { PackTicketsState } from "./quest/usePackTickets";
 
-/** Everything "Your plan" needs to fold the selected pack's fixes into its phase cards.
+/** Everything "Your plan" needs to render each pack's fixes under its own pack card.
  *  The ticket state itself is ResultsView's single usePackTickets instance — the same one
  *  the Pages tab renders — so completing a fix on either surface updates both. */
 export interface PackWork {
@@ -116,26 +115,20 @@ export function MilestoneDashboard({ tracker, packWork }: { tracker: QuestTracke
 
   const { progress, milestones } = dash;
 
-  // The selected pack's fixes, bucketed into the SAME three phases the plan renders below —
-  // one list, not a second stack that also says "Quick Wins" (the duplicate-heading problem
-  // that got the old standalone section removed). packWork is absent on the no-domain path;
-  // tickets are null while loading, which buckets to nothing and simply adds no rows yet.
-  // Bucketing takes the PAGES (not a flat priority list) so a fix is phased by its own
-  // page's impact — see ticketsByPhase's comment.
+  // Every unlocked pack's fixes, grouped under the pack they belong to — a view over the
+  // run-wide list usePackTickets owns (the same instance the Pages tab renders, so a fix
+  // closed on either surface updates both). packWork is absent on the no-domain path; the
+  // list is null while loading, which renders each pack's card with a quiet loading row.
   const packState = packWork?.state;
-  const packPhases = packState && !packState.locked ? ticketsByPhase(packState.tickets, packState.pages) : [];
-  const packByPhase = new Map(packPhases.map((p) => [p.key, p.tickets]));
-  const packOnlyPhases = packPhases.filter((p) => !milestones.some((m) => m.milestone_key === p.key));
-  const activePack = packWork?.packs.find((p) => p.pack_index === packWork.selectedPack) ?? null;
-  const packTitle =
-    activePack?.title ?? (packWork && packWork.selectedPack != null ? `Pack ${packWork.selectedPack}` : null);
+  const byPack = ticketsByPack(packState?.allTickets);
 
   // The header must count what the cards below now CONTAIN. The server roll-up excludes
-  // pack tickets by design (milestone_key NOT LIKE 'pack:%'), so with the selected pack's
-  // fixes folded into the cards, a bare `progress` header could read "6 / 6 verified 🎉"
-  // directly above an In-progress card holding three workable rows. Blend the folded
-  // tickets in — the numbers describe this surface as rendered, selected pack included.
-  const packAll = packState && !packState.locked ? (packState.tickets ?? []) : [];
+  // pack tickets by design (milestone_key NOT LIKE 'pack:%'), so with every unlocked
+  // pack's fixes rendered below, a bare `progress` header could read "6 / 6 verified 🎉"
+  // directly above pack cards full of open work. Blend the tickets in — the numbers
+  // describe this surface as rendered. (A locked pack's tickets are absent from the
+  // run-wide list by design, so they can never inflate the denominator.)
+  const packAll = packState?.allTickets ?? [];
   const packVerifiedAll = packAll.filter((t) => t.status === "verified_completed").length;
   const packInProgressAll = packAll.filter(
     (t) => t.status === "in_progress" || t.status === "closed_pending_verify",
@@ -230,72 +223,63 @@ export function MilestoneDashboard({ tracker, packWork }: { tracker: QuestTracke
         )}
       </div>
 
-      {/* Which pack's fixes are folded into the phases below, and how to switch. Hidden on
-          a single-pack run (one unswitchable chip is noise, and the auto-select in
-          PagesPanel has already chosen it). */}
-      {packWork && packWork.packs.length > 1 && (
-        <PackSelector
-          label="Fixes from"
-          packs={packWork.packs}
-          selectedPack={packWork.selectedPack}
-          onSelectPack={packWork.onSelectPack}
-          ariaLabel="Choose which pack's fixes are folded into your plan"
-        />
-      )}
-      {packState?.lockedFixCount != null && packState.lockedFixCount > 0 && (
-        <p className="text-[12.5px] text-ink-500">
-          <span aria-hidden>🔒</span> {packState.lockedFixCount} more fix
-          {packState.lockedFixCount === 1 ? "" : "es"} {packState.lockedFixCount === 1 ? "is" : "are"} in
-          locked packs.
-        </p>
-      )}
-      {/* A locked pack is an expected product state (CH-02a): an offer, never an error. */}
-      {packWork && packState?.locked && packWork.selectedPack != null && (
-        <div className="rounded-xl border border-accent/25 bg-accent/[0.05] p-5">
-          <h4 className="text-base font-semibold">{packTitle} is locked</h4>
-          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-ink-500">
-            Unlock this pack to work its page-by-page fixes right here, inside your plan.
-          </p>
-          <button
-            type="button"
-            onClick={() => packWork.onUnlock(packWork.selectedPack as number)}
-            className="btn-primary mt-3 !py-2 text-[13px]"
-          >
-            Unlock {packTitle}
-          </button>
-        </div>
-      )}
-      {packState?.fixError && (
-        <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">
-          That didn&apos;t work: {packState.fixError}
-        </p>
-      )}
-
       {milestones.map((m, i) => (
-        <MilestoneCard
-          key={m.milestone_key}
-          milestone={m}
-          index={i}
-          shareUrl={shareUrl}
-          onSetStatus={setStatus}
-          packTickets={packByPhase.get(m.milestone_key as PhaseKey) ?? []}
-          packTitle={packTitle}
-          packState={packState}
-        />
+        <MilestoneCard key={m.milestone_key} milestone={m} index={i} shareUrl={shareUrl} onSetStatus={setStatus} />
       ))}
-      {/* A phase the plan has no milestone for can still have pack fixes — they must land
-          somewhere visible rather than being dropped for want of a card to sit in. */}
-      {packOnlyPhases.map((p, i) => (
-        <PackOnlyPhaseCard
-          key={p.key}
-          phaseKey={p.key}
-          tickets={p.tickets}
-          index={milestones.length + i}
-          packTitle={packTitle}
-          packState={packState as PackTicketsState}
-          shareUrl={shareUrl}
-        />
-      ))}
+
+      {/* Every pack's fixes, each under its own card — the destination of the pack grid's
+          "Open fixes →" jump (packFixesDomId anchors each card). A locked pack holds its
+          place in the list with the unlock offer: an expected product state (CH-02a), an
+          offer, never an error. */}
+      {packWork && packWork.packs.length > 0 && (
+        <section aria-labelledby="plan-pack-fixes-h" className="space-y-4">
+          <div>
+            <h3 id="plan-pack-fixes-h" className="text-base font-semibold">
+              Fixes by pack
+            </h3>
+            <p className="mt-0.5 max-w-2xl text-sm text-ink-500">
+              The page-by-page fixes from your packs, under the pack they belong to. Each fix
+              also lives under its page in the Pages tab.
+            </p>
+          </div>
+          {packWork.state.lockedFixCount != null && packWork.state.lockedFixCount > 0 && (
+            <p className="text-[12.5px] text-ink-500">
+              <span aria-hidden>🔒</span> {packWork.state.lockedFixCount} more fix
+              {packWork.state.lockedFixCount === 1 ? "" : "es"}{" "}
+              {packWork.state.lockedFixCount === 1 ? "is" : "are"} in locked packs.
+            </p>
+          )}
+          {packWork.state.fixError && (
+            <p
+              role="alert"
+              className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300"
+            >
+              That didn&apos;t work: {packWork.state.fixError}
+            </p>
+          )}
+          {packWork.packs.map((pack, i) =>
+            pack.locked ? (
+              <PackLockedCard
+                key={pack.pack_index}
+                pack={pack}
+                onUnlock={() => packWork.onUnlock(pack.pack_index)}
+                index={milestones.length + i}
+              />
+            ) : (
+              <PackFixesCard
+                key={pack.pack_index}
+                pack={pack}
+                tickets={byPack.get(pack.pack_index) ?? []}
+                loading={packWork.state.allTickets == null}
+                pages={pack.pack_index === packWork.selectedPack ? packWork.state.pages : undefined}
+                packState={packWork.state}
+                shareUrl={shareUrl}
+                index={milestones.length + i}
+              />
+            ),
+          )}
+        </section>
+      )}
     </div>
   );
 }
@@ -422,67 +406,33 @@ function MilestoneCard({
   index,
   shareUrl,
   onSetStatus,
-  packTickets = [],
-  packTitle,
-  packState,
 }: {
   milestone: Milestone;
   index: number;
   shareUrl: string | null;
   onSetStatus: (task: MilestoneTask, status: MilestoneStatus) => void;
-  /** The selected pack's fixes belonging to THIS phase (item 3.4) — same card, same list. */
-  packTickets?: Ticket[];
-  packTitle?: string | null;
-  packState?: PackTicketsState;
 }) {
   const verified = milestone.tasks.filter((t) => t.status === "verified_completed").length;
-  const packVerified = packTickets.filter((t) => t.status === "verified_completed").length;
-  // The pill must describe what the card now CONTAINS: a milestone the server calls done
-  // above unfinished pack fixes is not a done card.
-  const status: MilestoneStatus =
-    milestone.status === "verified_completed" && packVerified < packTickets.length
-      ? "in_progress"
-      : milestone.status;
-  const meta = STATUS_META[status];
-  // What is DONE folds away (the disclosure below); what is left to do stays in view. A
-  // ticket awaiting its verification crawl is NOT done — its "Verifying…"/"Check again"
-  // affordances are the CH-15 loop and must stay visible.
+  const meta = STATUS_META[milestone.status];
+  // What is DONE folds away (the disclosure below); what is left to do stays in view.
   const activeTasks = milestone.tasks.filter((t) => t.status !== "verified_completed");
   const doneTasks = milestone.tasks.filter((t) => t.status === "verified_completed");
-  const activeTickets = packTickets.filter((t) => t.status !== "verified_completed");
-  const doneTickets = packTickets.filter((t) => t.status === "verified_completed");
   return (
     <PhaseCardShell
       statusLabel={meta.label}
       statusPill={meta.pill}
       title={phaseDisplayTitle(milestone.milestone_key, milestone.title)}
       blurb={milestone.blurb}
-      countLabel={`${verified + packVerified}/${milestone.tasks.length + packTickets.length} verified`}
+      countLabel={`${verified}/${milestone.tasks.length} verified`}
       index={index}
     >
       {activeTasks.map((t) => (
         <TaskRow key={t.task_key} task={t} shareUrl={shareUrl} onSetStatus={onSetStatus} />
       ))}
-      {activeTickets.length > 0 && packState && (
-        <PackTicketRows tickets={activeTickets} packTitle={packTitle} packState={packState} shareUrl={shareUrl} />
-      )}
-      <DoneFold count={doneTasks.length + doneTickets.length}>
+      <DoneFold count={doneTasks.length}>
         {doneTasks.map((t) => (
           <TaskRow key={t.task_key} task={t} shareUrl={shareUrl} onSetStatus={onSetStatus} />
         ))}
-        {packState &&
-          doneTickets.map((t) => (
-            <PackFixRow
-              key={t.task_key}
-              ticket={t}
-              shareUrl={shareUrl}
-              busy={packState.busyKey === t.task_key}
-              onClose={() => packState.close(t.task_key)}
-              onReopen={() => packState.reopen(t.task_key)}
-              onRecheck={() => packState.recheck(t.task_key)}
-              className="px-4 py-3"
-            />
-          ))}
       </DoneFold>
     </PhaseCardShell>
   );
@@ -513,65 +463,52 @@ function DoneFold({ count, children }: { count: number; children: ReactNode }) {
   );
 }
 
-/** The pack's rows inside a phase card: a quiet provenance line, then the same workable
- *  rows the Pages tab renders (PackFixRow — actions, not the 3-state radio; see its
- *  comment for why a "Verified" radio would be dishonest here). */
-function PackTicketRows({
-  tickets,
-  packTitle,
-  packState,
-  shareUrl,
-}: {
-  tickets: Ticket[];
-  packTitle?: string | null;
-  packState: PackTicketsState;
-  shareUrl: string | null;
-}) {
+/** One workable fix row wired to the shared ticket state — the same PackFixRow the Pages
+ *  tab renders (actions, not the 3-state radio; see its comment for why a "Verified" radio
+ *  would be dishonest here). */
+function WiredFixRow({ ticket, packState, shareUrl }: { ticket: Ticket; packState: PackTicketsState; shareUrl: string | null }) {
   return (
-    <>
-      {packTitle && (
-        <li className="bg-paper-200/30 px-4 py-1.5">
-          <span className="label-mono !text-[10px] text-ink-300">
-            Fixes from {packTitle} — also under each page in the Pages tab
-          </span>
-        </li>
-      )}
-      {tickets.map((t) => (
-        <PackFixRow
-          key={t.task_key}
-          ticket={t}
-          shareUrl={shareUrl}
-          busy={packState.busyKey === t.task_key}
-          onClose={() => packState.close(t.task_key)}
-          onReopen={() => packState.reopen(t.task_key)}
-          onRecheck={() => packState.recheck(t.task_key)}
-          className="px-4 py-3"
-        />
-      ))}
-    </>
+    <PackFixRow
+      ticket={ticket}
+      shareUrl={shareUrl}
+      busy={packState.busyKey === ticket.task_key}
+      onClose={() => packState.close(ticket.task_key)}
+      onReopen={() => packState.reopen(ticket.task_key)}
+      onRecheck={() => packState.recheck(ticket.task_key)}
+      className="px-4 py-3"
+    />
   );
 }
 
-/** A phase the plan has no milestone for, carrying only pack fixes. Same shell, status
- *  derived from the tickets it holds. */
-function PackOnlyPhaseCard({
-  phaseKey,
+/** One pack's fixes as its own card in "Your plan" — the destination of the pack grid's
+ *  "Open fixes →" jump (packFixesDomId anchors it, scroll-mt clears the sticky tab bar).
+ *  Same shell as the milestone cards, so a pack's work looks like the plan rather than a
+ *  second product bolted underneath it. Open fixes are ordered by the same three phases
+ *  the plan uses (quiet dividers, not duplicate phase CARDS); done ones fold behind
+ *  "Already in place". */
+function PackFixesCard({
+  pack,
   tickets,
-  index,
-  packTitle,
+  loading,
+  pages,
   packState,
   shareUrl,
+  index,
 }: {
-  phaseKey: PhaseKey;
+  pack: PackPreview;
   tickets: Ticket[];
-  index: number;
-  packTitle?: string | null;
+  /** The run-wide list has not arrived yet — render the frame with a quiet loading row. */
+  loading: boolean;
+  /** The pack's scored pages when it is the SELECTED pack (impact-accurate phase order);
+   *  undefined otherwise, where bucketTicket falls back to each ticket's baseline score. */
+  pages?: PackPageDetail[] | null;
   packState: PackTicketsState;
   shareUrl: string | null;
+  index: number;
 }) {
   const verified = tickets.filter((t) => t.status === "verified_completed").length;
   const status: MilestoneStatus =
-    verified === tickets.length
+    !loading && tickets.length > 0 && verified === tickets.length
       ? "verified_completed"
       : tickets.some((t) => t.status !== "pending")
         ? "in_progress"
@@ -579,33 +516,99 @@ function PackOnlyPhaseCard({
   const meta = STATUS_META[status];
   const active = tickets.filter((t) => t.status !== "verified_completed");
   const done = tickets.filter((t) => t.status === "verified_completed");
+  const activeByPhase = ticketsByPhase(active, pages);
   return (
-    <PhaseCardShell
-      statusLabel={meta.label}
-      statusPill={meta.pill}
-      title={phaseDisplayTitle(phaseKey, phaseKey)}
-      blurb={phaseDisplayBlurb(phaseKey, "")}
-      countLabel={`${verified}/${tickets.length} verified`}
-      index={index}
-    >
-      {active.length > 0 && (
-        <PackTicketRows tickets={active} packTitle={packTitle} packState={packState} shareUrl={shareUrl} />
+    <div id={packFixesDomId(pack.pack_index)} className="scroll-mt-24">
+      <PhaseCardShell
+        statusLabel={meta.label}
+        statusPill={meta.pill}
+        title={pack.title}
+        countLabel={loading ? "" : `${verified}/${tickets.length} verified`}
+        index={index}
+      >
+        {loading ? (
+          <li className="flex items-center gap-2 px-4 py-3 text-sm text-ink-500">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink/20 border-t-accent" />
+            Loading this pack&apos;s fixes…
+          </li>
+        ) : tickets.length === 0 ? (
+          <li className="px-4 py-3 text-sm text-ink-500">
+            Nothing to fix here — this pack&apos;s pages already pass our checks.
+          </li>
+        ) : (
+          <>
+            {activeByPhase.map((group) => (
+              <PhaseTicketGroup
+                key={group.key}
+                group={group}
+                withDivider={activeByPhase.length > 1}
+                packState={packState}
+                shareUrl={shareUrl}
+              />
+            ))}
+            <DoneFold count={done.length}>
+              {done.map((t) => (
+                <WiredFixRow key={t.task_key} ticket={t} packState={packState} shareUrl={shareUrl} />
+              ))}
+            </DoneFold>
+          </>
+        )}
+      </PhaseCardShell>
+    </div>
+  );
+}
+
+/** One phase's rows inside a pack card, under a quiet divider — a LINE, deliberately not a
+ *  nested phase card, so the tab never shows two stacks of things both titled "Quick wins"
+ *  (the duplicate-heading problem that got the old standalone section removed). The divider
+ *  is skipped entirely when the pack's open fixes all share one phase. */
+function PhaseTicketGroup({
+  group,
+  withDivider,
+  packState,
+  shareUrl,
+}: {
+  group: { key: string; tickets: Ticket[] };
+  withDivider: boolean;
+  packState: PackTicketsState;
+  shareUrl: string | null;
+}) {
+  return (
+    <>
+      {withDivider && (
+        <li className="bg-paper-200/30 px-4 py-1.5">
+          <span className="label-mono !text-[10px] text-ink-300">{phaseDisplayTitle(group.key, group.key)}</span>
+        </li>
       )}
-      <DoneFold count={done.length}>
-        {done.map((t) => (
-          <PackFixRow
-            key={t.task_key}
-            ticket={t}
-            shareUrl={shareUrl}
-            busy={packState.busyKey === t.task_key}
-            onClose={() => packState.close(t.task_key)}
-            onReopen={() => packState.reopen(t.task_key)}
-            onRecheck={() => packState.recheck(t.task_key)}
-            className="px-4 py-3"
-          />
-        ))}
-      </DoneFold>
-    </PhaseCardShell>
+      {group.tickets.map((t) => (
+        <WiredFixRow key={t.task_key} ticket={t} packState={packState} shareUrl={shareUrl} />
+      ))}
+    </>
+  );
+}
+
+/** A locked pack holding its place in the by-pack list — the unlock offer, rendered where
+ *  its fixes will appear once unlocked. An expected product state (CH-02a), never an
+ *  error. Anchored like the unlocked cards so an "Open fixes" jump on a stale grid still
+ *  lands somewhere sensible. */
+function PackLockedCard({ pack, onUnlock, index }: { pack: PackPreview; onUnlock: () => void; index: number }) {
+  return (
+    <div
+      id={packFixesDomId(pack.pack_index)}
+      className="step-in scroll-mt-24 rounded-xl border border-accent/25 bg-accent/[0.05] p-5"
+      style={{ animationDelay: `${Math.min(index, 4) * 70}ms` }}
+    >
+      <h4 className="text-base font-semibold">
+        <span aria-hidden>🔒 </span>
+        {pack.title} is locked
+      </h4>
+      <p className="mt-1 max-w-2xl text-sm leading-relaxed text-ink-500">
+        Unlock this pack to work its page-by-page fixes right here, inside your plan.
+      </p>
+      <button type="button" onClick={onUnlock} className="btn-primary mt-3 !py-2 text-[13px]">
+        Unlock {pack.title}
+      </button>
+    </div>
   );
 }
 
