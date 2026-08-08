@@ -121,6 +121,14 @@ export function MilestoneDashboard({ tracker, packWork }: { tracker: QuestTracke
   // list is null while loading, which renders each pack's card with a quiet loading row.
   const packState = packWork?.state;
   const byPack = ticketsByPack(packState?.allTickets);
+  // Tickets are kept per CLIENT, not per run, and the prune deliberately preserves work
+  // whose page fell out of the current packs (see groupFixesByPage's block comment for the
+  // four ways that happens). A ticket whose pack_index has no card in today's grid must
+  // still land somewhere visible — and the header below counts it, so a card must hold it.
+  const knownPacks = new Set((packWork?.packs ?? []).map((p) => p.pack_index));
+  const orphanTickets = [...byPack.entries()]
+    .filter(([idx]) => !knownPacks.has(idx))
+    .flatMap(([, ts]) => ts);
 
   // The header must count what the cards below now CONTAIN. The server roll-up excludes
   // pack tickets by design (milestone_key NOT LIKE 'pack:%'), so with every unlocked
@@ -268,7 +276,8 @@ export function MilestoneDashboard({ tracker, packWork }: { tracker: QuestTracke
             ) : (
               <PackFixesCard
                 key={pack.pack_index}
-                pack={pack}
+                title={pack.title}
+                anchorId={packFixesDomId(pack.pack_index)}
                 tickets={byPack.get(pack.pack_index) ?? []}
                 loading={packWork.state.allTickets == null}
                 pages={pack.pack_index === packWork.selectedPack ? packWork.state.pages : undefined}
@@ -277,6 +286,18 @@ export function MilestoneDashboard({ tracker, packWork }: { tracker: QuestTracke
                 index={milestones.length + i}
               />
             ),
+          )}
+          {orphanTickets.length > 0 && (
+            <PackFixesCard
+              title="Fixes from an earlier audit"
+              blurb="Found on pages that aren't in your current packs — still yours to work, and still verified the same way."
+              anchorId="pack-fixes-earlier"
+              tickets={orphanTickets}
+              loading={false}
+              packState={packWork.state}
+              shareUrl={shareUrl}
+              index={milestones.length + packWork.packs.length}
+            />
           )}
         </section>
       )}
@@ -487,7 +508,9 @@ function WiredFixRow({ ticket, packState, shareUrl }: { ticket: Ticket; packStat
  *  the plan uses (quiet dividers, not duplicate phase CARDS); done ones fold behind
  *  "Already in place". */
 function PackFixesCard({
-  pack,
+  title,
+  blurb,
+  anchorId,
   tickets,
   loading,
   pages,
@@ -495,7 +518,9 @@ function PackFixesCard({
   shareUrl,
   index,
 }: {
-  pack: PackPreview;
+  title: string;
+  blurb?: string;
+  anchorId: string;
   tickets: Ticket[];
   /** The run-wide list has not arrived yet — render the frame with a quiet loading row. */
   loading: boolean;
@@ -518,11 +543,12 @@ function PackFixesCard({
   const done = tickets.filter((t) => t.status === "verified_completed");
   const activeByPhase = ticketsByPhase(active, pages);
   return (
-    <div id={packFixesDomId(pack.pack_index)} className="scroll-mt-24">
+    <div id={anchorId} className="scroll-mt-24">
       <PhaseCardShell
         statusLabel={meta.label}
         statusPill={meta.pill}
-        title={pack.title}
+        title={title}
+        blurb={blurb}
         countLabel={loading ? "" : `${verified}/${tickets.length} verified`}
         index={index}
       >
