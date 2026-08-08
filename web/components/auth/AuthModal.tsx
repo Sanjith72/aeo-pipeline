@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { classifySignUpFailure, resendCooldownRemaining } from "@/lib/authCallback";
 import { currentAccessToken, signInWithGoogle, supabase } from "@/lib/supabase";
+import { signInReturnPath } from "@/lib/pendingUnlock";
 import { useAuth } from "./AuthProvider";
 
 type Mode = "signin" | "signup";
@@ -57,7 +58,7 @@ export function AuthModal() {
     const { error: err } = await supabase.auth.resend({
       type: "signup",
       email: awaitingConfirm,
-      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=/studio` },
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(signInReturnPath(window.location.pathname + window.location.search))}` },
     });
     setResending(false);
     if (err) {
@@ -97,7 +98,7 @@ export function AuthModal() {
           // Without this, `{{ .RedirectTo }}` is empty in the confirmation template and
           // GoTrue falls back to the project's bare Site URL — so the link lands on the
           // homepage instead of the callback that can actually complete the sign-in.
-          options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=/studio` },
+          options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(signInReturnPath(window.location.pathname + window.location.search))}` },
         });
         if (err) throw err;
         if (!data.session) {

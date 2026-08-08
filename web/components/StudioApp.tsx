@@ -36,6 +36,7 @@ import {
   unlockedDestination,
   urlWithoutCheckoutParams,
 } from "@/lib/checkoutReturn";
+import { clearPendingUnlock, readPendingUnlock, rememberPendingUnlock } from "@/lib/pendingUnlock";
 import type { UnlockedDestination } from "@/lib/checkoutReturn";
 import { GamificationStrip } from "@/components/GamificationStrip";
 import { Combobox } from "@/components/ui/Combobox";
@@ -487,12 +488,45 @@ export function StudioApp() {
   // pack was clicked so checkout charges for that one — the dialog can't guess it.
   function handleUnlock(packIndex?: number) {
     if (!user) {
+      // REMEMBER the pack before handing off to sign-in. This used to just `return`, and
+      // `packIndex` went nowhere: after signing in the user was back at the same grid with no
+      // dialog, having to find and click Unlock a second time. `authReason` only picks a line
+      // of copy in AuthModal — it has never carried the pack. Persisted rather than held in
+      // state because the OAuth leg is a full page load (lib/pendingUnlock.ts).
+      rememberPendingUnlock({
+        domain: domain.trim(),
+        packIndex: packIndex ?? null,
+        runId: runId ?? undefined,
+      });
       openAuth("unlock-pack");
       return;
     }
     setUnlockPack(packIndex ?? null);
     setUnlockOpen(true);
   }
+
+  // Redeem that intent the moment sign-in completes. Covers both legs: the email/password
+  // modal resolves in place (this component never unmounts), and the OAuth round-trip comes
+  // back through /auth/callback to /studio, where this runs on mount with `user` already set.
+  const unlockResumed = useRef(false);
+  useEffect(() => {
+    if (!user || unlockResumed.current) return;
+    const pending = readPendingUnlock();
+    // A resumed-plan intent belongs to /plan/<id>, which redeems its own — never steal it.
+    if (!pending || pending.planStateId) return;
+    unlockResumed.current = true;
+    clearPendingUnlock();
+    if (pending.domain && !domain.trim()) {
+      setDomain(pending.domain);
+      setHasSite(true);
+    }
+    if (pending.runId != null && runId == null) setRunId(pending.runId);
+    setUnlockPack(pending.packIndex);
+    setUnlockOpen(true);
+    // Intentionally keyed on `user` alone: this is a one-shot resume guarded by a ref, and
+    // re-running it on every domain/runId change would reopen a dialog the user dismissed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
   async function refreshPacks() {
     if (runId == null) return;
     try {
