@@ -121,7 +121,7 @@ are deterministic with `use_llm=false` (no DB/network).
 
 ## SP-4b · Guided UI (Next.js) — ✅ DONE (v1)
 
-**Goal:** the consultant wizard (see [`PRODUCT_FLOW.md`](PRODUCT_FLOW.md)) over the SP-4a API.
+**Goal:** the consultant wizard (see [`PRODUCT_FLOW.md`](../product/PRODUCT_FLOW.md)) over the SP-4a API.
 
 **Delivered** — `web/` workspace: Next.js 15 (App Router) + TypeScript + Tailwind.
 - `lib/types.ts` + `lib/api.ts` — typed client mirroring the SP-4a contract (no business logic).

@@ -1,6 +1,6 @@
 # v5 Contract Lock (CH-13)
 
-> The locked JSON/DB contracts for the v5 build (`AEO_PRODUCT_CHANGES_v5.md`). Backend and
+> The locked JSON/DB contracts for the v5 build (`docs/product/AEO_PRODUCT_CHANGES_v5.md`). Backend and
 > frontend (`web/lib/types.ts`) must match these shapes; migrations `0027`–`0030` are the DB
 > half. Change a contract here first, then both sides in the same PR.
 

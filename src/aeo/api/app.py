@@ -1,5 +1,5 @@
 """
-FastAPI application — endpoints from ``PRODUCT_FLOW.md`` §3.
+FastAPI application — endpoints from ``docs/product/PRODUCT_FLOW.md`` §3.
 
 Pure/in-memory endpoints (no DB, deterministic with ``use_llm=false``):
   GET  /api/health            DB + service health

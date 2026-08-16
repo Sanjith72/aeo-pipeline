@@ -1,176 +1,146 @@
 <div align="center">
 
-# 🛰️ AEO Crawler
+# 🛰️ AEO Studio
 
-### Answer Engine Optimization auditing for cybersecurity content
+### AI-first website improvement — audit, fix packs, and proof of improvement
 
-Crawl, extract, and score web pages against a **10-criterion AEO rubric** to measure how well
-content surfaces in AI answer engines — then generate the recommendations to close the gaps.
+Enter a URL, get a free five-skill overview of how AI search engines see the site, then unlock
+prioritized **fix packs**, work them as a gamified quest, and verify the score actually moved.
 
 [![CI](https://github.com/Sanjith72/aeo-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/Sanjith72/aeo-pipeline/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-365%20offline-brightgreen.svg)](#testing)
-[![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
-[![Status: Beta](https://img.shields.io/badge/status-v4.1%20beta-orange.svg)](BETA_RELEASE_NOTES.md)
+[![Next.js](https://img.shields.io/badge/web-Next.js%20App%20Router-black.svg)](web/)
+[![Tests: offline](https://img.shields.io/badge/tests-1100%2B%20offline-brightgreen.svg)](#testing)
+[![Status: v5](https://img.shields.io/badge/status-v5-blue.svg)](docs/product/AEO_PRODUCT_CHANGES_v5.md)
 
 </div>
 
 ---
 
-## What it does
+## What it is
 
-**AEO Crawler** audits Securin and competitor pages on the ten criteria that determine how well
-content gets cited by AI answer engines (ChatGPT, Perplexity, Gemini, …). It crawls a site,
-extracts structural signals from the HTML, scores each page on a reproducible **0–50 rubric**, and
-produces per-page and site-level reports with concrete, validated recommendations.
+**AEO Studio** helps a business make its website legible to AI answer engines (ChatGPT,
+Perplexity, Gemini, …) — and to the buyers who ask them. It started as a niche
+Answer-Engine-Optimization crawler for one cybersecurity vertical; **v5 re-aimed the same
+engine into a horizontal, self-serve product**:
 
-Scoring is **deterministic-first**: all ten criteria score from parsed HTML signals alone. A local
-LLM (Ollama) is optional and only *refines* content-depth analysis — disable it and you still get a
-complete, reproducible score. The same inputs always produce the same number.
+1. **URL-first entry** — a URL is the only required input. `POST /api/overview` returns a free
+   five-skill homepage overview (cached, rate-capped, SSRF-guarded) plus a preview of the fix packs.
+2. **Deep audit** — crawls the site (discovery → prioritization → top-N pages), extracts
+   structural signals, and scores every page on **five outcome skills**: *Messaging, Conversion,
+   Discovery & Visibility, Proof & Trust, Structure & UX*. Scoring is deterministic-first; an LLM
+   refines the Messaging/Conversion judgments on the paid deep audit only.
+3. **Fix packs** — issues become ordered, bounded packs of tickets. Pack 1 is free; deeper packs
+   unlock progressively behind **Supabase auth** (Google sign-in) and **Stripe payments**, with
+   entitlements enforced server-side.
+4. **Do the work, prove it moved** — each ticket carries how-to guidance; a **verified re-crawl**
+   measures before/after per milestone, and a **gamified quest map** (phases, coins, achievements)
+   tracks progress. Plans are shareable via tokenized links.
 
-### Highlights
-
-- 🎯 **10-criterion rubric (max 50)** — schema markup, Q&A blocks, stats, entity consistency, headings, depth, E-E-A-T, load speed, render accessibility, readability.
-- 🔁 **Deterministic & reproducible** — thresholds, weights, and vocabularies live in `config/`, not in code. The LLM is optional.
-- 🏗️ **Two-layer audit** — page-level scoring *plus* a topic-level **Reference Architecture** that builds an ideal-site blueprint and measures coverage gaps against it.
-- ✅ **Non-circular validation** — recommendations are re-checked against independent signals (liftable TL;DR, H1-as-question, valid JSON-LD) plus a live citation test.
-- 🐘 **PostgreSQL-only** — the database is both the job queue (`FOR UPDATE SKIP LOCKED`) and the result store. No external broker.
-- 📄 **Deliverable reports** — per-page and site-level AEO/SEO reports, with optional PDF export.
-- 🔭 **Observable** — every agent step is traced (`agent_traces` + `aeo trace`); optional OpenTelemetry OTLP export.
-- 🧪 **365 offline tests** — the full suite runs with no DB, browser, or LLM required.
-
----
-
-## Table of contents
-
-- [The rubric](#the-rubric--10-criteria)
-- [How it works](#how-it-works)
-- [Quickstart](#quickstart)
-- [CLI reference](#cli-reference)
-- [Configuration](#configuration)
-- [Project structure](#project-structure)
-- [Testing](#testing)
-- [Documentation](#documentation)
-- [Requirements](#requirements)
-- [License](#license)
+Under the hood the v4 engine is intact: the **Reference Architecture** blueprint + coverage diff,
+non-circular recommendation validation, PostgreSQL as both job queue and result store, and an
+**agent layer** (planner → builder → critic with human review) for generated fixes.
 
 ---
 
-## The rubric — 10 criteria
-
-Each criterion scores **1–5** (max **50**). Criteria 1–8 are the original shipped contract; **9–10**
-were added in v3 when the rubric expanded 8 → 10.
-
-| #  | Criterion | What it measures |
-|----|-----------|------------------|
-| 1  | **Schema Markup** | High-value JSON-LD types (`FAQPage`, `TechArticle`, …); flags the glossary `DefinedTerm` gap. |
-| 2  | **Q&A Blocks** | Real question → answer pairs; bonus for `FAQPage` schema. |
-| 3  | **Stats in HTML** | Distinct concrete numeric claims (percentages, money, CVE/CVSS…). |
-| 4  | **Entity Consistency** | Brand/entity mentions vs. first-person ("we/our") language. |
-| 5  | **Heading Structure** | Question-phrased H2/H3s; penalties for missing/template H1. |
-| 6  | **Content Depth** | Length, methodology language, stats, promotional tone *(LLM-refined)*. |
-| 7  | **Citation Signals (E-E-A-T)** | Author, date, and authoritative external links. |
-| 8  | **Load Speed** | PageSpeed Insights mobile score; JS-only-content penalty. |
-| 9  | **Render Accessibility** | Is the answer in server-rendered HTML, not JS-injected? Penalizes render-inflation. |
-| 10 | **Answer Readability** | Flesch reading ease, sentence length, passage segmentation — can an engine lift a clean answer? |
-
-> The rubric lives in [`config/scoring.yaml`](config/scoring.yaml) — thresholds, weights, and
-> vocabularies are **config, not code**.
-
----
-
-## How it works
+## Architecture at a glance
 
 ```
-URLs ─► Crawl (Crawl4AI / Playwright) ─► Extract (12 pure extractors)
-                                               │
-                                               ▼
-                         Score (10 deterministic scorers, LLM optional)
-                                               │
-                                               ▼
-                     PostgreSQL: pages · extractions · rubric_scores_v2
+Browser ─► web/  Next.js (App Router, Tailwind)
+              │   server-side /api/* proxy (injects the service key)
+              ▼
+         src/aeo/api  FastAPI  (aeo serve)
+              │   auth: Supabase JWT (HS256 or JWKS) · entitlements · Stripe webhooks
+              ▼
+         src/aeo/…  crawl → extract → score(5 skills) → packs → recommend → validate → report
+              │
+              ▼
+         PostgreSQL / Supabase   (job queue + results + auth + RLS)
 ```
 
-`aeo audit <domain>` prepends **Site Discovery** (sitemap + recursive) and **Page Prioritization**
-(rank by value, cut to top-N) so the per-page loop spends its budget only on the highest-value URLs.
-The back half — `aeo analyze` — runs **Dual-Layer Gap Analysis → Recommender → Validation (≤3
-retries) → per-page report**, with an Error Sink isolating each page and an Observability layer
-recording every step.
-
-- **Extractors** are pure `extract(html, soup, url) -> dict` functions. Each gets a fresh `BeautifulSoup` (text extraction is destructive by design).
-- **Scorers** read a single `ScoreContext` and map raw signals to a 1–5 tier using rubric thresholds. One scorer failing never aborts a page — it floors and records the error.
-- **PostgreSQL** is both the job queue and the result store. No external broker.
-
-**v4 adds a topic layer on top of the page layer.** Once per run, the **Reference Architecture
-Generator** builds a versioned *blueprint* — the ideal sitemap + coverage map for a topic — by
-combining competitor structural patterns (L1), a curated framework (L2, `config/framework.yaml`),
-and optional LLM synthesis (L3). The **Coverage Diff** measures the site against that blueprint
-("which pages are missing"), and the **Independent Validator** re-checks recommendations against
-non-circular signals plus a citation test. `aeo audit-cycle` chains the whole thing for the weekly
-loop.
-
-📖 Full design rationale and module map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ·
-[docs/MIGRATION_V3_V4.md](docs/MIGRATION_V3_V4.md).
+- **Web** (`web/`): marketing page, `/overview` (free scan), `/studio` (the product), `/plan/[id]`
+  (shareable plan), `/agents` (review queue). Auth degrades gracefully — without Supabase env vars
+  there is no sign-in button and everything runs anonymous/open.
+- **API** (`src/aeo/api/`): endpoints from [docs/product/PRODUCT_FLOW.md](docs/product/PRODUCT_FLOW.md) §3
+  plus v5 overview/packs/entitlements/payments; contracts locked in
+  [docs/V5_CONTRACTS.md](docs/V5_CONTRACTS.md).
+- **Engine** (`src/aeo/`): the deterministic pipeline — same inputs, same numbers. The LLM is
+  optional everywhere and disabled in tests.
 
 ---
 
 ## Quickstart
 
+**One command, locally (Windows, no Docker):**
+
+```powershell
+.\scripts\run.ps1        # starts API (:8000) + web (:3000), opens the browser
+.\scripts\stop.ps1       # stop both
+```
+
+**Docker Compose (whole stack incl. Postgres):**
+
 ```bash
-python -m venv .venv && .venv\Scripts\activate     # macOS/Linux: source .venv/bin/activate
-pip install -e ".[dev]"
+cp .env.example .env          # set POSTGRES_PASSWORD (+ any keys)
+docker compose up -d --build  # db → migrate → api → web, then open http://localhost:3000
+```
+
+**Manual:**
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[api,dev]"
 python -m playwright install chromium
-
 cp .env.example .env            # set DATABASE_URL
-aeo migrate                     # create the schema
-aeo run https://securin.io/blog/some-post -t Securin
+aeo migrate
+aeo serve                       # API on :8000, docs at /docs
+# in another shell:
+cd web && npm install && npm run dev   # UI on :3000
 ```
 
-Prefer containers?
-
-```bash
-docker compose up -d db
-docker compose run --rm migrate
-docker compose up -d worker
-```
-
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for cloud deploy, CI/CD, scaling, scheduling, secrets, and backups.
+Full deploy story (hosted topology, env reference, runbooks): **[DEPLOY.md](DEPLOY.md)** and
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ---
 
 ## CLI reference
 
+The `aeo` CLI drives the engine directly (the web UI uses the same code through the API):
+
 ```text
-# Core pipeline
+# Serve & migrate
 aeo migrate                  apply pending DB migrations
-aeo audit  DOMAIN -t NAME    discover → prioritize → crawl → extract → score
+aeo serve                    run the FastAPI backend
+
+# Audit pipeline
+aeo audit  DOMAIN -t NAME    discover → prioritize → crawl → extract → score  (--dry-run: no DB)
 aeo discover DOMAIN          discover + rank a site's URLs (no crawl, no DB)
-aeo run    URLS… -t NAME     crawl → extract → score (full pipeline)
+aeo run    URLS… -t NAME     crawl → extract → score for explicit URLs
 aeo crawl  URLS… -t NAME     crawl → extract only (score later)
 aeo score  -r RUN_ID         score a run's extracted-but-unscored pages
-aeo analyze -r RUN_ID        gap → recommend → validate (≤3) → per-page report
-aeo enqueue URLS… -t NAME    queue a crawl batch for a worker
-aeo worker                   drain the job queue
-aeo status [-r RUN_ID]       DB health, queue depth, run report
-aeo trace  PAGE_ID           dump a page's agent journey (observability)
-aeo report TARGET            render the per-page AEO/SEO reports (deliverable)
-
-# v4 — Reference Architecture
+aeo analyze -r RUN_ID        gap → recommend → validate (≤3 retries) → per-page report
 aeo audit-cycle DOMAIN -t N  weekly loop: blueprint → coverage → crawl → analyze → site report
-aeo blueprint generate       generate (or reuse) the versioned ideal-site blueprint
-aeo blueprint show           print a stored blueprint (ideal sitemap + coverage map)
-aeo coverage    -r RUN_ID    site-level Coverage Diff (missing / thin pages)
+
+# Product / intelligence
+aeo profile URL              classify a business: model, industry, journey gaps, action plan
+aeo plan                     turn a business brief into a blueprint + strategy + action plan
+aeo deliverables             generate the implementation bundle (sitemap, briefs, JSON-LD, …)
+aeo agent                    run the agent layer (planner → builder → critic) for a ticket
+aeo verify-milestones        before/after re-crawl proof for implementation milestones
+
+# Reference Architecture (v4)
+aeo blueprint generate|show  versioned ideal-site blueprint
+aeo framework bootstrap      per-domain ideal-site framework
+aeo coverage    -r RUN_ID    site-level coverage diff (missing / thin pages)
 aeo site-report -r RUN_ID    render the site-level AEO report
 aeo refinements [--propose]  validated-wins criteria-target proposals (human-gated)
 
-# v4.1 (beta) — onboarding · dry-run · OpenTelemetry
-aeo audit DOMAIN --dry-run   in-memory preview; writes NOTHING to the DB
+# Ops
+aeo enqueue URLS… -t NAME    queue a crawl batch · aeo worker  drain the queue
+aeo status [-r RUN_ID]       DB health, queue depth, run report
+aeo trace  PAGE_ID           dump a page's agent journey (observability)
+aeo report TARGET            render per-page reports · aeo onboard / targets / add-target
 ```
-
-**v4.1 notes** — drop a `config/domains/<domain>.yaml` to set topic / engine target / max URLs /
-label per client; set `AEO__OBS__OTEL_ENABLED=true` + `pip install -e ".[otel]"` to export OTLP
-spans; the scoring-contract configs are folded into the blueprint version hash for week-over-week
-comparability. See [BETA_RELEASE_NOTES.md](BETA_RELEASE_NOTES.md).
 
 ---
 
@@ -180,14 +150,18 @@ Settings are layered: **defaults → `config/*.yaml` → environment** (`AEO__SE
 
 | File | Purpose |
 |------|---------|
-| [`config/scoring.yaml`](config/scoring.yaml) | The rubric: thresholds, weights, vocabularies. |
-| [`config/framework.yaml`](config/framework.yaml) | Curated L2 framework for the Reference Architecture. |
+| [`config/scoring.yaml`](config/scoring.yaml) | The rubric + the v5 `skills:` block (weights, impact-ranked priorities). |
+| [`config/framework.yaml`](config/framework.yaml) | Curated framework for the Reference Architecture. |
 | [`config/crawler.yaml`](config/crawler.yaml) | Crawl politeness, retries, fingerprinting. |
 | [`config/prioritization.yaml`](config/prioritization.yaml) | Page-value ranking for top-N selection. |
+| [`config/intelligence.yaml`](config/intelligence.yaml) | Business-intelligence layer (profile/plan) tuning. |
 | [`config/extractors.yaml`](config/extractors.yaml) · [`config/entities.yaml`](config/entities.yaml) · [`config/best_practices.yaml`](config/best_practices.yaml) | Extractor tuning, entity lists, best-practice targets. |
 | `config/domains/<domain>.yaml` | Per-client onboarding: topic, engine target, max URLs, label. |
 
-Optional dependency groups: `.[otel]` (OTLP export), `.[pdf]` (PDF reports), `.[embeddings]`, `.[dev]`.
+Key environment groups (full reference in [DEPLOY.md](DEPLOY.md)): `DATABASE_URL`,
+`AEO__AUTH__*` (Supabase JWT secret or JWKS URL), `AEO__PAYMENTS__*` (Stripe),
+`NEXT_PUBLIC_SUPABASE_*` (web), `AEO__OBS__OTEL_ENABLED` (OpenTelemetry).
+Optional dependency groups: `.[api]`, `.[otel]`, `.[pdf]`, `.[embeddings]`, `.[dev]`.
 
 ---
 
@@ -195,24 +169,27 @@ Optional dependency groups: `.[otel]` (OTLP export), `.[pdf]` (PDF reports), `.[
 
 ```text
 src/aeo/
-  cli.py                 typer CLI (entry point: `aeo`)
-  settings.py            layered config (defaults → YAML → env)
-  crawl/                 site discovery, Crawl4AI wrapper, politeness, retry, prioritization
-  extract/               12 pure extractors (meta, schema, qa, stats, …)
-  nlp/                   LLM client (Ollama/cloud) + tone analysis
-  scoring/               rubric loader, tier math, aggregator, scorers/ (one per criterion)
-  processor/             Dual-Layer Gap Analysis (60% best-practice + 40% competitor)
-  reference/             Reference Layer: blueprint, framework, domain config, config pinning
-  recommender/           schema / entity / content edit generators
-  validation/            recommend → simulate → re-score → retry (≤3) loop
-  report/                per-page + site-level report builder, renderer, PDF export
-  obs/                   Observability (agent traces, OpenTelemetry) + Error Sink
-  storage/               psycopg2 pool, SQL migrations, repos (pages · runs · scores · jobs · …)
-  pipeline/              Orchestrator (async), Worker (queue), Reference-Architecture cycle
-config/                  scoring · framework · crawler · prioritization · extractors · entities · domains/
-tests/                   365 offline tests + engineered fixtures
-docs/                    ARCHITECTURE · DEPLOYMENT · VALIDATION · MIGRATION_V3_V4 · PIPELINE_EXPLAINED
-Dockerfile · docker-compose.yml · .github/workflows/ci.yml
+  cli.py · settings.py     typer CLI (`aeo`) · layered config
+  api/                     FastAPI app, Supabase-JWT auth, job endpoints
+  crawl/                   discovery, Crawl4AI wrapper, politeness, retry, prioritization
+  extract/                 pure extractors (meta, schema, qa, stats, …)
+  scoring/                 rubric + the 5-skill layer (scorers/, skills.py)
+  intelligence/            business profiling: intake, classification, journey, site facts
+  pipeline/                orchestrator, worker, overview, packs, milestone audit
+  reference/               blueprints, frameworks, competitor discovery, onboarding
+  processor/ · recommender/ · validation/   gap analysis → recommendations → non-circular checks
+  agents/                  planner → builder → critic runtime (+ ReAct loop, tools)
+  entitlements/ · payments/  pack unlock logic · Stripe integration
+  companion/               gamification rewards (coins, achievements)
+  report/ · obs/ · nlp/    deliverable reports · tracing/OTel/error sink · LLM providers
+  storage/                 psycopg2 pool, 34 SQL migrations, repos/
+web/                       Next.js app: overview, studio, quest map, plan sharing, agents
+supabase/                  Supabase baseline migration (auth + RLS)
+config/                    scoring · skills · crawler · intelligence · domains/ …
+tests/                     unit + integration, fully offline by default
+docs/                      see docs/README.md for the map (product/ · architecture/ · archive/)
+ops/                       systemd timers + weekly audit/verify scripts
+Dockerfile · docker-compose.yml · railway.json · .github/workflows/
 ```
 
 ---
@@ -220,37 +197,38 @@ Dockerfile · docker-compose.yml · .github/workflows/ci.yml
 ## Testing
 
 ```bash
-pytest -q          # 365 tests, fully offline (no DB, browser, or Ollama)
+pytest -q          # 1,100+ tests, offline by default (no DB, browser, or LLM)
 ruff check src tests
+cd web && npm test          # web unit tests (node --test over lib/**/*.test.ts)
 ```
 
-The engineered fixtures in `tests/fixtures/` are tuned to land on known tiers (strong ≈ 44/50,
-weak ≈ 18/50, glossary surfaces the `DefinedTerm` gap), so the scorer tests double as an executable
-rubric spec. Coverage and benchmark details: [docs/VALIDATION.md](docs/VALIDATION.md).
+Integration tests that need Postgres skip cleanly when `DATABASE_URL` is unreachable — CI runs
+without a database on purpose. Coverage and benchmark details: [docs/VALIDATION.md](docs/VALIDATION.md).
 
 ---
 
 ## Documentation
 
+Start at **[docs/README.md](docs/README.md)** — the full map. Highlights:
+
 | Doc | Contents |
 |-----|----------|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design rationale, module map, data flow, extensibility. |
-| [docs/PIPELINE_EXPLAINED.md](docs/PIPELINE_EXPLAINED.md) | Walkthrough of the end-to-end pipeline. |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Local, Docker, and cloud deploy; CI/CD; monitoring; scaling; secrets; backups. |
-| [docs/VALIDATION.md](docs/VALIDATION.md) | Rubric → implementation mapping, test coverage, benchmark. |
-| [docs/MIGRATION_V3_V4.md](docs/MIGRATION_V3_V4.md) | v3 → v4 migration report and production-readiness review. |
-| [aeo_architecture_v4.md](aeo_architecture_v4.md) | The v4 target spec (Reference Architecture Generator, Coverage Diff, Independent Validator). |
-| [BETA_RELEASE_NOTES.md](BETA_RELEASE_NOTES.md) | v4.1 beta: onboarding, dry-run, OpenTelemetry. |
+| [docs/product/AEO_PRODUCT_CHANGES_v5.md](docs/product/AEO_PRODUCT_CHANGES_v5.md) | The authoritative v5 build spec (all phases shipped). |
+| [docs/V5_CONTRACTS.md](docs/V5_CONTRACTS.md) | Locked JSON/DB contracts: skills, packs, entitlements. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Engine design rationale, module map, data flow. |
+| [DEPLOY.md](DEPLOY.md) | Running + deploying the full stack; environment reference; runbooks. |
+| [docs/architecture/](docs/architecture/) | Frozen v3/v4 architecture specs. |
+| [docs/archive/](docs/archive/) | Historical plans, checklists, and release notes (provenance only). |
 
 ---
 
 ## Requirements
 
-**Python ≥ 3.11** · **PostgreSQL ≥ 14** · **Playwright Chromium** · *(optional)* Ollama,
-PageSpeed Insights API key.
+**Python ≥ 3.11** · **Node 20+** (web) · **PostgreSQL ≥ 14** (or Supabase) ·
+**Playwright Chromium** · *(optional)* Ollama or a cloud LLM key, Stripe keys, PageSpeed API key.
 
 ---
 
 ## License
 
-Internal project — © Securin. All rights reserved. Not for external distribution without permission.
+Internal project — all rights reserved. Not for external distribution without permission.

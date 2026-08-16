@@ -2,7 +2,7 @@
 
 **Status:** SP-1 (Backend Intelligence Layer) shipped. SP-2/3/4 designed, not yet built.
 **Audience:** project leadership + the AEO engineering team.
-**Companion docs:** [`USER_SCENARIOS.md`](USER_SCENARIOS.md), [`PRODUCT_FLOW.md`](PRODUCT_FLOW.md), [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md), and the design spec at `docs/superpowers/specs/2026-06-09-aeo-intelligence-layer-design.md`.
+**Companion docs:** [`USER_SCENARIOS.md`](USER_SCENARIOS.md), [`PRODUCT_FLOW.md`](PRODUCT_FLOW.md), [`IMPLEMENTATION_PLAN.md`](../archive/IMPLEMENTATION_PLAN.md), and the design spec at `docs/superpowers/specs/2026-06-09-aeo-intelligence-layer-design.md`.
 
 ---
 

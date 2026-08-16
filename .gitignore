@@ -25,6 +25,9 @@ ops/data/
 .superpowers/
 
 # local tooling + scratch/test artifacts (not for the shared repo)
+.obsidian/
+dchk/
+/reports/
 .mcp.json
 /apple_report.pdf
 /apple-site-report.pdf
