@@ -1,4 +1,4 @@
-// TypeScript mirrors of the SP-4a API payloads (see PRODUCT_FLOW.md §3 and
+// TypeScript mirrors of the SP-4a API payloads (see docs/product/PRODUCT_FLOW.md §3 and
 // aeo.intelligence.site_profile.SiteProfile.to_dict / aeo.intelligence.brief.BriefPlan).
 
 export interface StrategyAction {

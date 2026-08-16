@@ -9,7 +9,7 @@ feedback loop, and the **weekly audit loop** + OCI infra hooks.
 This document is the senior-review-board record: what existed, what changed, why,
 and what remains. Companion docs: [ARCHITECTURE.md](ARCHITECTURE.md) (how it's
 built), [DEPLOYMENT.md](DEPLOYMENT.md) (how it runs), [VALIDATION.md](VALIDATION.md)
-(rubric→implementation), and [aeo_architecture_v4.md](../aeo_architecture_v4.md)
+(rubric→implementation), and [aeo_architecture_v4.md](architecture/aeo_architecture_v4.md)
 (the target spec).
 
 ---

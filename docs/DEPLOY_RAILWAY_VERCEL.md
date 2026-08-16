@@ -13,7 +13,7 @@ UI → Vercel**, **Postgres → Railway's managed plugin**. The UI talks to the 
 
 1. **Create the project & service**
    - railway.app → **New Project** → **Deploy from GitHub repo** → pick `Sanjith72/aeo-pipeline`, branch `main`.
-   - Railway reads [`railway.toml`](../railway.toml) → builds the root `Dockerfile`, runs `aeo migrate`
+   - Railway reads [`railway.json`](../railway.json) → builds the root `Dockerfile`, runs `aeo migrate`
      (pre-deploy), then `aeo serve --host 0.0.0.0` on the injected `$PORT`, health-checked at `/api/health`.
 
 2. **Add Postgres** — in the project: **New → Database → PostgreSQL**. It exposes a `DATABASE_URL`.
